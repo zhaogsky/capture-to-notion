@@ -12,7 +12,7 @@ class CliInputError(ValueError):
 
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.classifier import classify_content_type
-from capture_to_notion.config import ensure_config
+from capture_to_notion.config import config_root, ensure_config
 from capture_to_notion.diagnostics import version_info
 from capture_to_notion.models import CaptureInput, WritePlan
 from capture_to_notion.notion_adapter import (
@@ -61,8 +61,7 @@ def print_json(data: dict[str, Any]) -> None:
 
 
 def cmd_version(args: argparse.Namespace) -> int:
-    config = ensure_config()
-    print_json(version_info(config))
+    print_json(version_info(config_root()))
     return 0
 
 

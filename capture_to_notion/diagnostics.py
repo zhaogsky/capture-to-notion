@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from capture_to_notion import __version__
-from capture_to_notion.config import AppConfig
 
 
 COMMAND_NAME = "capture-to-notion"
@@ -21,7 +20,7 @@ def is_editable_install() -> bool:
     return ".claude/skills/capture-to-notion" in package_file.as_posix()
 
 
-def version_info(config: AppConfig) -> dict[str, Any]:
+def version_info(config_root_path: Path) -> dict[str, Any]:
     return {
         "command": COMMAND_NAME,
         "version": __version__,
@@ -29,6 +28,6 @@ def version_info(config: AppConfig) -> dict[str, Any]:
         "python": sys.version.split()[0],
         "package_path": str(Path(__file__).resolve().parent),
         "skill_path": str(skill_path()),
-        "config_root": str(config.root),
+        "config_root": str(config_root_path),
         "editable_install": is_editable_install(),
     }

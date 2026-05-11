@@ -45,6 +45,16 @@ def test_python_package_imports_from_current_package() -> None:
     assert result.stdout.strip() == capture_to_notion.__version__
 
 
+def test_version_does_not_create_config_files(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+
+    result = run_cli(["version"], tmp_path)
+
+    assert result.returncode == 0
+    assert not config_dir.exists()
+
+
+
 def test_version_outputs_runtime_paths_without_secrets(tmp_path: Path) -> None:
     result = run_cli(["version"], tmp_path)
 
