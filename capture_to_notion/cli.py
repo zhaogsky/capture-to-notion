@@ -13,6 +13,7 @@ class CliInputError(ValueError):
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.classifier import classify_content_type
 from capture_to_notion.config import ensure_config
+from capture_to_notion.diagnostics import version_info
 from capture_to_notion.models import CaptureInput, WritePlan
 from capture_to_notion.notion_adapter import (
     NotionAdapter,
@@ -57,6 +58,12 @@ def load_write_plan(path: str) -> WritePlan:
 
 def print_json(data: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
+def cmd_version(args: argparse.Namespace) -> int:
+    config = ensure_config()
+    print_json(version_info(config))
+    return 0
 
 
 def cmd_cache_inspect(args: argparse.Namespace) -> int:
@@ -167,6 +174,9 @@ def cmd_capture_apply(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="capture-to-notion")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    version_parser = subparsers.add_parser("version")
+    version_parser.set_defaults(func=cmd_version)
 
     cache_parser = subparsers.add_parser("cache")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -42,6 +43,19 @@ def test_python_package_imports_from_current_package() -> None:
 
     assert result.returncode == 0
     assert result.stdout.strip() == capture_to_notion.__version__
+
+
+def test_version_outputs_runtime_paths_without_secrets(tmp_path: Path) -> None:
+    result = run_cli(["version"], tmp_path)
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["command"] == "capture-to-notion"
+    assert data["version"] == capture_to_notion.__version__
+    assert data["package"] == "capture_to_notion"
+    assert data["config_root"] == str(tmp_path / "config")
+    assert data["skill_path"].endswith("capture-to-notion")
+    assert "token" not in result.stdout.lower()
 
 
 def test_runtime_files_do_not_reference_old_runtime_names() -> None:
