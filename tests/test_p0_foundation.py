@@ -265,6 +265,22 @@ def test_runtime_files_do_not_reference_old_runtime_names() -> None:
     assert violations == []
 
 
+def test_readmes_document_p0_diagnostics_commands() -> None:
+    readme_paths = [
+        PROJECT_ROOT / "README.md",
+        PROJECT_ROOT / "README.zh-CN.md",
+    ]
+
+    for path in readme_paths:
+        text = path.read_text(encoding="utf-8")
+        assert "capture-to-notion version" in text
+        assert "capture-to-notion doctor" in text
+        assert "CHANGELOG.md" in text
+        assert "notion-skill" not in text
+        assert "notion-capture" not in text
+
+
+
 def test_changelog_records_capture_to_notion_rename() -> None:
     changelog = PROJECT_ROOT / "CHANGELOG.md"
     text = changelog.read_text(encoding="utf-8")

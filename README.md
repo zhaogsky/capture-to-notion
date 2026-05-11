@@ -39,6 +39,22 @@ CAPTURE_TO_NOTION_CONFIG_DIR=/tmp/capture-to-notion capture-to-notion cache insp
 
 The Notion integration token is configured in the tool's local config, not Claude Code global settings. Keep secrets out of this skill directory.
 
+## Diagnostics
+
+Print version, package path, and runtime path details:
+
+```bash
+capture-to-notion version
+```
+
+Run a read-only local diagnostic for config paths, whether a token is configured, and whether a legacy config directory exists. The command does not print the raw token value:
+
+```bash
+capture-to-notion doctor
+```
+
+For migration history and rename details, see `CHANGELOG.md`.
+
 ## Common Commands
 
 Inspect local cache:

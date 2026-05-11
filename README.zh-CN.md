@@ -39,6 +39,22 @@ CAPTURE_TO_NOTION_CONFIG_DIR=/tmp/capture-to-notion capture-to-notion cache insp
 
 Notion integration token 应配置在这个工具自己的本地配置中，不要写入 Claude Code 全局 settings。不要把密钥放进 Skill 目录。
 
+## 诊断命令
+
+输出版本信息、包路径和运行时路径信息：
+
+```bash
+capture-to-notion version
+```
+
+运行只读本地诊断，检查配置路径、是否已配置 token，以及是否存在旧配置目录提示。该命令不会输出 token 原文：
+
+```bash
+capture-to-notion doctor
+```
+
+迁移历史和重命名说明见 `CHANGELOG.md`。
+
 ## 常用命令
 
 查看本地缓存：
