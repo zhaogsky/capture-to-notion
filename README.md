@@ -1,0 +1,95 @@
+# Capture to Notion
+
+Capture to Notion is a Claude Code skill plus local CLI backend for planning and applying writes to Notion. It is intentionally scoped to capture workflows: choosing targets, scanning schemas, creating write plans, resolving relations, handling cover assets, and applying confirmed writes.
+
+## Components
+
+- `SKILL.md` — Claude-facing workflow and safety rules.
+- `capture_to_notion/` — Python backend used by the CLI.
+- `tests/` — regression tests for planning, scanning, writing, assets, and CLI behavior.
+- `pyproject.toml` — package metadata and the `capture-to-notion` console script.
+
+## Install or Reinstall
+
+Install the editable CLI from this directory:
+
+```bash
+uv tool install --force --editable /Users/aaron/.claude/skills/capture-to-notion
+```
+
+Verify the command:
+
+```bash
+capture-to-notion --help
+```
+
+## Configuration
+
+Default local configuration lives at:
+
+```text
+~/.config/capture-to-notion/
+```
+
+Override it for tests or isolated runs:
+
+```bash
+CAPTURE_TO_NOTION_CONFIG_DIR=/tmp/capture-to-notion capture-to-notion cache inspect
+```
+
+The Notion integration token is configured in the tool's local config, not Claude Code global settings. Keep secrets out of this skill directory.
+
+## Common Commands
+
+Inspect local cache:
+
+```bash
+capture-to-notion cache inspect
+```
+
+Search for a target page or database:
+
+```bash
+capture-to-notion target search --query "书单"
+```
+
+Scan a confirmed target:
+
+```bash
+capture-to-notion target scan --page-id PAGE_ID --alias books
+```
+
+Create a write plan:
+
+```bash
+capture-to-notion capture plan --input input.json --output plan.json
+```
+
+Apply a confirmed plan:
+
+```bash
+capture-to-notion capture apply --plan plan.json --confirmed
+```
+
+## Typical Workflow
+
+1. Search or select the exact Notion target.
+2. Scan the target before first use or after schema changes.
+3. Build an input JSON file with the raw content, target hint, state, content type hint, and options.
+4. Generate a plan with `capture-to-notion capture plan`.
+5. Review the plan and warnings.
+6. Apply only after the user confirms the target and write.
+
+## Safety Boundary
+
+Capture to Notion replaces Notion MCP for this workflow. Do not fall back to Notion MCP when scanning, planning, writing, validating, or reading structure for this skill. If the backend lacks an API operation or returns stale data, fix or extend this skill/backend instead, unless the user explicitly asks for a one-off MCP operation.
+
+The tool must not silently write to Notion. First-time target use and any plan requiring confirmation should remain plan-first, apply-after-confirmation.
+
+## Tests
+
+Run the backend test suite from the skill directory:
+
+```bash
+uv --directory /Users/aaron/.claude/skills/capture-to-notion run --with pytest python -m pytest
+```
