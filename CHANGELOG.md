@@ -10,10 +10,10 @@
 
 ### Migration Notes
 
-- Reinstall the editable CLI with:
+- From this Skill directory, reinstall the editable CLI with:
 
 ```bash
-uv tool install --force --editable /Users/aaron/.claude/skills/capture-to-notion
+uv tool install --force --editable .
 ```
 
 - The old `notion-skill` CLI should not be used.

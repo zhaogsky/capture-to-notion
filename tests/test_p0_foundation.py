@@ -80,3 +80,12 @@ def test_changelog_records_capture_to_notion_rename() -> None:
     assert "notion_skill" in text
     assert "capture_to_notion" in text
     assert "~/.config/capture-to-notion" in text
+
+
+
+def test_changelog_uses_portable_install_command() -> None:
+    changelog = PROJECT_ROOT / "CHANGELOG.md"
+    text = changelog.read_text(encoding="utf-8")
+
+    assert "/Users/aaron/" not in text
+    assert "uv tool install --force --editable ." in text
