@@ -68,3 +68,15 @@ def test_runtime_files_do_not_reference_old_runtime_names() -> None:
                 violations.append(f"{path.relative_to(PROJECT_ROOT)} contains {token}")
 
     assert violations == []
+
+
+def test_changelog_records_capture_to_notion_rename() -> None:
+    changelog = PROJECT_ROOT / "CHANGELOG.md"
+    text = changelog.read_text(encoding="utf-8")
+
+    assert "capture-to-notion" in text
+    assert "notion-skill" in text
+    assert "notion-capture" in text
+    assert "notion_skill" in text
+    assert "capture_to_notion" in text
+    assert "~/.config/capture-to-notion" in text
