@@ -108,7 +108,16 @@ def cmd_target_inspect(args: argparse.Namespace) -> int:
     detail = cache.target_detail(alias_name=args.alias, target_id=args.target_id)
     if detail is None:
         if args.alias:
-            raise CliInputError(f"未找到 target alias: {args.alias}")
+            reference = cache.target_reference(alias_name=args.alias)
+            if reference is None:
+                raise CliInputError(f"未找到 target alias: {args.alias}")
+            target_id = reference.get("target_id")
+            if target_id:
+                status = cache.target_cache_status(target_id)
+                if status == "invalid_cache":
+                    raise CliInputError(f"target cache 无效: {target_id}")
+                raise CliInputError(f"未找到 target cache: {target_id}")
+            raise CliInputError(f"未找到 target_id: {args.alias}")
         raise CliInputError(f"未找到 target_id: {args.target_id}")
     print_json(detail)
     return 0

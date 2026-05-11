@@ -41,6 +41,29 @@ class CacheStore:
             return None
         return self.aliases().get(name)
 
+    def target_reference(
+        self, alias_name: str | None = None, target_id: str | None = None
+    ) -> dict[str, str | None] | None:
+        aliases = self.aliases()
+        resolved_alias = alias_name
+        if alias_name:
+            alias = aliases.get(alias_name)
+            if not isinstance(alias, dict):
+                return None
+            alias_target_id = alias.get("target_id")
+            return {
+                "alias": resolved_alias,
+                "target_id": alias_target_id if isinstance(alias_target_id, str) else None,
+            }
+
+        if not isinstance(target_id, str):
+            return None
+        for candidate_alias, alias in sorted(aliases.items()):
+            if isinstance(alias, dict) and alias.get("target_id") == target_id:
+                resolved_alias = candidate_alias
+                break
+        return {"alias": resolved_alias, "target_id": target_id}
+
     def _read_target_cache(self, target_id: str) -> tuple[dict[str, Any] | None, str]:
         path = self.config.targets_dir / f"{target_id}.json"
         if not path.exists():
@@ -52,6 +75,9 @@ class CacheStore:
         if not isinstance(data, dict):
             return None, "invalid_cache"
         return data, "cached"
+
+    def target_cache_status(self, target_id: str) -> str:
+        return self._read_target_cache(target_id)[1]
 
     def target_structure(self, target_id: str | None) -> dict[str, Any] | None:
         if not target_id:
@@ -152,6 +178,10 @@ class CacheStore:
         structure, status = self._read_target_cache(target_id)
         if structure is None:
             return None
+
+        reference = self.target_reference(alias_name=alias_name, target_id=target_id)
+        if reference is not None:
+            resolved_alias = reference["alias"]
 
         raw_data_sources = structure.get("data_sources", {})
         data_sources: list[dict[str, Any]] = []
