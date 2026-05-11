@@ -142,6 +142,24 @@ def test_doctor_reports_default_notion_token_env_without_revealing_secret(tmp_pa
     assert result.stderr == ""
 
 
+
+def test_doctor_does_not_fallback_to_default_env_when_env_token_name_is_blank(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps({"notion": {"auth": {"env_token_name": ""}}}),
+        encoding="utf-8",
+    )
+
+    result = run_cli(["doctor"], tmp_path, extra_env={"NOTION_TOKEN": "secret-token-value"})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["checks"]["token"]["configured"] is False
+    assert "secret-token-value" not in result.stdout
+    assert "secret-token-value" not in result.stderr
+
+
 def test_doctor_does_not_accept_legacy_top_level_notion_token(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True)

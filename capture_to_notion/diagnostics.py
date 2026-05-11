@@ -60,8 +60,11 @@ def _token_configured(config_data: dict[str, Any] | None) -> bool:
     if isinstance(token, str) and token.strip():
         return True
 
-    env_token_name = auth.get("env_token_name", "NOTION_TOKEN")
-    if not isinstance(env_token_name, str) or not env_token_name.strip():
+    if "env_token_name" in auth:
+        env_token_name = auth.get("env_token_name")
+        if not isinstance(env_token_name, str):
+            return False
+    else:
         env_token_name = "NOTION_TOKEN"
     return bool(os.environ.get(env_token_name))
 
