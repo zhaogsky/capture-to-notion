@@ -271,21 +271,16 @@ def test_readmes_document_p0_diagnostics_commands() -> None:
         PROJECT_ROOT / "README.md",
         PROJECT_ROOT / "README.zh-CN.md",
     ]
-    forbidden_inline_commands = [
-        "notion-skill version",
-        "notion-skill doctor",
-        "notion-skill capture",
-        "notion-skill target",
-        "notion-skill cache",
-        "notion-capture version",
-        "notion-capture doctor",
-        "notion-capture capture",
-        "notion-capture target",
-        "notion-capture cache",
-    ]
-    fenced_or_shell_command_pattern = re.compile(
-        r"```(?:[a-zA-Z0-9_+-]+)?\\n[\\s\\S]*?^(?:\\$\\s*)?(notion-(?:skill|capture))\\b",
+    fenced_legacy_command_pattern = re.compile(
+        r"```(?:[a-zA-Z0-9_+-]+)?\n[\s\S]*?^(?:\$\s*)?(?:notion-skill|notion-capture)\b",
         re.MULTILINE,
+    )
+    shell_legacy_command_pattern = re.compile(
+        r"^(?:\$\s*)?(?:notion-skill|notion-capture)\b",
+        re.MULTILINE,
+    )
+    recommended_legacy_command_pattern = re.compile(
+        r"(?i)(?<!not\s)(?<!n't\s)\b(?:run|use|execute)\s+`(?:notion-skill|notion-capture)\b[^`]*`",
     )
 
     for path in readme_paths:
@@ -293,9 +288,9 @@ def test_readmes_document_p0_diagnostics_commands() -> None:
         assert "capture-to-notion version" in text
         assert "capture-to-notion doctor" in text
         assert "CHANGELOG.md" in text
-        for command in forbidden_inline_commands:
-            assert command not in text
-        assert fenced_or_shell_command_pattern.search(text) is None
+        assert fenced_legacy_command_pattern.search(text) is None
+        assert shell_legacy_command_pattern.search(text) is None
+        assert recommended_legacy_command_pattern.search(text) is None
 
 
 
