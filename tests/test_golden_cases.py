@@ -13,7 +13,7 @@ def write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def seed_books_target(config, *, include_isbn: bool = True, include_cover: bool = True) -> None:
+def seed_books_target(config, *, include_isbn: bool = True, include_cover: bool = True, include_page_count: bool = True) -> None:
     fields = {
         "title": "名称",
         "author": "作者",
@@ -27,6 +27,9 @@ def seed_books_target(config, *, include_isbn: bool = True, include_cover: bool 
     if include_isbn:
         fields["isbn"] = "ISBN"
         schema["ISBN"] = {"type": "rich_text"}
+    if include_page_count:
+        fields["page_count"] = "页数"
+        schema["页数"] = {"type": "number"}
     if include_cover:
         fields["cover"] = "封面"
         schema["封面"] = {"type": "files"}
@@ -114,7 +117,7 @@ def test_golden_initialized_book_plan_has_core_fields_and_cover_asset(tmp_path, 
     config = ensure_config()
     seed_books_target(config)
     capture = CaptureInput(
-        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜",
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
         target_hint="书单",
         state="初始化",
         content_type_hint="book",
@@ -129,7 +132,14 @@ def test_golden_initialized_book_plan_has_core_fields_and_cover_asset(tmp_path, 
     assert plan.normalized_record["title"] == "可能性的艺术"
     assert plan.normalized_record["author"] == "刘瑜"
     assert plan.normalized_record["state"] == "initialized"
-    assert plan.field_mapping == {"title": "名称", "state": "阅读状态", "cover": "封面", "author": "作者"}
+    assert plan.field_mapping == {
+        "title": "名称",
+        "state": "阅读状态",
+        "cover": "封面",
+        "author": "作者",
+        "isbn": "ISBN",
+        "page_count": "页数",
+    }
     assert plan.requires_confirmation is False
     assert plan.asset_operations[0].record_key == "cover"
     assert plan.asset_operations[0].target_field == "封面"
@@ -140,7 +150,7 @@ def test_golden_completed_book_plan_maps_completed_state(tmp_path, monkeypatch):
     config = ensure_config()
     seed_books_target(config)
     capture = CaptureInput(
-        raw_input="我读完了《可能性的艺术》 作者：刘瑜",
+        raw_input="我读完了《可能性的艺术》 作者：刘瑜 ISBN：9787559847357 页数：400",
         target_hint="书单",
         state="读完",
         content_type_hint="book",
@@ -181,7 +191,7 @@ def test_golden_incomplete_book_schema_requires_confirmation(tmp_path, monkeypat
     config = ensure_config()
     seed_books_target(config, include_isbn=False, include_cover=False)
     capture = CaptureInput(
-        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜",
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
         target_hint="书单",
         state="初始化",
         content_type_hint="book",

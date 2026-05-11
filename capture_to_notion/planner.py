@@ -41,6 +41,8 @@ KNOWN_METADATA_LABELS = [
 ]
 METADATA_DELIMITER_PATTERN = r"[\s,，;；|｜]"
 METADATA_COLON_PATTERN = r"[:：]"
+BOOK_REQUIRED_SCHEMA_FIELDS = ["cover", "author", "isbn", "page_count", "state"]
+BOOK_REQUIRED_VALUE_FIELDS = ["author", "isbn", "page_count"]
 
 
 def extract_labeled_value(raw_input: str, labels: list[str]) -> str | None:
@@ -234,12 +236,19 @@ def missing_required_fields(content_type: str, fields: dict[str, str], schema: d
     if content_type != "book":
         return []
 
-    missing_fields = [field for field in ["cover", "author", "isbn", "state"] if field not in fields]
+    missing_fields = [field for field in BOOK_REQUIRED_SCHEMA_FIELDS if field not in fields]
     if "cover" not in missing_fields and schema:
         semantic_fields = semantic_field_mapping(schema)["fields"]
         if semantic_fields.get("cover") != fields.get("cover"):
             missing_fields.append("cover")
     return missing_fields
+
+
+
+def missing_required_values(content_type: str, normalized_record: dict[str, Any]) -> list[str]:
+    if content_type != "book":
+        return []
+    return [field for field in BOOK_REQUIRED_VALUE_FIELDS if normalized_record.get(field) in (None, "", [], {})]
 
 
 def unresolved_plan(capture: CaptureInput, content_type: str, reason: str) -> WritePlan:
@@ -319,13 +328,20 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     warnings = list(data_source.get("mapping_warnings") or [])
     data_source_schema = data_source.get("schema", {})
     missing_fields = missing_required_fields(content_type, fields, data_source_schema)
+    missing_values = missing_required_values(content_type, normalized_record)
     if missing_fields:
         warnings.append(f"{content_type}_schema_incomplete:{','.join(missing_fields)}")
+    if missing_values:
+        warnings.append(f"{content_type}_key_values_missing:{','.join(missing_values)}")
     if not confirmation_reason and data_source.get("mapping_warnings"):
         confirmation_reason = "field_mapping_ambiguous"
     if not confirmation_reason and missing_fields:
         confirmation_reason = f"{content_type}_schema_incomplete"
-    requires_confirmation = bool(structure.get("requires_confirmation") or data_source.get("mapping_warnings") or missing_fields)
+    if not confirmation_reason and missing_values:
+        confirmation_reason = f"{content_type}_key_values_missing"
+    requires_confirmation = bool(
+        structure.get("requires_confirmation") or data_source.get("mapping_warnings") or missing_fields or missing_values
+    )
     asset_mapping = dict(structure.get("asset_mapping") or {})
     cover_field = fields.get("cover")
     if cover_field and data_source_schema.get(cover_field, {}).get("type") == "files":

@@ -51,7 +51,16 @@ def seed_book_target(config):
                         "publisher": "出版社",
                         "page_count": "页数",
                         "state": "阅读状态",
-                        "cover": "封面"
+                        "cover": "封面",
+                    },
+                    "schema": {
+                        "名称": {"type": "title"},
+                        "作者": {"type": "rich_text"},
+                        "ISBN": {"type": "rich_text"},
+                        "出版社": {"type": "rich_text"},
+                        "页数": {"type": "number"},
+                        "阅读状态": {"type": "status"},
+                        "封面": {"type": "files"},
                     },
                 }
             },
@@ -196,7 +205,7 @@ def test_builds_book_capture_plan_from_cached_target(tmp_path, monkeypatch):
     seed_book_target(config)
 
     capture = CaptureInput(
-        raw_input="把《可能性的艺术》初始化到书单",
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
         target_hint="书单",
         state="初始化",
         content_type_hint="book",
@@ -239,6 +248,32 @@ def test_build_plan_summary_snapshots_mapped_fields_and_warnings():
 
     assert summary["mapped_fields"] == {"title": "名称"}
     assert summary["warnings"] == ["needs_review"]
+
+
+
+def test_book_capture_plan_requires_confirmation_when_key_values_are_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_book_target(config)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "book_key_values_missing"
+    assert "book_key_values_missing:author,isbn,page_count" in plan.warnings
+    assert plan.operations == []
+    assert plan.asset_operations == []
+    assert plan.summary["key_fields"]["author"] == {"target_field": "作者", "value_status": "missing_value"}
+    assert plan.summary["key_fields"]["isbn"] == {"target_field": "ISBN", "value_status": "missing_value"}
+    assert plan.summary["key_fields"]["page_count"] == {"target_field": "页数", "value_status": "missing_value"}
 
 
 def test_book_labeled_author_populates_normalized_record_and_mapping(tmp_path, monkeypatch):
@@ -511,7 +546,7 @@ def test_allow_asset_download_false_uses_external_url_action(tmp_path, monkeypat
     seed_book_target(config)
 
     capture = CaptureInput(
-        raw_input="把《可能性的艺术》初始化到书单",
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
         target_hint="书单",
         content_type_hint="book",
         options=CaptureOptions(allow_asset_download=False),
@@ -570,6 +605,7 @@ def test_capture_plan_merges_scanned_files_asset_mapping_into_field_mapping(tmp_
                         "author": "作者",
                         "publisher": "出版社",
                         "isbn": "ISBN",
+                        "page_count": "页数",
                     },
                     "mapping_warnings": [],
                     "schema": {
@@ -580,6 +616,7 @@ def test_capture_plan_merges_scanned_files_asset_mapping_into_field_mapping(tmp_
                         "作者": {"type": "relation", "target_database_id": "db-authors"},
                         "出版社": {"type": "rich_text"},
                         "ISBN": {"type": "rich_text"},
+                        "页数": {"type": "number"},
                     },
                 }
             },
@@ -595,7 +632,7 @@ def test_capture_plan_merges_scanned_files_asset_mapping_into_field_mapping(tmp_
     )
     capture = CaptureInput.from_dict(
         {
-            "raw_input": "把《可能性的艺术》初始化到书单",
+            "raw_input": "把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
             "target_hint": "书单",
             "state": "initialized",
             "content_type_hint": "book",
@@ -643,6 +680,7 @@ def test_capture_plan_uses_semantic_fields_from_scanned_target(tmp_path, monkeyp
                         "author": "作者",
                         "publisher": "出版社",
                         "isbn": "ISBN",
+                        "page_count": "页数",
                     },
                     "mapping_warnings": [],
                     "schema": {
@@ -652,6 +690,7 @@ def test_capture_plan_uses_semantic_fields_from_scanned_target(tmp_path, monkeyp
                         "作者": {"type": "relation", "target_database_id": "db-authors"},
                         "出版社": {"type": "rich_text"},
                         "ISBN": {"type": "rich_text"},
+                        "页数": {"type": "number"},
                     },
                 }
             },
@@ -664,7 +703,7 @@ def test_capture_plan_uses_semantic_fields_from_scanned_target(tmp_path, monkeyp
     )
     capture = CaptureInput.from_dict(
         {
-            "raw_input": "把《可能性的艺术》初始化到书单",
+            "raw_input": "把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
             "target_hint": "书单",
             "state": "initialized",
             "content_type_hint": "book",
@@ -678,7 +717,80 @@ def test_capture_plan_uses_semantic_fields_from_scanned_target(tmp_path, monkeyp
         "title": "书名",
         "state": "阅读进度",
         "cover": "封面图",
+        "author": "作者",
+        "isbn": "ISBN",
+        "page_count": "页数",
     }
+
+
+
+def test_book_capture_plan_maps_page_count_from_scanned_semantic_field(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "书单": {
+                    "type": "page",
+                    "page_id": "page-books",
+                    "target_id": "bookshelf",
+                }
+            }
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "bookshelf.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
+            "data_sources": {
+                "db-books": {
+                    "data_source_id": "db-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {
+                        "title": "书名",
+                        "state": "阅读进度",
+                        "cover": "封面图",
+                        "author": "作者",
+                        "isbn": "ISBN",
+                        "page_count": "页数",
+                    },
+                    "mapping_warnings": [],
+                    "schema": {
+                        "书名": {"type": "title"},
+                        "阅读进度": {"type": "status"},
+                        "封面图": {"type": "files"},
+                        "作者": {"type": "relation", "target_database_id": "db-authors"},
+                        "ISBN": {"type": "rich_text"},
+                        "页数": {"type": "number"},
+                    },
+                }
+            },
+            "relations": [],
+            "state_mapping": {"field": "阅读进度", "values": {}},
+            "asset_mapping": {"cover": {"field": "封面图", "type": "files", "strategy": "download_and_attach"}},
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+    capture = CaptureInput.from_dict(
+        {
+            "raw_input": "把《县乡中国》存到书单 作者：杨华 ISBN：9787301320939 页数：320",
+            "target_hint": "书单",
+            "state": "initialized",
+            "content_type_hint": "book",
+        }
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.normalized_record["page_count"] == 320
+    assert plan.field_mapping["page_count"] == "页数"
+    assert plan.summary["key_fields"]["page_count"] == {"target_field": "页数", "value_status": "present"}
 
 
 def test_book_capture_plan_requires_confirmation_for_minimal_schema(tmp_path, monkeypatch):
@@ -737,7 +849,7 @@ def test_book_capture_plan_requires_confirmation_for_minimal_schema(tmp_path, mo
     assert plan.confirmation_reason == "book_schema_incomplete"
     assert plan.operations == []
     assert plan.asset_operations == []
-    assert "book_schema_incomplete:cover,author,isbn,state" in plan.warnings
+    assert "book_schema_incomplete:cover,author,isbn,page_count,state" in plan.warnings
 
 
 def test_capture_plan_uses_primary_cover_field_over_stale_global_asset_mapping(tmp_path, monkeypatch):
@@ -781,6 +893,7 @@ def test_capture_plan_uses_primary_cover_field_over_stale_global_asset_mapping(t
                         "cover": "封面",
                         "author": "作者",
                         "isbn": "ISBN",
+                        "page_count": "页数",
                     },
                     "mapping_warnings": [],
                     "schema": {
@@ -789,6 +902,7 @@ def test_capture_plan_uses_primary_cover_field_over_stale_global_asset_mapping(t
                         "封面": {"type": "files"},
                         "作者": {"type": "relation", "target_database_id": "db-authors"},
                         "ISBN": {"type": "rich_text"},
+                        "页数": {"type": "number"},
                     },
                 },
             },
@@ -801,7 +915,7 @@ def test_capture_plan_uses_primary_cover_field_over_stale_global_asset_mapping(t
     )
     capture = CaptureInput.from_dict(
         {
-            "raw_input": "把《县乡中国》存到书单在读列表",
+            "raw_input": "把《县乡中国》存到书单在读列表 作者：杨华 ISBN：9787301320939 页数：320",
             "target_hint": "书单",
             "state": "initialized",
             "content_type_hint": "book",
@@ -848,6 +962,7 @@ def test_book_capture_plan_requires_confirmation_when_cover_field_is_generic_fil
                         "cover": "附件",
                         "author": "作者",
                         "isbn": "ISBN",
+                        "page_count": "页数",
                     },
                     "mapping_warnings": [],
                     "schema": {
@@ -856,6 +971,7 @@ def test_book_capture_plan_requires_confirmation_when_cover_field_is_generic_fil
                         "附件": {"type": "files"},
                         "作者": {"type": "relation", "target_database_id": "db-authors"},
                         "ISBN": {"type": "rich_text"},
+                        "页数": {"type": "number"},
                     },
                 }
             },
@@ -868,7 +984,7 @@ def test_book_capture_plan_requires_confirmation_when_cover_field_is_generic_fil
     )
     capture = CaptureInput.from_dict(
         {
-            "raw_input": "把《县乡中国》存到书单在读列表",
+            "raw_input": "把《县乡中国》存到书单在读列表 作者：杨华 ISBN：9787301320939 页数：320",
             "target_hint": "书单",
             "state": "initialized",
             "content_type_hint": "book",
@@ -918,6 +1034,7 @@ def test_capture_plan_preserves_scanned_confirmation_signal(tmp_path, monkeypatc
                         "author": "作者",
                         "publisher": "出版社",
                         "isbn": "ISBN",
+                        "page_count": "页数",
                     },
                     "mapping_warnings": ["ambiguous_field_mapping:tag:标签,分类"],
                     "schema": {
@@ -927,6 +1044,7 @@ def test_capture_plan_preserves_scanned_confirmation_signal(tmp_path, monkeypatc
                         "作者": {"type": "relation", "target_database_id": "db-authors"},
                         "出版社": {"type": "rich_text"},
                         "ISBN": {"type": "rich_text"},
+                        "页数": {"type": "number"},
                     },
                 }
             },
@@ -939,7 +1057,7 @@ def test_capture_plan_preserves_scanned_confirmation_signal(tmp_path, monkeypatc
     )
     capture = CaptureInput.from_dict(
         {
-            "raw_input": "把《可能性的艺术》初始化到书单",
+            "raw_input": "把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
             "target_hint": "书单",
             "state": "initialized",
             "content_type_hint": "book",
@@ -957,10 +1075,10 @@ def test_capture_plan_preserves_scanned_confirmation_signal(tmp_path, monkeypatc
         "title": "可能性的艺术",
         "state": "initialized",
         "cover": plan.normalized_record["cover"],
-        "author": None,
-        "isbn": None,
+        "author": "刘瑜",
+        "isbn": "9787559847357",
         "publisher": None,
-        "page_count": None,
+        "page_count": 400,
     }
     assert plan.normalized_record["cover"].startswith("https://example.com/capture-to-notion/covers/")
     assert plan.normalized_record["cover"].endswith(".jpg")
@@ -968,6 +1086,9 @@ def test_capture_plan_preserves_scanned_confirmation_signal(tmp_path, monkeypatc
         "title": "书名",
         "state": "阅读进度",
         "cover": "封面图",
+        "author": "作者",
+        "isbn": "ISBN",
+        "page_count": "页数",
     }
 
 

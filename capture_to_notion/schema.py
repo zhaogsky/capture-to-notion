@@ -84,6 +84,10 @@ SEMANTIC_FIELD_RULES = {
         "types": {"rich_text", "url"},
         "aliases": ["isbn", "ISBN"],
     },
+    "page_count": {
+        "types": {"number", "rich_text"},
+        "aliases": ["页数", "页码", "pages", "page count", "page_count"],
+    },
     "podcast": {
         "types": {"relation", "rich_text", "select"},
         "aliases": ["播客", "节目", "podcast", "show"],
