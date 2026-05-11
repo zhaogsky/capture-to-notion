@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Mapping
 
 import capture_to_notion
+import capture_to_notion.cli
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +63,35 @@ def test_version_does_not_create_config_files(tmp_path: Path) -> None:
 
 
 
+def test_version_does_not_initialize_notion_adapter_or_leak_secret(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    secret = "secret-token-value"
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("NOTION_TOKEN", secret)
+
+    def fail_from_config(config):
+        raise AssertionError(f"NotionAdapter.from_config should not run: {secret}")
+
+    monkeypatch.setattr(
+        capture_to_notion.cli.NotionAdapter,
+        "from_config",
+        fail_from_config,
+    )
+
+    result = capture_to_notion.cli.main(["version"])
+    captured = capsys.readouterr()
+
+    assert result == 0
+    data = json.loads(captured.out)
+    assert data["command"] == "capture-to-notion"
+    assert secret not in captured.out
+    assert secret not in captured.err
+
+
+
 def test_version_outputs_runtime_paths_without_secrets(tmp_path: Path) -> None:
     result = run_cli(["version"], tmp_path)
 
@@ -96,6 +126,95 @@ def test_doctor_reports_config_and_token_without_revealing_secret(tmp_path: Path
     assert data["checks"]["token"]["configured"] is True
     assert "secret-token-value" not in result.stdout
     assert result.stderr == ""
+
+
+
+def test_doctor_does_not_initialize_notion_adapter_or_leak_secret(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    secret = "secret-token-value"
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps({"notion_token": secret}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(config_dir))
+
+    def fail_from_config(config):
+        raise AssertionError(f"NotionAdapter.from_config should not run: {secret}")
+
+    monkeypatch.setattr(
+        capture_to_notion.cli.NotionAdapter,
+        "from_config",
+        fail_from_config,
+    )
+
+    result = capture_to_notion.cli.main(["doctor"])
+    captured = capsys.readouterr()
+
+    assert result == 0
+    data = json.loads(captured.out)
+    assert data["checks"]["token"]["configured"] is True
+    assert secret not in captured.out
+    assert secret not in captured.err
+
+
+def test_capture_apply_requires_confirmation_before_initializing_notion_adapter_or_leaking_secret(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    secret = "secret-token-value"
+    config_dir = tmp_path / "config"
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("NOTION_TOKEN", secret)
+
+    def fail_from_config(config):
+        raise AssertionError(f"NotionAdapter.from_config should not run: {secret}")
+
+    monkeypatch.setattr(
+        capture_to_notion.cli.NotionAdapter,
+        "from_config",
+        fail_from_config,
+    )
+
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "plan_id": "plan-test",
+                "content_type": "books",
+                "target": {
+                    "page_title": "Books",
+                    "page_id": "page-123",
+                    "data_source_id": "data-source-123",
+                    "confidence": "high",
+                    "source": "test",
+                },
+                "normalized_record": {"title": "Test Book"},
+                "field_mapping": {"title": "Name"},
+                "operations": [{"type": "upsert", "field": "title", "value": "Test Book"}],
+                "asset_operations": [],
+                "sources": [],
+                "warnings": [],
+                "requires_confirmation": True,
+                "confirmation_reason": "duplicate_target",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = capture_to_notion.cli.main(["capture", "apply", "--plan", str(plan_path)])
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert "计划需要确认后才能执行" in captured.err
+    assert secret not in captured.out
+    assert secret not in captured.err
 
 
 
