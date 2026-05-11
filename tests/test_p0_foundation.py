@@ -334,6 +334,8 @@ def test_readmes_document_p0_diagnostics_commands() -> None:
         text = path.read_text(encoding="utf-8")
         assert "capture-to-notion version" in text
         assert "capture-to-notion doctor" in text
+        assert "capture-to-notion target list" in text
+        assert "capture-to-notion target inspect" in text
         assert "CHANGELOG.md" in text
         assert fenced_legacy_command_pattern.search(text) is None
         assert shell_legacy_command_pattern.search(text) is None

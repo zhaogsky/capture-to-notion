@@ -63,6 +63,18 @@ Inspect local cache:
 capture-to-notion cache inspect
 ```
 
+List cached Notion targets without calling Notion:
+
+```bash
+capture-to-notion target list
+```
+
+Inspect one cached target by alias:
+
+```bash
+capture-to-notion target inspect --alias books
+```
+
 Search for a target page or database:
 
 ```bash

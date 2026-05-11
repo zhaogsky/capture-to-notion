@@ -63,6 +63,18 @@ capture-to-notion doctor
 capture-to-notion cache inspect
 ```
 
+查看本地缓存的 Notion 目标，不访问 Notion：
+
+```bash
+capture-to-notion target list
+```
+
+按 alias 查看一个本地缓存目标的结构：
+
+```bash
+capture-to-notion target inspect --alias books
+```
+
 搜索目标页面或数据库：
 
 ```bash
