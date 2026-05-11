@@ -113,6 +113,8 @@ def build_plan_field_mapping(
             continue
         if schema.get(target_field, {}).get("type") != "files":
             continue
+        if normalized_record.get(record_key) is None:
+            continue
         field_mapping.setdefault(record_key, target_field)
     return field_mapping
 

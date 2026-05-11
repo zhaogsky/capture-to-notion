@@ -6,7 +6,7 @@ import pytest
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import ensure_config
 from capture_to_notion.models import CaptureInput, CaptureOptions
-from capture_to_notion.planner import build_asset_operations, build_capture_plan, extract_labeled_value
+from capture_to_notion.planner import build_asset_operations, build_capture_plan, build_plan_field_mapping, extract_labeled_value
 
 
 def write_json(path, data):
@@ -114,6 +114,31 @@ def test_build_asset_operations_includes_non_cover_files_mapping(tmp_path, monke
     assert attachment_operation.source_url == "https://example.com/file.pdf"
     assert attachment_operation.target_field == "附件"
     assert attachment_operation.action == "download_and_attach"
+
+
+def test_build_plan_field_mapping_skips_empty_asset_record_fields():
+    field_mapping = build_plan_field_mapping(
+        normalized_record={
+            "title": "县乡中国",
+            "cover": "https://example.com/cover.jpg",
+            "empty_attachment": None,
+        },
+        fields={"title": "书名"},
+        schema={
+            "封面": {"type": "files"},
+            "附件": {"type": "files"},
+        },
+        asset_mapping={
+            "cover": {"field": "封面", "type": "files", "strategy": "download_and_attach"},
+            "empty_attachment": {"field": "附件", "type": "files", "strategy": "download_and_attach"},
+            "missing_attachment": {"field": "附件", "type": "files", "strategy": "download_and_attach"},
+        },
+    )
+
+    assert field_mapping == {
+        "title": "书名",
+        "cover": "封面",
+    }
 
 
 def test_builds_book_capture_plan_from_cached_target(tmp_path, monkeypatch):
@@ -455,7 +480,7 @@ def test_capture_plan_merges_scanned_files_asset_mapping_into_field_mapping(tmp_
 
     plan = build_capture_plan(capture, cache)
 
-    assert plan.field_mapping["附件"] == "附件"
+    assert "附件" not in plan.field_mapping
     assert plan.field_mapping["cover"] == "封面图"
     assert plan.field_mapping["title"] == "书名"
     assert plan.field_mapping["state"] == "阅读进度"
