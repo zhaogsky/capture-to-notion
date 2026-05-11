@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import capture_to_notion
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,7 +41,7 @@ def test_python_package_imports_from_current_package() -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout.strip() == "0.1.0"
+    assert result.stdout.strip() == capture_to_notion.__version__
 
 
 def test_runtime_files_do_not_reference_old_runtime_names() -> None:
