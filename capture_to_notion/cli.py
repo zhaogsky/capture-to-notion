@@ -102,6 +102,13 @@ def cmd_target_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _target_cache_error(cache: CacheStore, target_id: str) -> CliInputError:
+    status = cache.target_cache_status(target_id)
+    if status == "invalid_cache":
+        return CliInputError(f"target cache 无效: {target_id}")
+    return CliInputError(f"未找到 target cache: {target_id}")
+
+
 def cmd_target_inspect(args: argparse.Namespace) -> int:
     config = ensure_config()
     cache = CacheStore(config)
@@ -113,12 +120,11 @@ def cmd_target_inspect(args: argparse.Namespace) -> int:
                 raise CliInputError(f"未找到 target alias: {args.alias}")
             target_id = reference.get("target_id")
             if target_id:
-                status = cache.target_cache_status(target_id)
-                if status == "invalid_cache":
-                    raise CliInputError(f"target cache 无效: {target_id}")
-                raise CliInputError(f"未找到 target cache: {target_id}")
+                raise _target_cache_error(cache, target_id)
             raise CliInputError(f"未找到 target_id: {args.alias}")
-        raise CliInputError(f"未找到 target_id: {args.target_id}")
+        if args.target_id:
+            raise _target_cache_error(cache, args.target_id)
+        raise CliInputError("未找到 target_id")
     print_json(detail)
     return 0
 

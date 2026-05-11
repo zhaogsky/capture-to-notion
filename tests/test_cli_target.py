@@ -331,8 +331,7 @@ def test_target_inspect_existing_alias_missing_cache_reports_target_cache_error(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "未找到 target alias: books" not in captured.err
-    assert "bookshelf" in captured.err
-    assert "未找到 target cache" in captured.err or "未找到 target_id" in captured.err
+    assert "未找到 target cache: bookshelf" in captured.err
 
 
 def test_target_inspect_invalid_cache_reports_target_cache_error(tmp_path, monkeypatch, capsys):
@@ -359,8 +358,31 @@ def test_target_inspect_invalid_cache_reports_target_cache_error(tmp_path, monke
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "未找到 target alias: books" not in captured.err
-    assert "bookshelf" in captured.err
-    assert "target cache" in captured.err or "target_id" in captured.err
+    assert "target cache 无效: bookshelf" in captured.err
+
+
+def test_target_inspect_missing_target_id_cache_reports_target_cache_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+
+    result = cli.main(["target", "inspect", "--target-id", "bookshelf"])
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "未找到 target cache: bookshelf" in captured.err
+
+
+def test_target_inspect_invalid_target_id_cache_reports_target_cache_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    (tmp_path / "targets").mkdir(parents=True)
+    (tmp_path / "targets" / "bookshelf.json").write_text("{not json", encoding="utf-8")
+
+    result = cli.main(["target", "inspect", "--target-id", "bookshelf"])
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "target cache 无效: bookshelf" in captured.err
 
 
 def test_target_inspect_missing_alias_exits_with_readable_error(tmp_path, monkeypatch, capsys):
