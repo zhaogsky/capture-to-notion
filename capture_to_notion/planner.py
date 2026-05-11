@@ -33,6 +33,10 @@ KNOWN_METADATA_LABELS = [
     "链接",
     "url",
     "日期",
+    "发布日期",
+    "出版日期",
+    "发布时间",
+    "发布于",
     "published_at",
 ]
 METADATA_DELIMITER_PATTERN = r"[\s,，;；|｜]"
@@ -216,12 +220,12 @@ def build_plan_summary(
         "title": normalized_record.get("title"),
         "content_type": content_type,
         "state": normalized_record.get("state"),
-        "mapped_fields": field_mapping,
+        "mapped_fields": dict(field_mapping),
         "key_fields": key_fields,
         "asset_actions": [_asset_summary(operation) for operation in asset_operations],
         "requires_confirmation": requires_confirmation,
         "confirmation_reason": confirmation_reason,
-        "warnings": warnings,
+        "warnings": list(warnings),
     }
 
 

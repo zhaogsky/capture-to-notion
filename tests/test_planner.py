@@ -6,7 +6,13 @@ import pytest
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import ensure_config
 from capture_to_notion.models import CaptureInput, CaptureOptions, Target, WritePlan
-from capture_to_notion.planner import build_asset_operations, build_capture_plan, build_plan_field_mapping, extract_labeled_value
+from capture_to_notion.planner import (
+    build_asset_operations,
+    build_capture_plan,
+    build_plan_field_mapping,
+    build_plan_summary,
+    extract_labeled_value,
+)
 
 
 def write_json(path, data):
@@ -210,6 +216,31 @@ def test_builds_book_capture_plan_from_cached_target(tmp_path, monkeypatch):
     assert plan.requires_confirmation is False
 
 
+
+def test_build_plan_summary_snapshots_mapped_fields_and_warnings():
+    field_mapping = {"title": "名称"}
+    warnings = ["needs_review"]
+
+    summary = build_plan_summary(
+        content_type="book",
+        target_page="书单",
+        target_data_source="Books",
+        normalized_record={"title": "可能性的艺术", "state": "initialized"},
+        field_mapping=field_mapping,
+        schema_fields={"cover": "封面", "author": "作者", "isbn": "ISBN", "page_count": "页数"},
+        asset_operations=[],
+        requires_confirmation=False,
+        confirmation_reason=None,
+        warnings=warnings,
+    )
+
+    field_mapping["author"] = "作者"
+    warnings.append("another_warning")
+
+    assert summary["mapped_fields"] == {"title": "名称"}
+    assert summary["warnings"] == ["needs_review"]
+
+
 def test_book_labeled_author_populates_normalized_record_and_mapping(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -341,6 +372,11 @@ def test_podcast_labeled_podcast_populates_normalized_record_and_mapping(tmp_pat
 def test_extract_labeled_podcast_supports_english_and_program_labels():
     assert extract_labeled_value("podcast: Acquired", ["播客", "podcast", "节目"]) == "Acquired"
     assert extract_labeled_value("节目：忽左忽右", ["播客", "podcast", "节目"]) == "忽左忽右"
+
+
+def test_extract_labeled_podcast_stops_before_chinese_date_labels():
+    assert extract_labeled_value("播客：忽左忽右 发布日期：2026-05-10", ["播客", "podcast", "节目"]) == "忽左忽右"
+    assert extract_labeled_value("节目：忽左忽右 发布于：2026-05-10", ["播客", "podcast", "节目"]) == "忽左忽右"
 
 
 @pytest.mark.parametrize(
