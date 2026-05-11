@@ -104,7 +104,7 @@ def build_plan_field_mapping(
     schema: dict[str, Any],
     asset_mapping: dict[str, Any],
 ) -> dict[str, str]:
-    field_mapping = {k: v for k, v in fields.items() if k in normalized_record}
+    field_mapping = {k: v for k, v in fields.items() if normalized_record.get(k) is not None}
     for record_key, mapping in asset_mapping.items():
         if not isinstance(mapping, dict):
             continue

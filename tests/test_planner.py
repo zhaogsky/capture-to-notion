@@ -529,9 +529,6 @@ def test_capture_plan_uses_semantic_fields_from_scanned_target(tmp_path, monkeyp
         "title": "书名",
         "state": "阅读进度",
         "cover": "封面图",
-        "author": "作者",
-        "publisher": "出版社",
-        "isbn": "ISBN",
     }
 
 
@@ -821,9 +818,6 @@ def test_capture_plan_preserves_scanned_confirmation_signal(tmp_path, monkeypatc
         "title": "书名",
         "state": "阅读进度",
         "cover": "封面图",
-        "author": "作者",
-        "publisher": "出版社",
-        "isbn": "ISBN",
     }
 
 
