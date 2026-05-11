@@ -30,6 +30,8 @@ def seed_cached_books_target(root):
                 "page_id": "page-books",
                 "title": "Bookshelf",
                 "verified_at": "2026-05-11T00:00:00Z",
+                "target_id": "raw-target-id",
+                "workspace": "private",
             },
             "data_sources": {
                 "books": {

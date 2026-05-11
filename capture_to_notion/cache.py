@@ -183,6 +183,14 @@ class CacheStore:
         if reference is not None:
             resolved_alias = reference["alias"]
 
+        raw_target = structure.get("target")
+        target: dict[str, Any] = {}
+        if isinstance(raw_target, dict):
+            for field in ("page_id", "title", "verified_at"):
+                value = raw_target.get(field)
+                if value is not None:
+                    target[field] = value
+
         raw_data_sources = structure.get("data_sources", {})
         data_sources: list[dict[str, Any]] = []
         if isinstance(raw_data_sources, dict):
@@ -205,7 +213,7 @@ class CacheStore:
             "alias": resolved_alias,
             "target_id": target_id,
             "target_file": str(self.config.targets_dir / f"{target_id}.json"),
-            "target": structure.get("target"),
+            "target": target,
             "data_sources": data_sources,
             "state_mapping": structure.get("state_mapping"),
             "asset_mapping": structure.get("asset_mapping"),
