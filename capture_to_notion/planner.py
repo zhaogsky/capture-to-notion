@@ -25,6 +25,9 @@ KNOWN_METADATA_LABELS = [
     "isbn",
     "出版社",
     "publisher",
+    "页数",
+    "pages",
+    "page_count",
     "标题",
     "title",
     "链接",
@@ -62,6 +65,16 @@ def extract_book_title(raw_input: str) -> str:
     if label_suffix:
         return raw_input[: label_suffix.start()].strip()
     return raw_input.strip()
+
+
+def extract_page_count(raw_input: str) -> int | None:
+    value = extract_labeled_value(raw_input, ["页数", "pages", "page_count"])
+    if not value:
+        return None
+    match = re.search(r"\d+", value)
+    if not match:
+        return None
+    return int(match.group(0))
 
 
 def default_cover_url(content_type: str, title: str) -> str | None:
@@ -160,6 +173,59 @@ def build_asset_operations(
     return operations
 
 
+def _value_status(value: Any) -> str:
+    if value in (None, "", [], {}):
+        return "missing_value"
+    return "present"
+
+
+
+def _asset_summary(operation: AssetOperation) -> dict[str, str | None]:
+    return {
+        "record_key": operation.record_key,
+        "target_field": operation.target_field,
+        "action": operation.action,
+    }
+
+
+
+def build_plan_summary(
+    *,
+    content_type: str,
+    target_page: str | None,
+    target_data_source: str | None,
+    normalized_record: dict[str, Any],
+    field_mapping: dict[str, str],
+    schema_fields: dict[str, str],
+    asset_operations: list[AssetOperation],
+    requires_confirmation: bool,
+    confirmation_reason: str | None,
+    warnings: list[str],
+) -> dict[str, Any]:
+    key_fields: dict[str, dict[str, str | None]] = {}
+    if content_type == "book":
+        for key in ["cover", "author", "isbn", "page_count"]:
+            key_fields[key] = {
+                "target_field": field_mapping.get(key) or schema_fields.get(key),
+                "value_status": _value_status(normalized_record.get(key)),
+            }
+
+    return {
+        "target_page": target_page,
+        "target_data_source": target_data_source,
+        "title": normalized_record.get("title"),
+        "content_type": content_type,
+        "state": normalized_record.get("state"),
+        "mapped_fields": field_mapping,
+        "key_fields": key_fields,
+        "asset_actions": [_asset_summary(operation) for operation in asset_operations],
+        "requires_confirmation": requires_confirmation,
+        "confirmation_reason": confirmation_reason,
+        "warnings": warnings,
+    }
+
+
+
 def missing_required_fields(content_type: str, fields: dict[str, str], schema: dict[str, Any] | None = None) -> list[str]:
     if content_type != "book":
         return []
@@ -174,17 +240,30 @@ def missing_required_fields(content_type: str, fields: dict[str, str], schema: d
 
 def unresolved_plan(capture: CaptureInput, content_type: str, reason: str) -> WritePlan:
     title = extract_book_title(capture.raw_input)
+    normalized_record = {"title": title, "state": normalize_state(capture.state)}
+    warnings = ["目标页面未解析，需要先选择或确认存储页面。"]
     return WritePlan(
         plan_id=plan_id_for(capture),
         content_type=content_type,
         target=Target(page_title=None, page_id=None, data_source_id=None, confidence="none", source="unresolved"),
-        summary={},
-        normalized_record={"title": title, "state": normalize_state(capture.state)},
+        summary=build_plan_summary(
+            content_type=content_type,
+            target_page=None,
+            target_data_source=None,
+            normalized_record=normalized_record,
+            field_mapping={},
+            schema_fields={},
+            asset_operations=[],
+            requires_confirmation=True,
+            confirmation_reason=reason,
+            warnings=warnings,
+        ),
+        normalized_record=normalized_record,
         field_mapping={},
         operations=[],
         asset_operations=[],
         sources=[],
-        warnings=["目标页面未解析，需要先选择或确认存储页面。"],
+        warnings=warnings,
         requires_confirmation=True,
         confirmation_reason=reason,
     )
@@ -218,8 +297,9 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         normalized_record.update(
             {
                 "author": extract_labeled_value(capture.raw_input, ["作者", "author"]),
-                "isbn": None,
-                "publisher": None,
+                "isbn": extract_labeled_value(capture.raw_input, ["ISBN", "isbn"]),
+                "publisher": extract_labeled_value(capture.raw_input, ["出版社", "publisher"]),
+                "page_count": extract_page_count(capture.raw_input),
             }
         )
     if content_type == "podcast_episode":
@@ -246,6 +326,12 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     cover_field = fields.get("cover")
     if cover_field and data_source_schema.get(cover_field, {}).get("type") == "files":
         asset_mapping["cover"] = {"field": cover_field, "type": "files", "strategy": "download_and_attach"}
+    field_mapping = build_plan_field_mapping(
+        normalized_record,
+        fields,
+        data_source.get("schema", {}),
+        asset_mapping,
+    )
     asset_operations = build_asset_operations(
         cache.config,
         content_type,
@@ -253,6 +339,18 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         asset_mapping,
         capture.options.allow_asset_download,
     )
+    operations = (
+        []
+        if requires_confirmation
+        else [
+            {
+                "type": "create_or_update_page",
+                "target_data_source": data_source.get("title"),
+                "data_source_id": data_source.get("data_source_id"),
+            }
+        ]
+    )
+    planned_asset_operations = [] if requires_confirmation else asset_operations
 
     plan = WritePlan(
         plan_id=plan_id_for(capture),
@@ -264,26 +362,22 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
             confidence="high",
             source="alias_cache",
         ),
-        summary={},
+        summary=build_plan_summary(
+            content_type=content_type,
+            target_page=structure.get("target", {}).get("title"),
+            target_data_source=data_source.get("title"),
+            normalized_record=normalized_record,
+            field_mapping=field_mapping,
+            schema_fields=fields,
+            asset_operations=asset_operations,
+            requires_confirmation=requires_confirmation,
+            confirmation_reason=confirmation_reason,
+            warnings=warnings,
+        ),
         normalized_record=normalized_record,
-        field_mapping=build_plan_field_mapping(
-            normalized_record,
-            fields,
-            data_source.get("schema", {}),
-            asset_mapping,
-        ),
-        operations=(
-            []
-            if requires_confirmation
-            else [
-                {
-                    "type": "create_or_update_page",
-                    "target_data_source": data_source.get("title"),
-                    "data_source_id": data_source.get("data_source_id"),
-                }
-            ]
-        ),
-        asset_operations=[] if requires_confirmation else asset_operations,
+        field_mapping=field_mapping,
+        operations=operations,
+        asset_operations=planned_asset_operations,
         sources=[{"title": "Phase 1 placeholder enrichment source", "url": cover_url or ""}],
         warnings=warnings,
         requires_confirmation=requires_confirmation,

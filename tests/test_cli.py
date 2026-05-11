@@ -45,6 +45,7 @@ def seed_book_target(tmp_path):
                         "author": "作者",
                         "isbn": "ISBN",
                         "publisher": "出版社",
+                        "page_count": "页数",
                         "state": "阅读状态",
                         "cover": "封面",
                     },
@@ -116,6 +117,31 @@ def test_capture_plan_stdout_outputs_valid_json(tmp_path):
     data = json.loads(result.stdout)
     assert data["content_type"] == "book"
     assert data["target"]["data_source_id"] == "ds-books"
+
+
+def test_capture_plan_stdout_includes_review_summary(tmp_path):
+    seed_book_target(tmp_path)
+    input_file = tmp_path / "capture.json"
+    write_json(
+        input_file,
+        {
+            "raw_input": "把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+            "target_hint": "书单",
+            "state": "想读",
+            "content_type_hint": "book",
+        },
+    )
+
+    result = run_cli(["capture", "plan", "--input", str(input_file)], tmp_path)
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["summary"]["target_page"] == "书单"
+    assert data["summary"]["target_data_source"] == "Books"
+    assert data["summary"]["state"] == "initialized"
+    assert data["summary"]["mapped_fields"]["cover"] == "封面"
+    assert data["summary"]["key_fields"]["isbn"] == {"target_field": "ISBN", "value_status": "present"}
+
 
 
 def test_capture_plan_output_writes_utf8_json_and_prints_stdout(tmp_path):

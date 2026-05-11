@@ -43,6 +43,7 @@ def seed_book_target(config):
                         "author": "作者",
                         "isbn": "ISBN",
                         "publisher": "出版社",
+                        "page_count": "页数",
                         "state": "阅读状态",
                         "cover": "封面"
                     },
@@ -227,6 +228,51 @@ def test_book_labeled_author_populates_normalized_record_and_mapping(tmp_path, m
     assert plan.normalized_record["title"] == "可能性的艺术"
     assert plan.normalized_record["author"] == "刘瑜"
     assert plan.field_mapping["author"] == "作者"
+
+
+def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_book_target(config)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.summary == {
+        "target_page": "书单",
+        "target_data_source": "Books",
+        "title": "可能性的艺术",
+        "content_type": "book",
+        "state": "initialized",
+        "mapped_fields": {
+            "title": "名称",
+            "state": "阅读状态",
+            "cover": "封面",
+            "author": "作者",
+            "isbn": "ISBN",
+            "page_count": "页数",
+        },
+        "key_fields": {
+            "cover": {"target_field": "封面", "value_status": "present"},
+            "author": {"target_field": "作者", "value_status": "present"},
+            "isbn": {"target_field": "ISBN", "value_status": "present"},
+            "page_count": {"target_field": "页数", "value_status": "present"},
+        },
+        "asset_actions": [
+            {"record_key": "cover", "target_field": "封面", "action": "download_and_attach"}
+        ],
+        "requires_confirmation": False,
+        "confirmation_reason": None,
+        "warnings": [],
+    }
+
 
 
 def test_book_without_labeled_author_keeps_none(tmp_path, monkeypatch):
@@ -878,6 +924,7 @@ def test_capture_plan_preserves_scanned_confirmation_signal(tmp_path, monkeypatc
         "author": None,
         "isbn": None,
         "publisher": None,
+        "page_count": None,
     }
     assert plan.normalized_record["cover"].startswith("https://example.com/capture-to-notion/covers/")
     assert plan.normalized_record["cover"].endswith(".jpg")
