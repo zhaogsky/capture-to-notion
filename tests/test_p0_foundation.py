@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -270,14 +271,31 @@ def test_readmes_document_p0_diagnostics_commands() -> None:
         PROJECT_ROOT / "README.md",
         PROJECT_ROOT / "README.zh-CN.md",
     ]
+    forbidden_inline_commands = [
+        "notion-skill version",
+        "notion-skill doctor",
+        "notion-skill capture",
+        "notion-skill target",
+        "notion-skill cache",
+        "notion-capture version",
+        "notion-capture doctor",
+        "notion-capture capture",
+        "notion-capture target",
+        "notion-capture cache",
+    ]
+    fenced_or_shell_command_pattern = re.compile(
+        r"```(?:[a-zA-Z0-9_+-]+)?\\n[\\s\\S]*?^(?:\\$\\s*)?(notion-(?:skill|capture))\\b",
+        re.MULTILINE,
+    )
 
     for path in readme_paths:
         text = path.read_text(encoding="utf-8")
         assert "capture-to-notion version" in text
         assert "capture-to-notion doctor" in text
         assert "CHANGELOG.md" in text
-        assert "notion-skill" not in text
-        assert "notion-capture" not in text
+        for command in forbidden_inline_commands:
+            assert command not in text
+        assert fenced_or_shell_command_pattern.search(text) is None
 
 
 
