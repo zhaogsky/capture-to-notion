@@ -41,13 +41,27 @@ class CacheStore:
             return None
         return self.aliases().get(name)
 
+    def _read_target_cache(self, target_id: str) -> tuple[dict[str, Any] | None, str]:
+        path = self.config.targets_dir / f"{target_id}.json"
+        if not path.exists():
+            return None, "missing_cache"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None, "invalid_cache"
+        if not isinstance(data, dict):
+            return None, "invalid_cache"
+        return data, "cached"
+
     def target_structure(self, target_id: str | None) -> dict[str, Any] | None:
         if not target_id:
             return None
-        path = self.config.targets_dir / f"{target_id}.json"
-        if not path.exists():
+        structure, status = self._read_target_cache(target_id)
+        if status == "missing_cache":
             return None
-        return self.read_json(path, {})
+        if status == "invalid_cache":
+            return {}
+        return structure
 
     def target_structure_for_data_source(self, data_source_id: str | None) -> dict[str, Any] | None:
         if not data_source_id:
@@ -68,7 +82,10 @@ class CacheStore:
             if not isinstance(alias, dict):
                 continue
             target_id = alias.get("target_id")
-            structure = self.target_structure(target_id) if isinstance(target_id, str) else None
+            if isinstance(target_id, str):
+                structure, status = self._read_target_cache(target_id)
+            else:
+                structure, status = None, "missing_cache"
             if structure is None:
                 summaries.append(
                     {
@@ -80,7 +97,7 @@ class CacheStore:
                         "data_sources": [],
                         "content_types": [],
                         "verified_at": None,
-                        "status": "missing_cache",
+                        "status": status,
                     }
                 )
                 continue
@@ -94,9 +111,11 @@ class CacheStore:
                     title = data_source.get("title")
                     if isinstance(title, str):
                         source_titles.append(title)
-                    for content_type in data_source.get("content_types", []):
-                        if isinstance(content_type, str):
-                            content_types.add(content_type)
+                    raw_content_types = data_source.get("content_types", [])
+                    if isinstance(raw_content_types, (list, tuple, set)):
+                        for content_type in raw_content_types:
+                            if isinstance(content_type, str):
+                                content_types.add(content_type)
             target = structure.get("target", {}) if isinstance(structure.get("target"), dict) else {}
             summaries.append(
                 {

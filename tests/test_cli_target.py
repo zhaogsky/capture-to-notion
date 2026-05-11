@@ -221,6 +221,144 @@ def test_target_list_outputs_cached_targets_without_notion_adapter(tmp_path, mon
     }
 
 
+def test_target_list_handles_mixed_invalid_cache_entries(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(
+        tmp_path / "aliases.json",
+        {
+            "aliases": {
+                "bad-json": {
+                    "type": "page",
+                    "page_id": "page-bad-json",
+                    "description": "Invalid JSON cache",
+                    "target_id": "bad-json",
+                },
+                "missing": {
+                    "type": "page",
+                    "page_id": "page-missing",
+                    "description": "Missing target cache",
+                    "target_id": "missing-cache",
+                },
+                "no-target-id": {
+                    "type": "page",
+                    "page_id": "page-no-target-id",
+                    "description": "No target id",
+                },
+                "non-dict-alias": "skip me",
+                "numeric-target-id": {
+                    "type": "page",
+                    "page_id": "page-numeric-target-id",
+                    "description": "Numeric target id",
+                    "target_id": 123,
+                },
+                "valid-weird": {
+                    "type": "page",
+                    "page_id": "page-valid-weird-alias",
+                    "description": "Malformed content types are ignored",
+                    "target_id": "valid-weird",
+                },
+            }
+        },
+    )
+    (tmp_path / "targets").mkdir(parents=True)
+    (tmp_path / "targets" / "bad-json.json").write_text("{not json", encoding="utf-8")
+    write_json(
+        tmp_path / "targets" / "valid-weird.json",
+        {
+            "target": {
+                "page_id": "page-valid-weird-cache",
+                "title": "Valid Weird",
+                "verified_at": "2026-05-11T00:00:00Z",
+            },
+            "data_sources": {
+                "string": {"title": "String Source", "content_types": "book"},
+                "none": {"title": "None Source", "content_types": None},
+                "number": {"title": "Number Source", "content_types": 42},
+                "dict": {"title": "Dict Source", "content_types": {"type": "book"}},
+                "mixed": {"title": "Mixed Source", "content_types": ["article", 7, None, "book"]},
+                "tuple": {"title": "Tuple Source", "content_types": ("video", 9)},
+            },
+        },
+    )
+
+    def fail_from_config(cls, config):
+        raise AssertionError("target list must read local cache only")
+
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(fail_from_config))
+
+    result = cli.main(["target", "list"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data == {
+        "count": 5,
+        "targets": [
+            {
+                "alias": "bad-json",
+                "target_id": "bad-json",
+                "page_id": "page-bad-json",
+                "title": None,
+                "description": "Invalid JSON cache",
+                "data_sources": [],
+                "content_types": [],
+                "verified_at": None,
+                "status": "invalid_cache",
+            },
+            {
+                "alias": "missing",
+                "target_id": "missing-cache",
+                "page_id": "page-missing",
+                "title": None,
+                "description": "Missing target cache",
+                "data_sources": [],
+                "content_types": [],
+                "verified_at": None,
+                "status": "missing_cache",
+            },
+            {
+                "alias": "no-target-id",
+                "target_id": None,
+                "page_id": "page-no-target-id",
+                "title": None,
+                "description": "No target id",
+                "data_sources": [],
+                "content_types": [],
+                "verified_at": None,
+                "status": "missing_cache",
+            },
+            {
+                "alias": "numeric-target-id",
+                "target_id": 123,
+                "page_id": "page-numeric-target-id",
+                "title": None,
+                "description": "Numeric target id",
+                "data_sources": [],
+                "content_types": [],
+                "verified_at": None,
+                "status": "missing_cache",
+            },
+            {
+                "alias": "valid-weird",
+                "target_id": "valid-weird",
+                "page_id": "page-valid-weird-alias",
+                "title": "Valid Weird",
+                "description": "Malformed content types are ignored",
+                "data_sources": [
+                    "String Source",
+                    "None Source",
+                    "Number Source",
+                    "Dict Source",
+                    "Mixed Source",
+                    "Tuple Source",
+                ],
+                "content_types": ["article", "book", "video"],
+                "verified_at": "2026-05-11T00:00:00Z",
+                "status": "cached",
+            },
+        ],
+    }
+
+
 def test_target_search_notion_error_exits_nonzero_with_readable_stderr(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
 
