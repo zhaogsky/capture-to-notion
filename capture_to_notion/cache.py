@@ -132,6 +132,56 @@ class CacheStore:
             )
         return summaries
 
+    def target_detail(self, alias_name: str | None = None, target_id: str | None = None) -> dict[str, Any] | None:
+        aliases = self.aliases()
+        resolved_alias = alias_name
+        if alias_name:
+            alias = aliases.get(alias_name)
+            if not isinstance(alias, dict):
+                return None
+            target_id = alias.get("target_id")
+        else:
+            for candidate_alias, alias in sorted(aliases.items()):
+                if isinstance(alias, dict) and alias.get("target_id") == target_id:
+                    resolved_alias = candidate_alias
+                    break
+
+        if not isinstance(target_id, str):
+            return None
+
+        structure, status = self._read_target_cache(target_id)
+        if structure is None:
+            return None
+
+        raw_data_sources = structure.get("data_sources", {})
+        data_sources: list[dict[str, Any]] = []
+        if isinstance(raw_data_sources, dict):
+            for key, data_source in sorted(raw_data_sources.items()):
+                if not isinstance(data_source, dict):
+                    continue
+                data_sources.append(
+                    {
+                        "key": key,
+                        "data_source_id": data_source.get("data_source_id"),
+                        "title": data_source.get("title"),
+                        "role": data_source.get("role"),
+                        "content_types": data_source.get("content_types"),
+                        "schema_hash": data_source.get("schema_hash"),
+                        "fields": data_source.get("fields"),
+                    }
+                )
+
+        return {
+            "alias": resolved_alias,
+            "target_id": target_id,
+            "target_file": str(self.config.targets_dir / f"{target_id}.json"),
+            "target": structure.get("target"),
+            "data_sources": data_sources,
+            "state_mapping": structure.get("state_mapping"),
+            "asset_mapping": structure.get("asset_mapping"),
+            "status": status,
+        }
+
     def save_plan(self, plan_id: str, data: dict[str, Any]) -> Path:
         path = self.config.plans_dir / f"{plan_id}.json"
         self.write_json(path, data)

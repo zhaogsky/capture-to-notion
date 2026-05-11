@@ -221,6 +221,61 @@ def test_target_list_outputs_cached_targets_without_notion_adapter(tmp_path, mon
     }
 
 
+def test_target_inspect_outputs_cached_target_details_without_notion_adapter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    seed_cached_books_target(tmp_path)
+
+    def fail_from_config(cls, config):
+        raise AssertionError("target inspect must read local cache only")
+
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(fail_from_config))
+
+    result = cli.main(["target", "inspect", "--alias", "books"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data == {
+        "alias": "books",
+        "target_id": "bookshelf",
+        "target_file": str(tmp_path / "targets" / "bookshelf.json"),
+        "target": {
+            "page_id": "page-books",
+            "title": "Bookshelf",
+            "verified_at": "2026-05-11T00:00:00Z",
+        },
+        "data_sources": [
+            {
+                "key": "books",
+                "data_source_id": "ds-books",
+                "title": "Books",
+                "role": "primary",
+                "content_types": ["book"],
+                "schema_hash": "abc123",
+                "fields": {
+                    "title": "Name",
+                    "author": "Author",
+                    "state": "Status",
+                    "cover": "Cover",
+                },
+            }
+        ],
+        "state_mapping": {"field": "Status", "values": {"initialized": "Want to read", "completed": "Read"}},
+        "asset_mapping": {"cover": {"field": "Cover", "type": "files", "strategy": "download_and_attach"}},
+        "status": "cached",
+    }
+
+
+def test_target_inspect_missing_alias_exits_with_readable_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+
+    result = cli.main(["target", "inspect", "--alias", "missing"])
+
+    assert result == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "未找到 target alias: missing" in captured.err
+
+
 def test_target_list_handles_mixed_invalid_cache_entries(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     write_json(

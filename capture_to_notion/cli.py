@@ -102,6 +102,18 @@ def cmd_target_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_target_inspect(args: argparse.Namespace) -> int:
+    config = ensure_config()
+    cache = CacheStore(config)
+    detail = cache.target_detail(alias_name=args.alias, target_id=args.target_id)
+    if detail is None:
+        if args.alias:
+            raise CliInputError(f"未找到 target alias: {args.alias}")
+        raise CliInputError(f"未找到 target_id: {args.target_id}")
+    print_json(detail)
+    return 0
+
+
 def duplicate_title_groups(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for result in results:
@@ -206,6 +218,11 @@ def build_parser() -> argparse.ArgumentParser:
     target_suggest.set_defaults(func=cmd_target_suggest)
     target_list = target_subparsers.add_parser("list")
     target_list.set_defaults(func=cmd_target_list)
+    target_inspect = target_subparsers.add_parser("inspect")
+    target_inspect_group = target_inspect.add_mutually_exclusive_group(required=True)
+    target_inspect_group.add_argument("--alias")
+    target_inspect_group.add_argument("--target-id")
+    target_inspect.set_defaults(func=cmd_target_inspect)
     target_search = target_subparsers.add_parser("search")
     target_search.add_argument("--query", required=True)
     target_search.set_defaults(func=cmd_target_search)
