@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Mapping
 
 import capture_to_notion
 
@@ -12,9 +13,15 @@ import capture_to_notion
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_cli(args: list[str], tmp_path: Path) -> subprocess.CompletedProcess[str]:
+def run_cli(
+    args: list[str],
+    tmp_path: Path,
+    extra_env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["CAPTURE_TO_NOTION_CONFIG_DIR"] = str(tmp_path / "config")
+    if extra_env:
+        env.update(extra_env)
     return subprocess.run(
         [sys.executable, "-m", "capture_to_notion.cli", *args],
         cwd=PROJECT_ROOT,
@@ -66,6 +73,51 @@ def test_version_outputs_runtime_paths_without_secrets(tmp_path: Path) -> None:
     assert data["config_root"] == str(tmp_path / "config")
     assert data["skill_path"].endswith("capture-to-notion")
     assert "token" not in result.stdout.lower()
+
+
+def test_doctor_reports_config_and_token_without_revealing_secret(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps({"notion_token": "secret-token-value"}),
+        encoding="utf-8",
+    )
+
+    result = run_cli(["doctor"], tmp_path)
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["command"] == "capture-to-notion"
+    assert data["version"] == capture_to_notion.__version__
+    assert data["package"] == "capture_to_notion"
+    assert data["config_root"] == str(config_dir)
+    assert data["checks"]["config_root"]["path"] == str(config_dir)
+    assert data["checks"]["config_file"]["exists"] is True
+    assert data["checks"]["token"]["configured"] is True
+    assert "secret-token-value" not in result.stdout
+    assert result.stderr == ""
+
+
+
+def test_doctor_warns_when_legacy_config_dir_exists(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps({"notion_token": "secret-token-value"}),
+        encoding="utf-8",
+    )
+    fake_home = tmp_path / "home"
+    legacy_dir = fake_home / ".config" / "notion-skill"
+    legacy_dir.mkdir(parents=True)
+
+    result = run_cli(["doctor"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["checks"]["legacy_config_dir"]["exists"] is True
+    assert data["checks"]["legacy_config_dir"]["path"] == str(legacy_dir)
+    assert "secret-token-value" not in result.stdout
+
 
 
 def test_runtime_files_do_not_reference_old_runtime_names() -> None:
