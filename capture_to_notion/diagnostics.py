@@ -48,27 +48,22 @@ def _load_json_file(path: Path) -> dict[str, Any] | None:
 
 
 def _token_configured(config_data: dict[str, Any] | None) -> bool:
-    if not config_data:
-        return False
-
-    direct_token = config_data.get("notion_token")
-    if isinstance(direct_token, str) and direct_token.strip():
-        return True
-
-    notion = config_data.get("notion")
-    if not isinstance(notion, dict):
-        return False
-
-    auth = notion.get("auth")
-    if not isinstance(auth, dict):
-        return False
+    auth: dict[str, Any] = {}
+    if config_data:
+        notion = config_data.get("notion")
+        if isinstance(notion, dict):
+            auth_data = notion.get("auth")
+            if isinstance(auth_data, dict):
+                auth = auth_data
 
     token = auth.get("token")
     if isinstance(token, str) and token.strip():
         return True
 
-    env_token_name = auth.get("env_token_name")
-    return isinstance(env_token_name, str) and bool(os.environ.get(env_token_name))
+    env_token_name = auth.get("env_token_name", "NOTION_TOKEN")
+    if not isinstance(env_token_name, str) or not env_token_name.strip():
+        env_token_name = "NOTION_TOKEN"
+    return bool(os.environ.get(env_token_name))
 
 
 

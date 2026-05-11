@@ -106,11 +106,11 @@ def test_version_outputs_runtime_paths_without_secrets(tmp_path: Path) -> None:
     assert "token" not in result.stdout.lower()
 
 
-def test_doctor_reports_config_and_token_without_revealing_secret(tmp_path: Path) -> None:
+def test_doctor_reports_nested_config_token_without_revealing_secret(tmp_path: Path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True)
     (config_dir / "config.json").write_text(
-        json.dumps({"notion_token": "secret-token-value"}),
+        json.dumps({"notion": {"auth": {"token": "secret-token-value"}}}),
         encoding="utf-8",
     )
 
@@ -124,10 +124,39 @@ def test_doctor_reports_config_and_token_without_revealing_secret(tmp_path: Path
     assert data["config_root"] == str(config_dir)
     assert data["checks"]["config_root"]["path"] == str(config_dir)
     assert data["checks"]["config_file"]["exists"] is True
+    assert data["checks"]["config_file"]["valid_json"] is True
     assert data["checks"]["token"]["configured"] is True
     assert "secret-token-value" not in result.stdout
     assert result.stderr == ""
 
+
+def test_doctor_reports_default_notion_token_env_without_revealing_secret(tmp_path: Path) -> None:
+    result = run_cli(["doctor"], tmp_path, extra_env={"NOTION_TOKEN": "secret-token-value"})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["checks"]["config_file"]["exists"] is False
+    assert data["checks"]["config_file"]["valid_json"] is False
+    assert data["checks"]["token"]["configured"] is True
+    assert "secret-token-value" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_doctor_does_not_accept_legacy_top_level_notion_token(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps({"notion_token": "secret-token-value"}),
+        encoding="utf-8",
+    )
+
+    result = run_cli(["doctor"], tmp_path)
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["checks"]["token"]["configured"] is False
+    assert "secret-token-value" not in result.stdout
+    assert result.stderr == ""
 
 
 def test_doctor_does_not_initialize_notion_adapter_or_leak_secret(
@@ -139,7 +168,7 @@ def test_doctor_does_not_initialize_notion_adapter_or_leak_secret(
     config_dir = tmp_path / "config"
     config_dir.mkdir(parents=True)
     (config_dir / "config.json").write_text(
-        json.dumps({"notion_token": secret}),
+        json.dumps({"notion": {"auth": {"token": secret}}}),
         encoding="utf-8",
     )
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(config_dir))
