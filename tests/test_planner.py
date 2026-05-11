@@ -5,7 +5,7 @@ import pytest
 
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import ensure_config
-from capture_to_notion.models import CaptureInput, CaptureOptions
+from capture_to_notion.models import CaptureInput, CaptureOptions, Target, WritePlan
 from capture_to_notion.planner import build_asset_operations, build_capture_plan, build_plan_field_mapping, extract_labeled_value
 
 
@@ -139,6 +139,48 @@ def test_build_plan_field_mapping_skips_empty_asset_record_fields():
         "title": "书名",
         "cover": "封面",
     }
+
+
+
+def test_write_plan_serializes_summary_near_review_inputs():
+    plan = WritePlan(
+        plan_id="20260512-demo",
+        content_type="book",
+        target=Target(
+            page_title="书单",
+            page_id="page-books",
+            data_source_id="ds-books",
+            confidence="high",
+            source="alias_cache",
+        ),
+        summary={
+            "target_page": "书单",
+            "target_data_source": "Books",
+            "title": "可能性的艺术",
+            "state": "initialized",
+            "requires_confirmation": False,
+        },
+        normalized_record={"title": "可能性的艺术", "state": "initialized"},
+        field_mapping={"title": "名称", "state": "阅读状态"},
+        operations=[{"type": "create_or_update_page"}],
+        asset_operations=[],
+        sources=[],
+        warnings=[],
+        requires_confirmation=False,
+        confirmation_reason=None,
+    )
+
+    data = plan.to_dict()
+
+    assert data["summary"] == {
+        "target_page": "书单",
+        "target_data_source": "Books",
+        "title": "可能性的艺术",
+        "state": "initialized",
+        "requires_confirmation": False,
+    }
+    assert list(data).index("summary") < list(data).index("normalized_record")
+    assert WritePlan.from_dict(data).summary == data["summary"]
 
 
 def test_builds_book_capture_plan_from_cached_target(tmp_path, monkeypatch):

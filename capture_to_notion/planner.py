@@ -178,6 +178,7 @@ def unresolved_plan(capture: CaptureInput, content_type: str, reason: str) -> Wr
         plan_id=plan_id_for(capture),
         content_type=content_type,
         target=Target(page_title=None, page_id=None, data_source_id=None, confidence="none", source="unresolved"),
+        summary={},
         normalized_record={"title": title, "state": normalize_state(capture.state)},
         field_mapping={},
         operations=[],
@@ -263,6 +264,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
             confidence="high",
             source="alias_cache",
         ),
+        summary={},
         normalized_record=normalized_record,
         field_mapping=build_plan_field_mapping(
             normalized_record,

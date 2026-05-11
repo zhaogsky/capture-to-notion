@@ -92,6 +92,7 @@ class WritePlan:
     plan_id: str
     content_type: str
     target: Target
+    summary: dict[str, Any]
     normalized_record: dict[str, Any]
     field_mapping: dict[str, str]
     operations: list[dict[str, Any]]
@@ -107,6 +108,7 @@ class WritePlan:
             plan_id=data["plan_id"],
             content_type=data["content_type"],
             target=Target.from_dict(data["target"]),
+            summary=data.get("summary", {}),
             normalized_record=data["normalized_record"],
             field_mapping=data["field_mapping"],
             operations=data["operations"],
@@ -121,11 +123,24 @@ class WritePlan:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        for operation in data["asset_operations"]:
+        asset_operations = [asdict(operation) for operation in self.asset_operations]
+        for operation in asset_operations:
             if operation.get("record_key") == "cover":
                 operation.pop("record_key")
-        return data
+        return {
+            "plan_id": self.plan_id,
+            "content_type": self.content_type,
+            "target": asdict(self.target),
+            "summary": self.summary,
+            "normalized_record": self.normalized_record,
+            "field_mapping": self.field_mapping,
+            "operations": self.operations,
+            "asset_operations": asset_operations,
+            "sources": self.sources,
+            "warnings": self.warnings,
+            "requires_confirmation": self.requires_confirmation,
+            "confirmation_reason": self.confirmation_reason,
+        }
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, indent=2) + "\n"
