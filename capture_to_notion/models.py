@@ -92,7 +92,7 @@ class WritePlan:
     plan_id: str
     content_type: str
     target: Target
-    summary: dict[str, Any]
+    summary: dict[str, Any] = field(default_factory=dict, kw_only=True)
     normalized_record: dict[str, Any]
     field_mapping: dict[str, str]
     operations: list[dict[str, Any]]

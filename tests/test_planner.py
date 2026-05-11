@@ -180,7 +180,7 @@ def test_write_plan_serializes_summary_near_review_inputs():
         "requires_confirmation": False,
     }
     assert list(data).index("summary") < list(data).index("normalized_record")
-    assert WritePlan.from_dict(data).summary == data["summary"]
+    assert WritePlan.from_dict(data).to_dict() == data
 
 
 def test_builds_book_capture_plan_from_cached_target(tmp_path, monkeypatch):
