@@ -62,6 +62,57 @@ class CacheStore:
                     return structure
         return None
 
+    def target_summaries(self) -> list[dict[str, Any]]:
+        summaries: list[dict[str, Any]] = []
+        for alias_name, alias in sorted(self.aliases().items()):
+            if not isinstance(alias, dict):
+                continue
+            target_id = alias.get("target_id")
+            structure = self.target_structure(target_id) if isinstance(target_id, str) else None
+            if structure is None:
+                summaries.append(
+                    {
+                        "alias": alias_name,
+                        "target_id": target_id,
+                        "page_id": alias.get("page_id"),
+                        "title": None,
+                        "description": alias.get("description"),
+                        "data_sources": [],
+                        "content_types": [],
+                        "verified_at": None,
+                        "status": "missing_cache",
+                    }
+                )
+                continue
+            data_sources = structure.get("data_sources", {})
+            source_titles: list[str] = []
+            content_types: set[str] = set()
+            if isinstance(data_sources, dict):
+                for data_source in data_sources.values():
+                    if not isinstance(data_source, dict):
+                        continue
+                    title = data_source.get("title")
+                    if isinstance(title, str):
+                        source_titles.append(title)
+                    for content_type in data_source.get("content_types", []):
+                        if isinstance(content_type, str):
+                            content_types.add(content_type)
+            target = structure.get("target", {}) if isinstance(structure.get("target"), dict) else {}
+            summaries.append(
+                {
+                    "alias": alias_name,
+                    "target_id": target_id,
+                    "page_id": alias.get("page_id") or target.get("page_id"),
+                    "title": target.get("title"),
+                    "description": alias.get("description"),
+                    "data_sources": source_titles,
+                    "content_types": sorted(content_types),
+                    "verified_at": target.get("verified_at"),
+                    "status": "cached",
+                }
+            )
+        return summaries
+
     def save_plan(self, plan_id: str, data: dict[str, Any]) -> Path:
         path = self.config.plans_dir / f"{plan_id}.json"
         self.write_json(path, data)

@@ -94,6 +94,14 @@ def cmd_target_suggest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_target_list(args: argparse.Namespace) -> int:
+    config = ensure_config()
+    cache = CacheStore(config)
+    targets = cache.target_summaries()
+    print_json({"count": len(targets), "targets": targets})
+    return 0
+
+
 def duplicate_title_groups(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for result in results:
@@ -196,6 +204,8 @@ def build_parser() -> argparse.ArgumentParser:
     target_suggest = target_subparsers.add_parser("suggest")
     target_suggest.add_argument("--input", required=True)
     target_suggest.set_defaults(func=cmd_target_suggest)
+    target_list = target_subparsers.add_parser("list")
+    target_list.set_defaults(func=cmd_target_list)
     target_search = target_subparsers.add_parser("search")
     target_search.add_argument("--query", required=True)
     target_search.set_defaults(func=cmd_target_search)

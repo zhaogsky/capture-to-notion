@@ -4,6 +4,54 @@ from capture_to_notion import cli
 from capture_to_notion.notion_adapter import NotionAuthError
 
 
+def write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def seed_cached_books_target(root):
+    write_json(
+        root / "aliases.json",
+        {
+            "aliases": {
+                "books": {
+                    "type": "page",
+                    "page_id": "page-books",
+                    "description": "Books and reading status",
+                    "target_id": "bookshelf",
+                }
+            }
+        },
+    )
+    write_json(
+        root / "targets" / "bookshelf.json",
+        {
+            "target": {
+                "page_id": "page-books",
+                "title": "Bookshelf",
+                "verified_at": "2026-05-11T00:00:00Z",
+            },
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "schema_hash": "abc123",
+                    "fields": {
+                        "title": "Name",
+                        "author": "Author",
+                        "state": "Status",
+                        "cover": "Cover",
+                    },
+                }
+            },
+            "state_mapping": {"field": "Status", "values": {"initialized": "Want to read", "completed": "Read"}},
+            "asset_mapping": {"cover": {"field": "Cover", "type": "files", "strategy": "download_and_attach"}},
+        },
+    )
+
+
 class SearchAdapter:
     def search(self, query):
         return [
@@ -140,6 +188,37 @@ def test_target_scan_saves_target_cache_and_alias(tmp_path, monkeypatch, capsys)
     }
     aliases = json.loads((tmp_path / "aliases.json").read_text(encoding="utf-8"))["aliases"]
     assert aliases["书单"]["target_id"] == "bookshelf"
+
+
+def test_target_list_outputs_cached_targets_without_notion_adapter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    seed_cached_books_target(tmp_path)
+
+    def fail_from_config(cls, config):
+        raise AssertionError("target list must read local cache only")
+
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(fail_from_config))
+
+    result = cli.main(["target", "list"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data == {
+        "count": 1,
+        "targets": [
+            {
+                "alias": "books",
+                "target_id": "bookshelf",
+                "page_id": "page-books",
+                "title": "Bookshelf",
+                "description": "Books and reading status",
+                "data_sources": ["Books"],
+                "content_types": ["book"],
+                "verified_at": "2026-05-11T00:00:00Z",
+                "status": "cached",
+            }
+        ],
+    }
 
 
 def test_target_search_notion_error_exits_nonzero_with_readable_stderr(tmp_path, monkeypatch, capsys):
