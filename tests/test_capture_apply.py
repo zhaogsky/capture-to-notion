@@ -145,8 +145,10 @@ class AdapterFactoryProbe:
 
 
 class FakeAdapter:
-    def __init__(self) -> None:
+    def __init__(self, page: dict[str, Any] | None = None) -> None:
         self.created: list[tuple[str, dict[str, Any]]] = []
+        self.retrieved_pages: list[str] = []
+        self.page = page
 
     def create_page(self, data_source_id: str, properties: dict[str, Any]) -> dict[str, Any]:
         self.created.append((data_source_id, properties))
@@ -154,6 +156,12 @@ class FakeAdapter:
 
     def update_page(self, page_id: str, properties: dict[str, Any]) -> dict[str, Any]:
         raise AssertionError("unexpected update_page call")
+
+    def retrieve_page(self, page_id: str) -> dict[str, Any]:
+        self.retrieved_pages.append(page_id)
+        if self.page is None:
+            raise AssertionError("unexpected retrieve_page call")
+        return self.page
 
 
 def test_capture_apply_requires_confirmation_before_adapter(tmp_path, monkeypatch, capsys):
@@ -222,6 +230,114 @@ def test_capture_apply_successful_create_uses_fake_adapter(tmp_path, monkeypatch
             },
         )
     ]
+
+
+def test_capture_verify_successful_page_uses_fake_adapter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-book-1",
+            "object": "page",
+            "cover": {"type": "external", "external": {"url": "https://example.com/page-cover.jpg"}},
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "想读"}},
+                "ISBN": {"type": "rich_text", "rich_text": [{"plain_text": "9787559847357"}]},
+                "页数": {"type": "number", "number": 400},
+                "封面": {
+                    "type": "files",
+                    "files": [
+                        {"type": "external", "name": "cover.jpg", "external": {"url": "https://example.com/cover.jpg"}}
+                    ],
+                },
+            },
+        }
+    )
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "verify", "--page-id", "page-book-1"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result == {
+        "page_id": "page-book-1",
+        "verified": True,
+        "checks": {
+            "page": {"status": "present"},
+            "title_property": {"status": "present", "property": "书名"},
+            "status_property": {"status": "present", "property": "阅读状态"},
+            "isbn_property": {"status": "present", "property": "ISBN"},
+            "page_count_property": {"status": "present", "property": "页数"},
+            "cover_files_property": {"status": "present", "property": "封面"},
+            "page_cover": {"status": "present"},
+        },
+        "warnings": [],
+    }
+    assert adapter_factory.called is True
+    assert fake_adapter.retrieved_pages == ["page-book-1"]
+    assert fake_adapter.created == []
+
+
+class NotFoundAdapter(FakeAdapter):
+    def retrieve_page(self, page_id: str) -> dict[str, Any]:
+        self.retrieved_pages.append(page_id)
+        raise cli.NotionNotFoundError("page not found")
+
+
+def test_capture_verify_missing_page_returns_stable_json(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    fake_adapter = NotFoundAdapter()
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "verify", "--page-id", "page-missing"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["page_id"] == "page-missing"
+    assert result["verified"] is False
+    assert result["checks"]["page"] == {"status": "missing"}
+    assert "missing:page" in result["warnings"]
+    assert adapter_factory.called is True
+    assert fake_adapter.retrieved_pages == ["page-missing"]
+    assert fake_adapter.created == []
+
+
+def test_capture_verify_requires_isbn_and_page_count_values(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-book-1",
+            "object": "page",
+            "cover": {"type": "external", "external": {"url": "https://example.com/page-cover.jpg"}},
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "想读"}},
+                "ISBN": {"type": "rich_text", "rich_text": []},
+                "页数": {"type": "number", "number": None},
+                "封面": {
+                    "type": "files",
+                    "files": [
+                        {"type": "external", "name": "cover.jpg", "external": {"url": "https://example.com/cover.jpg"}}
+                    ],
+                },
+            },
+        }
+    )
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "verify", "--page-id", "page-book-1"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["verified"] is False
+    assert result["checks"]["isbn_property"] == {"status": "missing", "property": "ISBN"}
+    assert result["checks"]["page_count_property"] == {"status": "missing", "property": "页数"}
+    assert "missing:isbn_property" in result["warnings"]
+    assert "missing:page_count_property" in result["warnings"]
+    assert fake_adapter.created == []
 
 
 def test_capture_apply_missing_plan_file_returns_readable_error(tmp_path, monkeypatch, capsys):

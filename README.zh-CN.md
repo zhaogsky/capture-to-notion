@@ -101,6 +101,14 @@ capture-to-notion capture plan --input input.json --output plan.json
 capture-to-notion capture apply --plan plan.json --confirmed
 ```
 
+只读验证已写入页面：
+
+```bash
+capture-to-notion capture verify --page-id PAGE_ID
+```
+
+`capture verify` 会返回包含 `verified`、`checks` 和 `warnings` 的 JSON，用于检查页面是否存在、标题/状态字段、ISBN、页数、封面 files 字段和页面 cover。它不会写入 Notion，也不会下载图片。
+
 ## 典型工作流
 
 1. 搜索或选择精确的 Notion 目标。

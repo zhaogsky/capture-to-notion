@@ -200,3 +200,17 @@ def test_capture_plan_invalid_capture_input_exits_nonzero_with_readable_stderr(t
     assert result.returncode == 2
     assert "错误:" in result.stderr
     assert "输入内容无效" in result.stderr
+
+
+def test_capture_verify_help_is_available(tmp_path):
+    result = run_cli(["capture", "verify", "--help"], tmp_path)
+
+    assert result.returncode == 0
+    assert "--page-id" in result.stdout
+
+
+def test_capture_verify_missing_page_id_exits_with_readable_error(tmp_path):
+    result = run_cli(["capture", "verify"], tmp_path)
+
+    assert result.returncode == 2
+    assert "--page-id" in result.stderr

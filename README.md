@@ -101,6 +101,14 @@ Apply a confirmed plan:
 capture-to-notion capture apply --plan plan.json --confirmed
 ```
 
+Verify a written page with read-only checks:
+
+```bash
+capture-to-notion capture verify --page-id PAGE_ID
+```
+
+`capture verify` returns a JSON result with `verified`, `checks`, and `warnings` for page presence, title/status fields, ISBN, page count, cover files, and page cover. It does not write to Notion or download images.
+
 ## Typical Workflow
 
 1. Search or select the exact Notion target.

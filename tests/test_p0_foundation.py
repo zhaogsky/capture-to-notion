@@ -336,6 +336,7 @@ def test_readmes_document_p0_diagnostics_commands() -> None:
         assert "capture-to-notion doctor" in text
         assert "capture-to-notion target list" in text
         assert "capture-to-notion target inspect" in text
+        assert "capture-to-notion capture verify --page-id PAGE_ID" in text
         assert "CHANGELOG.md" in text
         assert "summary" in text
         assert "target_page" in text
