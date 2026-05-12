@@ -412,6 +412,150 @@ def test_book_capture_plan_requires_confirmation_for_page_count_mapping_ambiguit
 
 
 
+def test_book_capture_plan_requires_confirmation_for_untrusted_page_count_fallback_mapping(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["fields"]["page_count"] = "Pages"
+    target["data_sources"]["books"]["field_sources"] = {
+        "title": "semantic",
+        "author": "semantic",
+        "isbn": "semantic",
+        "page_count": "type_fallback",
+        "state": "semantic",
+        "cover": "semantic",
+    }
+    target["data_sources"]["books"]["schema"]["Pages"] = {"type": "number"}
+    target["data_sources"]["books"]["schema"].pop("页数")
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "untrusted_field_mapping"
+    assert "untrusted_field_mapping:page_count:type_fallback" in plan.warnings
+    assert "page_count" not in plan.field_mapping
+    assert "page_count" not in plan.summary["mapped_fields"]
+
+
+
+def test_book_capture_plan_requires_confirmation_for_untrusted_author_relation_fallback_mapping(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["fields"]["author"] = "Relation"
+    target["data_sources"]["books"]["field_sources"] = {
+        "title": "semantic",
+        "author": "relation_fallback",
+        "isbn": "semantic",
+        "page_count": "semantic",
+        "state": "semantic",
+        "cover": "semantic",
+    }
+    target["data_sources"]["books"]["schema"]["Relation"] = {"type": "relation", "target_database_id": "db-authors"}
+    target["data_sources"]["books"]["schema"].pop("作者")
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "untrusted_field_mapping"
+    assert "untrusted_field_mapping:author:relation_fallback" in plan.warnings
+    assert "author" not in plan.field_mapping
+    assert "author" not in plan.summary["mapped_fields"]
+
+
+def test_book_capture_plan_requires_confirmation_for_unknown_key_field_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["field_sources"] = {
+        "title": "semantic",
+        "author": "semantic",
+        "isbn": "semantic",
+        "page_count": "generated",
+        "state": "semantic",
+        "cover": "semantic",
+    }
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "untrusted_field_mapping"
+    assert "untrusted_field_mapping:page_count:generated" in plan.warnings
+    assert "page_count" not in plan.field_mapping
+    assert "page_count" not in plan.summary["mapped_fields"]
+
+
+def test_book_capture_plan_does_not_attach_untrusted_cover_fallback_mapping(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["fields"]["cover"] = "Attachment"
+    target["data_sources"]["books"]["field_sources"] = {
+        "title": "semantic",
+        "author": "semantic",
+        "isbn": "semantic",
+        "page_count": "semantic",
+        "state": "semantic",
+        "cover": "type_fallback",
+    }
+    target["data_sources"]["books"]["schema"]["Attachment"] = {"type": "files"}
+    target["data_sources"]["books"]["schema"].pop("封面")
+    target["asset_mapping"] = {"cover": {"field": "Attachment", "type": "files", "strategy": "download_and_attach"}}
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "untrusted_field_mapping"
+    assert "untrusted_field_mapping:cover:type_fallback" in plan.warnings
+    assert "cover" not in plan.field_mapping
+    assert plan.asset_operations == []
+    assert plan.summary["asset_actions"] == []
+
+
 def test_book_without_labeled_author_keeps_none(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()

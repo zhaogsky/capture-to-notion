@@ -43,6 +43,7 @@ METADATA_DELIMITER_PATTERN = r"[\s,，;；|｜]"
 METADATA_COLON_PATTERN = r"[:：]"
 BOOK_REQUIRED_SCHEMA_FIELDS = ["cover", "author", "isbn", "page_count", "state"]
 BOOK_REQUIRED_VALUE_FIELDS = ["author", "isbn", "page_count"]
+TRUSTED_BOOK_FIELD_SOURCES = {"semantic", "explicit", "profile"}
 
 
 def extract_labeled_value(raw_input: str, labels: list[str]) -> str | None:
@@ -186,6 +187,54 @@ def _value_status(value: Any) -> str:
 
 
 
+def _trusted_mapping_fields(
+    content_type: str,
+    fields: dict[str, str],
+    field_sources: dict[str, str] | None,
+) -> dict[str, str]:
+    if content_type != "book" or not field_sources:
+        return dict(fields)
+
+    trusted_fields = dict(fields)
+    for key in BOOK_REQUIRED_SCHEMA_FIELDS:
+        source = field_sources.get(key)
+        if source not in TRUSTED_BOOK_FIELD_SOURCES:
+            trusted_fields.pop(key, None)
+    return trusted_fields
+
+
+
+def _untrusted_mapping_warnings(
+    content_type: str,
+    fields: dict[str, str],
+    field_sources: dict[str, str] | None,
+) -> list[str]:
+    if content_type != "book" or not field_sources:
+        return []
+
+    warnings: list[str] = []
+    for key in BOOK_REQUIRED_SCHEMA_FIELDS:
+        if key not in fields:
+            continue
+        source = field_sources.get(key)
+        if source not in TRUSTED_BOOK_FIELD_SOURCES:
+            warnings.append(f"untrusted_field_mapping:{key}:{source or 'missing'}")
+    return warnings
+
+
+
+def _filtered_asset_mapping(
+    content_type: str,
+    asset_mapping: dict[str, Any],
+    trusted_fields: dict[str, str],
+) -> dict[str, Any]:
+    filtered_asset_mapping = dict(asset_mapping)
+    if content_type == "book" and "cover" not in trusted_fields:
+        filtered_asset_mapping.pop("cover", None)
+    return filtered_asset_mapping
+
+
+
 def _asset_summary(operation: AssetOperation) -> dict[str, str | None]:
     return {
         "record_key": operation.record_key,
@@ -297,6 +346,9 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         return unresolved_plan(capture, content_type, "primary_data_source_missing")
 
     fields = data_source.get("fields", {})
+    field_sources = data_source.get("field_sources", {})
+    trusted_fields = _trusted_mapping_fields(content_type, fields, field_sources)
+    untrusted_mapping_warnings = _untrusted_mapping_warnings(content_type, fields, field_sources)
     title = extract_book_title(capture.raw_input)
     state = normalize_state(capture.state)
     cover_url = default_cover_url(content_type, title)
@@ -326,6 +378,9 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
 
     confirmation_reason = structure.get("confirmation_reason")
     warnings = list(data_source.get("mapping_warnings") or [])
+    for warning in untrusted_mapping_warnings:
+        if warning not in warnings:
+            warnings.append(warning)
     blocking_mapping_warnings = confirmation_blocking_warnings(warnings, content_type)
     all_mapping_warnings = [
         warning
@@ -347,6 +402,8 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         warnings.append(f"{content_type}_schema_incomplete:{','.join(missing_fields)}")
     if missing_values:
         warnings.append(f"{content_type}_key_values_missing:{','.join(missing_values)}")
+    if not confirmation_reason and untrusted_mapping_warnings:
+        confirmation_reason = "untrusted_field_mapping"
     if not confirmation_reason and blocking_structure_mapping_warnings:
         confirmation_reason = "field_mapping_ambiguous"
     if not confirmation_reason and missing_fields:
@@ -354,15 +411,19 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     if not confirmation_reason and missing_values:
         confirmation_reason = f"{content_type}_key_values_missing"
     requires_confirmation = bool(
-        structure_requires_confirmation or blocking_structure_mapping_warnings or missing_fields or missing_values
+        structure_requires_confirmation
+        or untrusted_mapping_warnings
+        or blocking_structure_mapping_warnings
+        or missing_fields
+        or missing_values
     )
-    asset_mapping = dict(structure.get("asset_mapping") or {})
-    cover_field = fields.get("cover")
+    asset_mapping = _filtered_asset_mapping(content_type, structure.get("asset_mapping") or {}, trusted_fields)
+    cover_field = trusted_fields.get("cover")
     if cover_field and data_source_schema.get(cover_field, {}).get("type") == "files":
         asset_mapping["cover"] = {"field": cover_field, "type": "files", "strategy": "download_and_attach"}
     field_mapping = build_plan_field_mapping(
         normalized_record,
-        fields,
+        trusted_fields,
         data_source.get("schema", {}),
         asset_mapping,
     )
@@ -402,7 +463,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
             target_data_source=data_source.get("title"),
             normalized_record=normalized_record,
             field_mapping=field_mapping,
-            schema_fields=fields,
+            schema_fields=trusted_fields,
             asset_operations=asset_operations,
             requires_confirmation=requires_confirmation,
             confirmation_reason=confirmation_reason,
