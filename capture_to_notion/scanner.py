@@ -5,6 +5,9 @@ from typing import Any
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.schema import confirmation_blocking_warnings, normalize_database_schema, plain_title, schema_hash, semantic_field_mapping
 
+PROFILE_FIELD_SOURCES = {"explicit", "profile"}
+PRIMARY_FIELD_SOURCES = {"semantic", *PROFILE_FIELD_SOURCES}
+
 
 def _target_title(page: dict[str, Any]) -> str | None:
     return plain_title(page.get("title")) or plain_title(page.get("properties", {}).get("title")) or page.get("name")
@@ -87,6 +90,69 @@ def _build_relations(data_sources: dict[str, Any]) -> list[dict[str, Any]]:
     return relations
 
 
+def _cached_data_source(cache: CacheStore, target_id: str, data_source_id: str) -> dict[str, Any]:
+    structure = cache.target_structure(target_id) or {}
+    data_sources = structure.get("data_sources", {})
+    if not isinstance(data_sources, dict):
+        return {}
+    for key, data_source in data_sources.items():
+        if isinstance(data_source, dict) and (key == data_source_id or data_source.get("data_source_id") == data_source_id):
+            return data_source
+    return {}
+
+
+def _profile_field_mapping(
+    cache: CacheStore,
+    target_id: str,
+    data_source_id: str,
+    schema: dict[str, Any],
+) -> dict[str, dict[str, str]]:
+    data_source = _cached_data_source(cache, target_id, data_source_id)
+    fields = data_source.get("fields", {})
+    field_sources = data_source.get("field_sources", {})
+    if not isinstance(fields, dict) or not isinstance(field_sources, dict):
+        return {"fields": {}, "field_sources": {}}
+
+    resolved_fields: dict[str, str] = {}
+    resolved_sources: dict[str, str] = {}
+    for record_key, field_name in fields.items():
+        source = field_sources.get(record_key)
+        if source not in PROFILE_FIELD_SOURCES:
+            continue
+        if not isinstance(record_key, str) or not isinstance(field_name, str):
+            continue
+        if field_name not in schema:
+            continue
+        resolved_fields[record_key] = field_name
+        resolved_sources[record_key] = source
+    return {"fields": resolved_fields, "field_sources": resolved_sources}
+
+
+def _mapping_warning_key(warning: str) -> str | None:
+    parts = warning.split(":", 2)
+    if len(parts) >= 2 and parts[0] == "ambiguous_field_mapping":
+        return parts[1]
+    return None
+
+
+def _merge_profile_field_mapping(mapping: dict[str, Any], profile_mapping: dict[str, dict[str, str]]) -> dict[str, Any]:
+    profile_fields = profile_mapping.get("fields", {})
+    if not profile_fields:
+        return mapping
+
+    fields = dict(mapping.get("fields", {}))
+    field_sources = dict(mapping.get("field_sources", {}))
+    fields.update(profile_fields)
+    field_sources.update(profile_mapping.get("field_sources", {}))
+    warnings = [warning for warning in mapping.get("warnings", []) if _mapping_warning_key(warning) not in profile_fields]
+    return {
+        "fields": fields,
+        "field_sources": field_sources,
+        "warnings": warnings,
+        "requires_confirmation": bool(warnings),
+    }
+
+
 def _primary_score(data_source: dict[str, Any]) -> int:
     schema = data_source.get("schema", {})
     if not schema:
@@ -103,7 +169,7 @@ def _primary_score(data_source: dict[str, Any]) -> int:
     }
     score = 0
     for field_key, weight in weights.items():
-        if field_key in fields and field_sources.get(field_key) == "semantic":
+        if field_key in fields and field_sources.get(field_key) in PRIMARY_FIELD_SOURCES:
             score += weight
     return score
 
@@ -156,6 +222,10 @@ def scan_page_target(
             data_source = adapter.retrieve_data_source(data_source_id) if data_source_id != database_id else database
             schema = normalize_database_schema(data_source)
             mapping = semantic_field_mapping(schema, include_sources=True)
+            mapping = _merge_profile_field_mapping(
+                mapping,
+                _profile_field_mapping(cache, resolved_target_id, data_source_id, schema),
+            )
             data_sources[data_source_id] = {
                 "data_source_id": data_source_id,
                 "title": _data_source_title(data_source, source, database, block),

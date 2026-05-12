@@ -409,6 +409,55 @@ def test_scan_page_uses_semantic_field_mapping_from_real_schema_names(tmp_path, 
     assert data_source["mapping_warnings"] == []
 
 
+def test_scan_page_uses_cached_profile_field_mapping_over_ambiguous_schema_names(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.targets_dir / "bookshelf.json",
+        {
+            "target": {"page_id": "page-books", "target_id": "bookshelf"},
+            "data_sources": {
+                "db-books": {
+                    "data_source_id": "db-books",
+                    "fields": {"title": "标题", "author": "作者页面", "cover": "附件"},
+                    "field_sources": {"title": "profile", "author": "profile", "cover": "profile"},
+                }
+            },
+        },
+    )
+    adapter = FakeAdapter(
+        pages={"page-books": {"id": "page-books", "title": "书单"}},
+        children={"page-books": [{"type": "child_database", "id": "db-books", "child_database": {"title": "Books"}}]},
+        databases={
+            "db-books": {
+                "id": "db-books",
+                "title": "Books",
+                "properties": {
+                    "名称": {"id": "title-1", "type": "title", "title": {}},
+                    "标题": {"id": "title-2", "type": "title", "title": {}},
+                    "作者": {"id": "author-1", "type": "relation", "relation": {"database_id": "db-authors"}},
+                    "作者页面": {"id": "author-2", "type": "relation", "relation": {"database_id": "db-authors"}},
+                    "附件": {"id": "files", "type": "files", "files": {}},
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-books", cache, target_id="bookshelf")
+    data_source = result["data_sources"]["db-books"]
+
+    assert result["requires_confirmation"] is False
+    assert result["confirmation_reason"] is None
+    assert data_source["role"] == "primary"
+    assert data_source["fields"] == {"title": "标题", "author": "作者页面", "cover": "附件"}
+    assert data_source["field_sources"] == {"title": "profile", "author": "profile", "cover": "profile"}
+    assert data_source["mapping_warnings"] == []
+    assert result["asset_mapping"] == {
+        "cover": {"field": "附件", "type": "files", "strategy": "download_and_attach"}
+    }
+
+
 def test_scan_page_requires_confirmation_when_field_mapping_is_ambiguous(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
