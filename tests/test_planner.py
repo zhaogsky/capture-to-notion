@@ -660,7 +660,11 @@ def test_podcast_capture_plan_keeps_confirmation_for_other_data_source_mapping_a
 
     assert plan.requires_confirmation is True
     assert plan.confirmation_reason == "field_mapping_ambiguous"
-    assert plan.warnings == ["ambiguous_field_mapping:page_count:Page Count,Pages"]
+    assert plan.warnings == [
+        "ambiguous_field_mapping:page_count:Page Count,Pages",
+        "ambiguous_field_mapping:tag:分类,标签",
+    ]
+    assert plan.summary["warnings"] == plan.warnings
     assert plan.operations == []
 
 
