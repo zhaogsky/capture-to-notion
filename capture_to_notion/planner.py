@@ -11,7 +11,7 @@ from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import AppConfig
 from capture_to_notion.classifier import classify_content_type, normalize_state
 from capture_to_notion.models import AssetOperation, CaptureInput, Target, WritePlan
-from capture_to_notion.schema import semantic_field_mapping
+from capture_to_notion.schema import confirmation_blocking_warnings, semantic_field_mapping
 
 
 KNOWN_METADATA_LABELS = [
@@ -326,6 +326,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
 
     confirmation_reason = structure.get("confirmation_reason")
     warnings = list(data_source.get("mapping_warnings") or [])
+    blocking_mapping_warnings = confirmation_blocking_warnings(warnings)
     data_source_schema = data_source.get("schema", {})
     missing_fields = missing_required_fields(content_type, fields, data_source_schema)
     missing_values = missing_required_values(content_type, normalized_record)
@@ -333,14 +334,14 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         warnings.append(f"{content_type}_schema_incomplete:{','.join(missing_fields)}")
     if missing_values:
         warnings.append(f"{content_type}_key_values_missing:{','.join(missing_values)}")
-    if not confirmation_reason and data_source.get("mapping_warnings"):
+    if not confirmation_reason and blocking_mapping_warnings:
         confirmation_reason = "field_mapping_ambiguous"
     if not confirmation_reason and missing_fields:
         confirmation_reason = f"{content_type}_schema_incomplete"
     if not confirmation_reason and missing_values:
         confirmation_reason = f"{content_type}_key_values_missing"
     requires_confirmation = bool(
-        structure.get("requires_confirmation") or data_source.get("mapping_warnings") or missing_fields or missing_values
+        structure.get("requires_confirmation") or blocking_mapping_warnings or missing_fields or missing_values
     )
     asset_mapping = dict(structure.get("asset_mapping") or {})
     cover_field = fields.get("cover")

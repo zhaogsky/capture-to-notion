@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from capture_to_notion.cache import CacheStore
-from capture_to_notion.schema import normalize_database_schema, plain_title, schema_hash, semantic_field_mapping
+from capture_to_notion.schema import confirmation_blocking_warnings, normalize_database_schema, plain_title, schema_hash, semantic_field_mapping
 
 
 def _target_title(page: dict[str, Any]) -> str | None:
@@ -170,7 +170,7 @@ def scan_page_target(
 
     _assign_data_source_roles(data_sources)
     has_mapping_warnings = any(
-        data_source.get("mapping_warnings")
+        confirmation_blocking_warnings(data_source.get("mapping_warnings"))
         for data_source in data_sources.values()
     )
     has_primary_data_source = any(

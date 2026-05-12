@@ -444,6 +444,45 @@ def test_scan_page_requires_confirmation_when_field_mapping_is_ambiguous(tmp_pat
     ]
 
 
+def test_scan_page_does_not_require_confirmation_for_page_count_ambiguity_on_podcast_like_schema(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    adapter = FakeAdapter(
+        pages={"page-podcasts": {"id": "page-podcasts", "title": "播客库"}},
+        children={"page-podcasts": [{"type": "child_database", "id": "db-episodes", "child_database": {"title": "Episodes"}}]},
+        databases={
+            "db-episodes": {
+                "id": "db-episodes",
+                "title": "Episodes",
+                "properties": {
+                    "标题": {"id": "title", "type": "title", "title": {}},
+                    "播客": {"id": "podcast", "type": "relation", "relation": {"database_id": "db-podcasts"}},
+                    "状态": {"id": "state", "type": "select", "select": {"options": []}},
+                    "Pages": {"id": "pages-text", "type": "rich_text", "rich_text": {}},
+                    "Page Count": {"id": "pages-number", "type": "number", "number": {}},
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-podcasts", CacheStore(config), target_id="podcastshelf")
+    data_source = result["data_sources"]["db-episodes"]
+
+    assert result["requires_confirmation"] is False
+    assert result["confirmation_reason"] is None
+    assert data_source["role"] == "primary"
+    assert data_source["fields"] == {
+        "title": "标题",
+        "state": "状态",
+        "podcast": "播客",
+        "page_count": "Page Count",
+        "notes": "Pages",
+    }
+    assert data_source["mapping_warnings"] == [
+        "ambiguous_field_mapping:page_count:Page Count,Pages",
+    ]
+
+
 def test_scan_page_builds_state_mapping_from_semantic_select_state_field(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()

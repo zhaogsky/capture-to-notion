@@ -445,6 +445,77 @@ def test_podcast_title_cleanup_strips_explicit_podcast_label(tmp_path, monkeypat
     assert plan.normalized_record["title"] == "收藏这期播客到播客库"
 
 
+def test_podcast_capture_plan_ignores_page_count_only_mapping_ambiguity(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "播客库": {
+                    "type": "page",
+                    "page_id": "page-podcasts",
+                    "target_id": "podcastshelf",
+                }
+            }
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "podcastshelf.json",
+        {
+            "target": {"page_id": "page-podcasts", "title": "播客库", "target_id": "podcastshelf"},
+            "data_sources": {
+                "db-episodes": {
+                    "data_source_id": "db-episodes",
+                    "title": "Episodes",
+                    "role": "primary",
+                    "content_types": ["podcast_episode"],
+                    "fields": {
+                        "title": "标题",
+                        "podcast": "播客",
+                        "state": "状态",
+                        "page_count": "Page Count",
+                    },
+                    "mapping_warnings": ["ambiguous_field_mapping:page_count:Page Count,Pages"],
+                    "schema": {
+                        "标题": {"type": "title"},
+                        "播客": {"type": "relation", "target_database_id": "db-podcasts"},
+                        "状态": {"type": "select"},
+                        "Page Count": {"type": "number"},
+                        "Pages": {"type": "rich_text"},
+                    },
+                }
+            },
+            "relations": [],
+            "state_mapping": {"field": "状态", "values": {}},
+            "asset_mapping": {},
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+    capture = CaptureInput(
+        raw_input="收藏这期播客到播客库 播客：忽左忽右",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.confirmation_reason is None
+    assert plan.warnings == ["ambiguous_field_mapping:page_count:Page Count,Pages"]
+    assert plan.operations == [
+        {
+            "type": "create_or_update_page",
+            "target_data_source": "Episodes",
+            "data_source_id": "db-episodes",
+        }
+    ]
+
+
 def test_podcast_without_labeled_podcast_keeps_none(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
