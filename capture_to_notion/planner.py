@@ -347,14 +347,14 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         warnings.append(f"{content_type}_schema_incomplete:{','.join(missing_fields)}")
     if missing_values:
         warnings.append(f"{content_type}_key_values_missing:{','.join(missing_values)}")
-    if not confirmation_reason and blocking_mapping_warnings:
+    if not confirmation_reason and blocking_structure_mapping_warnings:
         confirmation_reason = "field_mapping_ambiguous"
     if not confirmation_reason and missing_fields:
         confirmation_reason = f"{content_type}_schema_incomplete"
     if not confirmation_reason and missing_values:
         confirmation_reason = f"{content_type}_key_values_missing"
     requires_confirmation = bool(
-        structure_requires_confirmation or blocking_mapping_warnings or missing_fields or missing_values
+        structure_requires_confirmation or blocking_structure_mapping_warnings or missing_fields or missing_values
     )
     asset_mapping = dict(structure.get("asset_mapping") or {})
     cover_field = fields.get("cover")

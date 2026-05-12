@@ -644,8 +644,8 @@ def test_podcast_capture_plan_keeps_confirmation_for_other_data_source_mapping_a
             "relations": [],
             "state_mapping": {"field": "状态", "values": {}},
             "asset_mapping": {},
-            "requires_confirmation": True,
-            "confirmation_reason": "field_mapping_ambiguous",
+            "requires_confirmation": False,
+            "confirmation_reason": None,
         },
     )
     capture = CaptureInput(
