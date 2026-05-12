@@ -93,6 +93,8 @@ Create a write plan:
 capture-to-notion capture plan --input input.json --output plan.json
 ```
 
+The generated plan includes a top-level `summary` block for review before any write. Check `target_page`, `target_data_source`, `state`, `mapped_fields`, `key_fields`, `asset_actions`, `requires_confirmation`, and `warnings`. For book captures, `book_key_values_missing` means the plan is missing required metadata such as author, ISBN, or page count and must be confirmed or enriched before apply.
+
 Apply a confirmed plan:
 
 ```bash

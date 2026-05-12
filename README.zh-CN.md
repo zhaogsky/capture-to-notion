@@ -93,6 +93,8 @@ capture-to-notion target scan --page-id PAGE_ID --alias books
 capture-to-notion capture plan --input input.json --output plan.json
 ```
 
+生成的计划会包含顶层 `summary` 区块，用于在任何写入前快速审阅。重点检查 `target_page`、`target_data_source`、`state`、`mapped_fields`、`key_fields`、`asset_actions`、`requires_confirmation` 和 `warnings`。书籍采集里出现 `book_key_values_missing` 表示作者、ISBN 或页数等关键元数据缺失，需要先确认或补全后再 apply。
+
 执行已确认的计划：
 
 ```bash

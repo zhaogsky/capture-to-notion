@@ -337,6 +337,10 @@ def test_readmes_document_p0_diagnostics_commands() -> None:
         assert "capture-to-notion target list" in text
         assert "capture-to-notion target inspect" in text
         assert "CHANGELOG.md" in text
+        assert "summary" in text
+        assert "target_page" in text
+        assert "key_fields" in text
+        assert "book_key_values_missing" in text
         assert fenced_legacy_command_pattern.search(text) is None
         assert shell_legacy_command_pattern.search(text) is None
         assert recommended_legacy_command_pattern.search(text) is None
