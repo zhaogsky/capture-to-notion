@@ -341,6 +341,77 @@ def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp
 
 
 
+def test_book_capture_plan_requires_confirmation_for_page_count_mapping_ambiguity(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "书单": {
+                    "type": "page",
+                    "page_id": "page-books",
+                    "target_id": "bookshelf",
+                }
+            }
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "bookshelf.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
+            "data_sources": {
+                "db-books": {
+                    "data_source_id": "db-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {
+                        "title": "名称",
+                        "state": "阅读状态",
+                        "cover": "封面",
+                        "author": "作者",
+                        "isbn": "ISBN",
+                        "page_count": "Page Count",
+                    },
+                    "mapping_warnings": ["ambiguous_field_mapping:page_count:Page Count,Pages"],
+                    "schema": {
+                        "名称": {"type": "title"},
+                        "阅读状态": {"type": "status"},
+                        "封面": {"type": "files"},
+                        "作者": {"type": "rich_text"},
+                        "ISBN": {"type": "rich_text"},
+                        "Page Count": {"type": "number"},
+                        "Pages": {"type": "rich_text"},
+                    },
+                }
+            },
+            "relations": [],
+            "state_mapping": {"field": "阅读状态", "values": {}},
+            "asset_mapping": {"cover": {"field": "封面", "type": "files", "strategy": "download_and_attach"}},
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "field_mapping_ambiguous"
+    assert plan.warnings == ["ambiguous_field_mapping:page_count:Page Count,Pages"]
+    assert plan.operations == []
+    assert plan.asset_operations == []
+
+
+
 def test_book_without_labeled_author_keeps_none(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()

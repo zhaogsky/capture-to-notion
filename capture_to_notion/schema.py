@@ -176,11 +176,12 @@ def _semantic_candidates(schema: dict[str, dict[str, Any]], semantic_key: str) -
     return sorted(candidates)
 
 
-def confirmation_blocking_warnings(warnings: list[str] | None) -> list[str]:
+def confirmation_blocking_warnings(warnings: list[str] | None, content_type: str | None = None) -> list[str]:
+    non_blocking_prefixes = () if content_type == "book" else NON_BLOCKING_CONFIRMATION_WARNING_PREFIXES
     return [
         warning
         for warning in (warnings or [])
-        if not warning.startswith(NON_BLOCKING_CONFIRMATION_WARNING_PREFIXES)
+        if not warning.startswith(non_blocking_prefixes)
     ]
 
 

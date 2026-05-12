@@ -326,7 +326,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
 
     confirmation_reason = structure.get("confirmation_reason")
     warnings = list(data_source.get("mapping_warnings") or [])
-    blocking_mapping_warnings = confirmation_blocking_warnings(warnings)
+    blocking_mapping_warnings = confirmation_blocking_warnings(warnings, content_type)
     data_source_schema = data_source.get("schema", {})
     missing_fields = missing_required_fields(content_type, fields, data_source_schema)
     missing_values = missing_required_values(content_type, normalized_record)
