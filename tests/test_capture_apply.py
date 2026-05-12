@@ -10,7 +10,7 @@ from capture_to_notion.config import ensure_config
 from capture_to_notion.models import WritePlan
 
 
-def test_write_plan_from_dict_round_trips_with_to_dict():
+def test_write_plan_from_dict_serializes_legacy_plan_with_default_summary():
     data = {
         "plan_id": "plan-1",
         "content_type": "book",
@@ -43,7 +43,7 @@ def test_write_plan_from_dict_round_trips_with_to_dict():
 
     plan = WritePlan.from_dict(data)
 
-    assert plan.to_dict() == data
+    assert plan.to_dict() == {**data, "summary": {}}
 
 
 def test_target_structure_for_data_source_finds_matching_cached_target(tmp_path, monkeypatch):
