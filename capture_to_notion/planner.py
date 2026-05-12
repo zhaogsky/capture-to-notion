@@ -327,8 +327,14 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     confirmation_reason = structure.get("confirmation_reason")
     warnings = list(data_source.get("mapping_warnings") or [])
     blocking_mapping_warnings = confirmation_blocking_warnings(warnings, content_type)
+    all_mapping_warnings = [
+        warning
+        for source in structure.get("data_sources", {}).values()
+        for warning in (source.get("mapping_warnings") or [])
+    ]
+    blocking_structure_mapping_warnings = confirmation_blocking_warnings(all_mapping_warnings, content_type)
     structure_requires_confirmation = bool(structure.get("requires_confirmation"))
-    if confirmation_reason == "field_mapping_ambiguous" and not blocking_mapping_warnings:
+    if confirmation_reason == "field_mapping_ambiguous" and not blocking_structure_mapping_warnings:
         confirmation_reason = None
         structure_requires_confirmation = False
     data_source_schema = data_source.get("schema", {})
