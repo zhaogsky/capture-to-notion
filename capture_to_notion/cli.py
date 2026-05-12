@@ -25,7 +25,7 @@ from capture_to_notion.notion_adapter import (
 )
 from capture_to_notion.planner import build_capture_plan
 from capture_to_notion.scanner import scan_page_target
-from capture_to_notion.verifier import verify_capture_page
+from capture_to_notion.verifier import url_is_accessible, verify_capture_page
 from capture_to_notion.writer import NotionWriterError, apply_write_plan
 
 
@@ -192,7 +192,7 @@ def cmd_capture_plan(args: argparse.Namespace) -> int:
 def cmd_capture_verify(args: argparse.Namespace) -> int:
     config = ensure_config()
     adapter = NotionAdapter.from_config(config)
-    print_json(verify_capture_page(args.page_id, adapter))
+    print_json(verify_capture_page(args.page_id, adapter, url_checker=url_is_accessible))
     return 0
 
 

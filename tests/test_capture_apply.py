@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 from pathlib import Path
 from typing import Any
 
-from capture_to_notion import cli
+from capture_to_notion import cli, verifier
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import ensure_config
 from capture_to_notion.models import WritePlan
+from capture_to_notion.verifier import verify_capture_page
 
 
 def test_write_plan_from_dict_serializes_legacy_plan_with_default_summary():
@@ -164,6 +166,10 @@ class FakeAdapter:
         return self.page
 
 
+def allow_verify_url_checks(monkeypatch) -> None:
+    monkeypatch.setattr(cli, "url_is_accessible", lambda url: True)
+
+
 def test_capture_apply_requires_confirmation_before_adapter(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
     config = ensure_config()
@@ -244,6 +250,7 @@ def test_capture_verify_successful_page_uses_fake_adapter(tmp_path, monkeypatch,
                 "阅读状态": {"type": "status", "status": {"name": "想读"}},
                 "ISBN": {"type": "rich_text", "rich_text": [{"plain_text": "9787559847357"}]},
                 "页数": {"type": "number", "number": 400},
+                "作者": {"type": "relation", "relation": [{"id": "author-page-1"}]},
                 "封面": {
                     "type": "files",
                     "files": [
@@ -255,6 +262,7 @@ def test_capture_verify_successful_page_uses_fake_adapter(tmp_path, monkeypatch,
     )
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+    allow_verify_url_checks(monkeypatch)
 
     exit_code = cli.main(["capture", "verify", "--page-id", "page-book-1"])
 
@@ -269,6 +277,7 @@ def test_capture_verify_successful_page_uses_fake_adapter(tmp_path, monkeypatch,
             "status_property": {"status": "present", "property": "阅读状态"},
             "isbn_property": {"status": "present", "property": "ISBN"},
             "page_count_property": {"status": "present", "property": "页数"},
+            "author_relation_property": {"status": "present", "property": "作者"},
             "cover_files_property": {"status": "present", "property": "封面"},
             "page_cover": {"status": "present"},
         },
@@ -290,6 +299,7 @@ def test_capture_verify_missing_page_returns_stable_json(tmp_path, monkeypatch, 
     fake_adapter = NotFoundAdapter()
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+    allow_verify_url_checks(monkeypatch)
 
     exit_code = cli.main(["capture", "verify", "--page-id", "page-missing"])
 
@@ -298,7 +308,9 @@ def test_capture_verify_missing_page_returns_stable_json(tmp_path, monkeypatch, 
     assert result["page_id"] == "page-missing"
     assert result["verified"] is False
     assert result["checks"]["page"] == {"status": "missing"}
+    assert result["checks"]["author_relation_property"] == {"status": "missing"}
     assert "missing:page" in result["warnings"]
+    assert "missing:author_relation_property" in result["warnings"]
     assert adapter_factory.called is True
     assert fake_adapter.retrieved_pages == ["page-missing"]
     assert fake_adapter.created == []
@@ -316,6 +328,7 @@ def test_capture_verify_requires_isbn_and_page_count_values(tmp_path, monkeypatc
                 "阅读状态": {"type": "status", "status": {"name": "想读"}},
                 "ISBN": {"type": "rich_text", "rich_text": []},
                 "页数": {"type": "number", "number": None},
+                "作者": {"type": "relation", "relation": [{"id": "author-page-1"}]},
                 "封面": {
                     "type": "files",
                     "files": [
@@ -327,6 +340,7 @@ def test_capture_verify_requires_isbn_and_page_count_values(tmp_path, monkeypatc
     )
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+    allow_verify_url_checks(monkeypatch)
 
     exit_code = cli.main(["capture", "verify", "--page-id", "page-book-1"])
 
@@ -338,6 +352,275 @@ def test_capture_verify_requires_isbn_and_page_count_values(tmp_path, monkeypatc
     assert "missing:isbn_property" in result["warnings"]
     assert "missing:page_count_property" in result["warnings"]
     assert fake_adapter.created == []
+
+
+def test_capture_verify_requires_author_relation_value(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-book-1",
+            "object": "page",
+            "cover": {"type": "external", "external": {"url": "https://example.com/page-cover.jpg"}},
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "想读"}},
+                "ISBN": {"type": "rich_text", "rich_text": [{"plain_text": "9787559847357"}]},
+                "页数": {"type": "number", "number": 400},
+                "作者": {"type": "relation", "relation": []},
+                "封面": {
+                    "type": "files",
+                    "files": [
+                        {"type": "external", "name": "cover.jpg", "external": {"url": "https://example.com/cover.jpg"}}
+                    ],
+                },
+            },
+        }
+    )
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+    allow_verify_url_checks(monkeypatch)
+
+    exit_code = cli.main(["capture", "verify", "--page-id", "page-book-1"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["verified"] is False
+    assert result["checks"]["author_relation_property"] == {"status": "missing", "property": "作者"}
+    assert "missing:author_relation_property" in result["warnings"]
+    assert fake_adapter.created == []
+
+
+def test_capture_verify_rejects_non_relation_author_property(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-book-1",
+            "object": "page",
+            "cover": {"type": "external", "external": {"url": "https://example.com/page-cover.jpg"}},
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "想读"}},
+                "ISBN": {"type": "rich_text", "rich_text": [{"plain_text": "9787559847357"}]},
+                "页数": {"type": "number", "number": 400},
+                "作者": {"type": "rich_text", "rich_text": [{"plain_text": "刘瑜"}]},
+                "封面": {
+                    "type": "files",
+                    "files": [
+                        {"type": "external", "name": "cover.jpg", "external": {"url": "https://example.com/cover.jpg"}}
+                    ],
+                },
+            },
+        }
+    )
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+    allow_verify_url_checks(monkeypatch)
+
+    exit_code = cli.main(["capture", "verify", "--page-id", "page-book-1"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["verified"] is False
+    assert result["checks"]["author_relation_property"] == {"status": "missing", "property": "作者"}
+    assert "missing:author_relation_property" in result["warnings"]
+    assert fake_adapter.created == []
+
+
+def test_capture_verify_reports_missing_author_relation_when_unmapped(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-book-1",
+            "object": "page",
+            "cover": {"type": "external", "external": {"url": "https://example.com/page-cover.jpg"}},
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "想读"}},
+                "ISBN": {"type": "rich_text", "rich_text": [{"plain_text": "9787559847357"}]},
+                "页数": {"type": "number", "number": 400},
+                "封面": {
+                    "type": "files",
+                    "files": [
+                        {"type": "external", "name": "cover.jpg", "external": {"url": "https://example.com/cover.jpg"}}
+                    ],
+                },
+            },
+        }
+    )
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+    allow_verify_url_checks(monkeypatch)
+
+    exit_code = cli.main(["capture", "verify", "--page-id", "page-book-1"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["verified"] is False
+    assert result["checks"]["author_relation_property"] == {"status": "missing"}
+    assert "missing:author_relation_property" in result["warnings"]
+    assert fake_adapter.created == []
+
+
+def test_url_is_accessible_falls_back_to_range_get_when_head_is_rejected(monkeypatch) -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return None
+
+    def fake_urlopen(request, timeout):
+        calls.append((request.get_method(), request.get_header("Range")))
+        if request.get_method() == "HEAD":
+            raise urllib.error.HTTPError(request.full_url, 405, "Method Not Allowed", hdrs=None, fp=None)
+        return FakeResponse()
+
+    monkeypatch.setattr(verifier.urllib.request, "urlopen", fake_urlopen)
+
+    assert verifier.url_is_accessible("https://example.com/cover.jpg") is True
+    assert calls == [("HEAD", None), ("GET", "bytes=0-0")]
+
+
+def test_capture_verify_reports_inaccessible_image_urls_from_cli(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-book-1",
+            "object": "page",
+            "cover": {"type": "external", "external": {"url": "https://example.com/page-cover.jpg"}},
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "想读"}},
+                "ISBN": {"type": "rich_text", "rich_text": [{"plain_text": "9787559847357"}]},
+                "页数": {"type": "number", "number": 400},
+                "作者": {"type": "relation", "relation": [{"id": "author-page-1"}]},
+                "封面": {
+                    "type": "files",
+                    "files": [
+                        {"type": "external", "name": "cover.jpg", "external": {"url": "https://example.com/cover.jpg"}}
+                    ],
+                },
+            },
+        }
+    )
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+    monkeypatch.setattr(cli, "url_is_accessible", lambda url: False)
+
+    exit_code = cli.main(["capture", "verify", "--page-id", "page-book-1"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["verified"] is False
+    assert result["checks"]["cover_files_property"] == {"status": "inaccessible", "property": "封面"}
+    assert result["checks"]["page_cover"] == {"status": "inaccessible"}
+    assert "inaccessible:cover_files_property" in result["warnings"]
+    assert "inaccessible:page_cover" in result["warnings"]
+    assert fake_adapter.created == []
+
+
+def test_verify_capture_page_marks_inaccessible_cover_file_url() -> None:
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-book-1",
+            "object": "page",
+            "cover": {"type": "external", "external": {"url": "https://example.com/page-cover.jpg"}},
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "想读"}},
+                "ISBN": {"type": "rich_text", "rich_text": [{"plain_text": "9787559847357"}]},
+                "页数": {"type": "number", "number": 400},
+                "作者": {"type": "relation", "relation": [{"id": "author-page-1"}]},
+                "封面": {
+                    "type": "files",
+                    "files": [
+                        {"type": "external", "name": "cover.jpg", "external": {"url": "https://example.com/cover.jpg"}}
+                    ],
+                },
+            },
+        }
+    )
+    checked_urls: list[str] = []
+
+    def url_checker(url: str) -> bool:
+        checked_urls.append(url)
+        return url == "https://example.com/page-cover.jpg"
+
+    result = verify_capture_page("page-book-1", fake_adapter, url_checker=url_checker)
+
+    assert result["verified"] is False
+    assert result["checks"]["cover_files_property"] == {"status": "inaccessible", "property": "封面"}
+    assert result["checks"]["page_cover"] == {"status": "present"}
+    assert "inaccessible:cover_files_property" in result["warnings"]
+    assert checked_urls == ["https://example.com/cover.jpg", "https://example.com/page-cover.jpg"]
+
+
+def test_verify_capture_page_marks_cover_files_inaccessible_when_any_file_url_fails() -> None:
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-book-1",
+            "object": "page",
+            "cover": {"type": "external", "external": {"url": "https://example.com/page-cover.jpg"}},
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "想读"}},
+                "ISBN": {"type": "rich_text", "rich_text": [{"plain_text": "9787559847357"}]},
+                "页数": {"type": "number", "number": 400},
+                "作者": {"type": "relation", "relation": [{"id": "author-page-1"}]},
+                "封面": {
+                    "type": "files",
+                    "files": [
+                        {"type": "external", "name": "ok.jpg", "external": {"url": "https://example.com/ok.jpg"}},
+                        {"type": "external", "name": "broken.jpg", "external": {"url": "https://example.com/broken.jpg"}},
+                    ],
+                },
+            },
+        }
+    )
+
+    result = verify_capture_page(
+        "page-book-1",
+        fake_adapter,
+        url_checker=lambda url: url in {"https://example.com/ok.jpg", "https://example.com/page-cover.jpg"},
+    )
+
+    assert result["verified"] is False
+    assert result["checks"]["cover_files_property"] == {"status": "inaccessible", "property": "封面"}
+    assert "inaccessible:cover_files_property" in result["warnings"]
+
+
+def test_verify_capture_page_marks_inaccessible_page_cover_url() -> None:
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-book-1",
+            "object": "page",
+            "cover": {"type": "external", "external": {"url": "https://example.com/page-cover.jpg"}},
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "想读"}},
+                "ISBN": {"type": "rich_text", "rich_text": [{"plain_text": "9787559847357"}]},
+                "页数": {"type": "number", "number": 400},
+                "作者": {"type": "relation", "relation": [{"id": "author-page-1"}]},
+                "封面": {
+                    "type": "files",
+                    "files": [
+                        {"type": "external", "name": "cover.jpg", "external": {"url": "https://example.com/cover.jpg"}}
+                    ],
+                },
+            },
+        }
+    )
+
+    result = verify_capture_page("page-book-1", fake_adapter, url_checker=lambda url: url == "https://example.com/cover.jpg")
+
+    assert result["verified"] is False
+    assert result["checks"]["cover_files_property"] == {"status": "present", "property": "封面"}
+    assert result["checks"]["page_cover"] == {"status": "inaccessible"}
+    assert "inaccessible:page_cover" in result["warnings"]
 
 
 def test_capture_apply_missing_plan_file_returns_readable_error(tmp_path, monkeypatch, capsys):
