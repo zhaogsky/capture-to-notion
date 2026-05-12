@@ -51,7 +51,7 @@ capture-to-notion capture plan --input /path/to/input.json --output /path/to/pla
 capture-to-notion capture apply --plan /path/to/plan.json --confirmed
 ```
 
-11. Present the apply result, including warnings and asset results when present.
+11. Present the apply result, including warnings, asset results, and `verification` warnings when present.
 
 ## Target Suggestion
 

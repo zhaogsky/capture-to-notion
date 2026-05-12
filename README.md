@@ -107,7 +107,7 @@ Verify a written page with read-only checks:
 capture-to-notion capture verify --page-id PAGE_ID
 ```
 
-`capture verify` returns a JSON result with `verified`, `checks`, and `warnings` for page presence, title/status fields, author relation, ISBN, page count, cover files accessibility, and page cover accessibility. It does not write to Notion or download images.
+`capture verify` returns a JSON result with `verified`, `checks`, and `warnings`. Without a plan or explicit mapping, it only checks page presence and page cover URL accessibility; it does not infer title, status, author, ISBN, page count, or cover fields from property names. It does not write to Notion or download images. `capture apply` appends a top-level `verification` summary for written pages when page IDs are returned, using the write plan and target cache field mapping to verify written fields without hiding the apply result.
 
 ## Typical Workflow
 

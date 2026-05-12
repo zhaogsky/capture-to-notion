@@ -107,7 +107,7 @@ capture-to-notion capture apply --plan plan.json --confirmed
 capture-to-notion capture verify --page-id PAGE_ID
 ```
 
-`capture verify` 会返回包含 `verified`、`checks` 和 `warnings` 的 JSON，用于检查页面是否存在、标题/状态字段、作者 relation、ISBN、页数、封面 files URL 可访问性和页面 cover URL 可访问性。它不会写入 Notion，也不会下载图片。
+`capture verify` 会返回包含 `verified`、`checks` 和 `warnings` 的 JSON；在没有计划或显式 mapping 时，它只检查页面是否存在和页面 cover URL 可访问性，不会根据字段名猜测标题、状态、作者、ISBN、页数或封面字段。它不会写入 Notion，也不会下载图片。`capture apply` 在写入结果返回页面 ID 时，会根据 write plan 和 target cache 中的字段映射附加顶层 `verification` 摘要，包含写入字段的验证结果和警告，且不会因为验证警告而隐藏 apply 结果。
 
 ## 典型工作流
 

@@ -196,6 +196,82 @@ def cmd_capture_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def _inaccessible_verification_page(page_id: str) -> dict[str, Any]:
+    return {
+        "page_id": page_id,
+        "verified": False,
+        "checks": {"page": {"status": "inaccessible"}},
+        "warnings": ["inaccessible:page"],
+    }
+
+
+def _is_empty_verification_value(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
+
+
+def _schema_for_plan(plan: WritePlan, target_structure: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    data_source_id = plan.target.data_source_id
+    for data_source in target_structure.get("data_sources", {}).values():
+        if data_source.get("data_source_id") == data_source_id and isinstance(data_source.get("schema"), dict):
+            return data_source["schema"]
+    return {}
+
+
+def _verification_checks_for_plan(plan: WritePlan, schema: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    checks: dict[str, dict[str, Any]] = {}
+    for record_key, property_name in plan.field_mapping.items():
+        if _is_empty_verification_value(plan.normalized_record.get(record_key)):
+            continue
+        property_schema = schema.get(property_name)
+        if not isinstance(property_schema, dict):
+            continue
+        property_type = property_schema.get("type")
+        if not isinstance(property_type, str):
+            continue
+        checks[record_key] = {"property_type": property_type}
+        if property_type == "files":
+            checks[record_key]["check_urls"] = True
+    return checks
+
+
+def _apply_verification_summary(
+    result: dict[str, Any],
+    adapter: Any,
+    plan: WritePlan,
+    target_structure: dict[str, Any],
+) -> dict[str, Any] | None:
+    pages = []
+    schema = _schema_for_plan(plan, target_structure)
+    checks = _verification_checks_for_plan(plan, schema)
+    for operation_result in result.get("results", []):
+        if not isinstance(operation_result, dict):
+            continue
+        page_id = operation_result.get("page_id")
+        if isinstance(page_id, str) and page_id:
+            try:
+                pages.append(
+                    verify_capture_page(
+                        page_id,
+                        adapter,
+                        url_checker=url_is_accessible,
+                        field_mapping=plan.field_mapping,
+                        schema=schema,
+                        checks=checks,
+                        include_page_cover=False,
+                    )
+                )
+            except (NotionApiError, NotionAuthError, NotionPermissionError, NotionRateLimitError):
+                pages.append(_inaccessible_verification_page(page_id))
+    if not pages:
+        return None
+    warnings = [warning for page in pages for warning in page.get("warnings", []) if isinstance(warning, str)]
+    return {
+        "verified": all(bool(page.get("verified")) for page in pages),
+        "pages": pages,
+        "warnings": warnings,
+    }
+
+
 def cmd_capture_apply(args: argparse.Namespace) -> int:
     config = ensure_config()
     cache = CacheStore(config)
@@ -216,6 +292,9 @@ def cmd_capture_apply(args: argparse.Namespace) -> int:
 
     adapter = NotionAdapter.from_config(config)
     result = apply_write_plan(plan, target_structure, adapter)
+    verification = _apply_verification_summary(result, adapter, plan, target_structure)
+    if verification is not None:
+        result["verification"] = verification
     print_json(result)
     return 0
 

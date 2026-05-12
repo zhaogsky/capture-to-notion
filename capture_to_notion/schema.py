@@ -5,29 +5,33 @@ import json
 from typing import Any
 from urllib.parse import urlparse
 
-SUPPORTED_TYPES = {
-    "title",
-    "rich_text",
-    "status",
-    "select",
-    "multi_select",
-    "url",
-    "date",
-    "files",
-    "relation",
-    "number",
+SCHEMA_PROPERTY_TYPES = {
     "checkbox",
-    "email",
-    "phone_number",
-    "people",
-    "formula",
-    "rollup",
-    "created_time",
     "created_by",
-    "last_edited_time",
+    "created_time",
+    "date",
+    "email",
+    "files",
+    "formula",
     "last_edited_by",
+    "last_edited_time",
+    "multi_select",
+    "number",
+    "people",
+    "phone_number",
+    "place",
+    "relation",
+    "rich_text",
+    "rollup",
+    "select",
+    "status",
+    "title",
     "unique_id",
+    "url",
 }
+
+PAGE_PROPERTY_VALUE_TYPES = SCHEMA_PROPERTY_TYPES | {"verification"}
+SUPPORTED_TYPES = SCHEMA_PROPERTY_TYPES
 
 FIELD_KEYS = {
     "title": "title",
@@ -240,6 +244,68 @@ def _is_empty_property_value(value: Any) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
 
+def property_has_value(property_data: Any) -> bool:
+    if not isinstance(property_data, dict):
+        return False
+    property_type = property_data.get("type")
+    if not isinstance(property_type, str):
+        return False
+    value = property_data.get(property_type)
+    return not _is_empty_property_value(value)
+
+
+def _file_item_url(file_item: dict[str, Any]) -> str | None:
+    file_type = file_item.get("type")
+    if file_type == "external" and isinstance(file_item.get("external"), dict):
+        url = file_item["external"].get("url")
+    elif file_type == "file" and isinstance(file_item.get("file"), dict):
+        url = file_item["file"].get("url")
+    else:
+        url = None
+    if isinstance(url, str) and url:
+        return url
+    return None
+
+
+def file_urls_from_property(property_data: Any) -> list[str]:
+    if not isinstance(property_data, dict) or property_data.get("type") != "files":
+        return []
+    files = property_data.get("files")
+    if not isinstance(files, list):
+        return []
+    return [url for file_item in files if isinstance(file_item, dict) if (url := _file_item_url(file_item))]
+
+
+def cover_url_from_page(page: dict[str, Any]) -> str | None:
+    cover = page.get("cover")
+    if not isinstance(cover, dict):
+        return None
+    cover_type = cover.get("type")
+    if cover_type == "external" and isinstance(cover.get("external"), dict):
+        url = cover["external"].get("url")
+    elif cover_type == "file" and isinstance(cover.get("file"), dict):
+        url = cover["file"].get("url")
+    else:
+        url = None
+    if isinstance(url, str) and url:
+        return url
+    return None
+
+
+def resolve_field_mapping(
+    schema: dict[str, dict[str, Any]],
+    *,
+    cached_fields: dict[str, str] | None = None,
+    explicit_mapping: dict[str, str] | None = None,
+) -> dict[str, str]:
+    resolved: dict[str, str] = {}
+    for source in (cached_fields or {}, explicit_mapping or {}):
+        for record_key, property_name in source.items():
+            if isinstance(record_key, str) and isinstance(property_name, str) and property_name in schema:
+                resolved[record_key] = property_name
+    return resolved
+
+
 def _text_content(value: Any) -> str:
     return str(value)
 
@@ -383,24 +449,28 @@ def _build_relation_property(value: Any) -> dict[str, Any] | None:
     return {"relation": relations}
 
 
+PROPERTY_TYPE_BUILDERS = {
+    "checkbox": _build_checkbox_property,
+    "date": _build_date_property,
+    "email": _build_email_property,
+    "files": _build_files_property,
+    "multi_select": _build_multi_select_property,
+    "number": _build_number_property,
+    "people": _build_people_property,
+    "phone_number": _build_phone_number_property,
+    "relation": _build_relation_property,
+    "rich_text": _build_rich_text_property,
+    "select": _build_select_property,
+    "status": _build_status_property,
+    "title": _build_title_property,
+    "url": _build_url_property,
+}
+WRITABLE_PROPERTY_TYPES = set(PROPERTY_TYPE_BUILDERS)
+READONLY_PROPERTY_TYPES = SCHEMA_PROPERTY_TYPES - WRITABLE_PROPERTY_TYPES
+
+
 def _build_property_value(property_type: str, value: Any) -> dict[str, Any] | None:
-    builders = {
-        "title": _build_title_property,
-        "rich_text": _build_rich_text_property,
-        "select": _build_select_property,
-        "multi_select": _build_multi_select_property,
-        "status": _build_status_property,
-        "url": _build_url_property,
-        "number": _build_number_property,
-        "checkbox": _build_checkbox_property,
-        "email": _build_email_property,
-        "phone_number": _build_phone_number_property,
-        "people": _build_people_property,
-        "date": _build_date_property,
-        "files": _build_files_property,
-        "relation": _build_relation_property,
-    }
-    builder = builders.get(property_type)
+    builder = PROPERTY_TYPE_BUILDERS.get(property_type)
     if builder is None:
         return None
     return builder(value)

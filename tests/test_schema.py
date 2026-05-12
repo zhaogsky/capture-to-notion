@@ -1,6 +1,20 @@
 import pytest
 
-from capture_to_notion.schema import build_properties, normalize_database_schema, schema_hash, semantic_field_mapping
+from capture_to_notion.schema import (
+    PROPERTY_TYPE_BUILDERS,
+    READONLY_PROPERTY_TYPES,
+    SCHEMA_PROPERTY_TYPES,
+    SUPPORTED_TYPES,
+    WRITABLE_PROPERTY_TYPES,
+    build_properties,
+    cover_url_from_page,
+    file_urls_from_property,
+    normalize_database_schema,
+    property_has_value,
+    resolve_field_mapping,
+    schema_hash,
+    semantic_field_mapping,
+)
 
 
 def test_build_properties_for_text_status_select_url_and_date():
@@ -146,6 +160,25 @@ def test_normalize_database_schema_includes_multi_select_options():
             "options": [{"name": "政治", "color": "red"}],
         }
     }
+
+
+def test_property_type_registry_keeps_builder_and_type_sets_consistent():
+    assert SUPPORTED_TYPES == SCHEMA_PROPERTY_TYPES
+    assert WRITABLE_PROPERTY_TYPES == set(PROPERTY_TYPE_BUILDERS)
+    assert READONLY_PROPERTY_TYPES == SCHEMA_PROPERTY_TYPES - WRITABLE_PROPERTY_TYPES
+    assert WRITABLE_PROPERTY_TYPES.isdisjoint(READONLY_PROPERTY_TYPES)
+    assert {"title", "rich_text", "files", "relation", "checkbox"} <= WRITABLE_PROPERTY_TYPES
+    assert {
+        "created_by",
+        "created_time",
+        "formula",
+        "last_edited_by",
+        "last_edited_time",
+        "place",
+        "rollup",
+        "unique_id",
+    } <= READONLY_PROPERTY_TYPES
+
 
 
 def test_normalize_database_schema_keeps_writable_and_readonly_property_types():
@@ -420,6 +453,70 @@ def test_build_properties_skips_readonly_formula_rollup_and_system_fields():
     }
 
     assert build_properties(record, field_mapping, schema) == {}
+
+
+def test_property_has_value_uses_official_page_property_value_shape():
+    assert property_has_value({"type": "title", "title": [{"plain_text": "Title"}]}) is True
+    assert property_has_value({"type": "rich_text", "rich_text": []}) is False
+    assert property_has_value({"type": "checkbox", "checkbox": False}) is True
+    assert property_has_value({"type": "number", "number": 0}) is True
+    assert property_has_value({"type": "relation", "relation": [{"id": "page-1"}], "has_more": False}) is True
+    assert property_has_value({"type": "rollup", "rollup": {"type": "number", "number": 3}}) is True
+    assert property_has_value({"type": "unique_id", "unique_id": {"prefix": "BK", "number": 7}}) is True
+    assert property_has_value({"type": "url", "url": ""}) is False
+    assert property_has_value({"type": "files", "files": []}) is False
+
+
+def test_file_urls_from_property_only_reads_notion_files_values():
+    property_data = {
+        "type": "files",
+        "files": [
+            {"type": "external", "external": {"url": "https://example.com/external.jpg"}},
+            {"type": "file", "file": {"url": "https://secure.notion-static.com/file.jpg"}},
+            {"type": "file_upload", "file_upload": {"id": "upload-1"}},
+            {"type": "external", "external": {"url": ""}},
+        ],
+    }
+
+    assert file_urls_from_property(property_data) == [
+        "https://example.com/external.jpg",
+        "https://secure.notion-static.com/file.jpg",
+    ]
+    assert file_urls_from_property({"type": "url", "url": "https://example.com/file.jpg"}) == []
+
+
+def test_cover_url_from_page_reads_notion_page_cover_shapes():
+    assert cover_url_from_page({"cover": {"type": "external", "external": {"url": "https://example.com/cover.jpg"}}}) == "https://example.com/cover.jpg"
+    assert cover_url_from_page({"cover": {"type": "file", "file": {"url": "https://secure.notion-static.com/cover.jpg"}}}) == "https://secure.notion-static.com/cover.jpg"
+    assert cover_url_from_page({"cover": None}) is None
+
+
+def test_resolve_field_mapping_uses_only_cached_or_explicit_mapping():
+    schema = {
+        "任意标题字段": {"type": "title"},
+        "任意状态字段": {"type": "status"},
+        "任意文件字段": {"type": "files"},
+    }
+
+    assert resolve_field_mapping(
+        schema,
+        cached_fields={"title": "任意标题字段", "cover": "missing-field"},
+        explicit_mapping={"state": "任意状态字段", "cover": "任意文件字段"},
+    ) == {
+        "title": "任意标题字段",
+        "state": "任意状态字段",
+        "cover": "任意文件字段",
+    }
+
+
+def test_resolve_field_mapping_does_not_infer_business_aliases():
+    schema = {
+        "书名": {"type": "title"},
+        "阅读状态": {"type": "status"},
+        "封面": {"type": "files"},
+    }
+
+    assert resolve_field_mapping(schema) == {}
 
 
 def test_semantic_field_mapping_uses_real_chinese_schema_names():
