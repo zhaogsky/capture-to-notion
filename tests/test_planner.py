@@ -561,8 +561,8 @@ def test_podcast_capture_plan_ignores_page_count_only_mapping_ambiguity(tmp_path
             "relations": [],
             "state_mapping": {"field": "状态", "values": {}},
             "asset_mapping": {},
-            "requires_confirmation": False,
-            "confirmation_reason": None,
+            "requires_confirmation": True,
+            "confirmation_reason": "field_mapping_ambiguous",
         },
     )
     capture = CaptureInput(
