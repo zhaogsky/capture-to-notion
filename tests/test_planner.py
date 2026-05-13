@@ -295,6 +295,63 @@ def test_book_capture_plan_requires_confirmation_when_key_values_are_missing(tmp
     assert plan.summary["key_fields"]["page_count"] == {"target_field": "页数", "value_status": "missing_value"}
 
 
+def test_book_capture_plan_uses_parser_profile_required_value_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["parser_profile"]["book"]["required_schema_fields"] = ["author", "state"]
+    target["parser_profile"]["book"]["required_value_fields"] = ["author"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.confirmation_reason is None
+    assert not any(warning.startswith("book_key_values_missing") for warning in plan.warnings)
+
+
+
+def test_book_capture_plan_uses_parser_profile_required_schema_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["parser_profile"]["book"]["required_schema_fields"] = ["author", "state"]
+    target["parser_profile"]["book"]["required_value_fields"] = ["author"]
+    books = target["data_sources"]["books"]
+    for record_key in ["cover", "isbn", "page_count"]:
+        books["fields"].pop(record_key)
+    for property_name in ["封面", "ISBN", "页数"]:
+        books["schema"].pop(property_name)
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.confirmation_reason is None
+    assert not any(warning.startswith("book_schema_incomplete") for warning in plan.warnings)
+
+
+
 def test_book_labeled_author_populates_normalized_record_and_mapping(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()

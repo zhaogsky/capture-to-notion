@@ -230,16 +230,41 @@ def _value_status(value: Any) -> str:
 
 
 
+def _profile_required_fields(
+    content_type: str,
+    parser_profile: dict[str, Any],
+    key: str,
+    default_fields: list[str],
+) -> list[str]:
+    if key in parser_profile:
+        return _string_list(parser_profile.get(key))
+    if content_type == "book":
+        return list(default_fields)
+    return []
+
+
+
+def _required_schema_fields(content_type: str, parser_profile: dict[str, Any]) -> list[str]:
+    return _profile_required_fields(content_type, parser_profile, "required_schema_fields", BOOK_REQUIRED_SCHEMA_FIELDS)
+
+
+
+def _required_value_fields(content_type: str, parser_profile: dict[str, Any]) -> list[str]:
+    return _profile_required_fields(content_type, parser_profile, "required_value_fields", BOOK_REQUIRED_VALUE_FIELDS)
+
+
+
 def _trusted_mapping_fields(
     content_type: str,
     fields: dict[str, str],
     field_sources: dict[str, str] | None,
+    required_schema_fields: list[str],
 ) -> dict[str, str]:
     if content_type != "book" or not field_sources:
         return dict(fields)
 
     trusted_fields = dict(fields)
-    for key in BOOK_REQUIRED_SCHEMA_FIELDS:
+    for key in required_schema_fields:
         source = field_sources.get(key)
         if source not in TRUSTED_BOOK_FIELD_SOURCES:
             trusted_fields.pop(key, None)
@@ -251,12 +276,13 @@ def _untrusted_mapping_warnings(
     content_type: str,
     fields: dict[str, str],
     field_sources: dict[str, str] | None,
+    required_schema_fields: list[str],
 ) -> list[str]:
     if content_type != "book" or not field_sources:
         return []
 
     warnings: list[str] = []
-    for key in BOOK_REQUIRED_SCHEMA_FIELDS:
+    for key in required_schema_fields:
         if key not in fields:
             continue
         source = field_sources.get(key)
@@ -324,12 +350,15 @@ def build_plan_summary(
 
 
 
-def missing_required_fields(content_type: str, fields: dict[str, str], schema: dict[str, Any] | None = None) -> list[str]:
-    if content_type != "book":
-        return []
-
-    missing_fields = [field for field in BOOK_REQUIRED_SCHEMA_FIELDS if field not in fields]
-    if "cover" not in missing_fields and schema:
+def missing_required_fields(
+    content_type: str,
+    fields: dict[str, str],
+    schema: dict[str, Any] | None = None,
+    required_fields: list[str] | None = None,
+) -> list[str]:
+    fields_to_check = required_fields if required_fields is not None else BOOK_REQUIRED_SCHEMA_FIELDS if content_type == "book" else []
+    missing_fields = [field for field in fields_to_check if field not in fields]
+    if "cover" not in missing_fields and "cover" in fields_to_check and schema:
         cover_field = fields.get("cover")
         if schema.get(cover_field, {}).get("type") != "files":
             missing_fields.append("cover")
@@ -337,10 +366,13 @@ def missing_required_fields(content_type: str, fields: dict[str, str], schema: d
 
 
 
-def missing_required_values(content_type: str, normalized_record: dict[str, Any]) -> list[str]:
-    if content_type != "book":
-        return []
-    return [field for field in BOOK_REQUIRED_VALUE_FIELDS if normalized_record.get(field) in (None, "", [], {})]
+def missing_required_values(
+    content_type: str,
+    normalized_record: dict[str, Any],
+    required_fields: list[str] | None = None,
+) -> list[str]:
+    fields_to_check = required_fields if required_fields is not None else BOOK_REQUIRED_VALUE_FIELDS if content_type == "book" else []
+    return [field for field in fields_to_check if normalized_record.get(field) in (None, "", [], {})]
 
 
 def unresolved_plan(capture: CaptureInput, content_type: str, reason: str) -> WritePlan:
@@ -390,9 +422,11 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
 
     fields = data_source.get("fields", {})
     field_sources = data_source.get("field_sources", {})
-    trusted_fields = _trusted_mapping_fields(content_type, fields, field_sources)
-    untrusted_mapping_warnings = _untrusted_mapping_warnings(content_type, fields, field_sources)
     parser_profile = parser_profile_for(structure, data_source, content_type)
+    required_schema_fields = _required_schema_fields(content_type, parser_profile)
+    required_value_fields = _required_value_fields(content_type, parser_profile)
+    trusted_fields = _trusted_mapping_fields(content_type, fields, field_sources, required_schema_fields)
+    untrusted_mapping_warnings = _untrusted_mapping_warnings(content_type, fields, field_sources, required_schema_fields)
     title = extract_book_title(capture.raw_input, parser_profile)
     state = normalize_state(capture.state)
     cover_url = default_cover_url(content_type, title)
@@ -458,8 +492,8 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         confirmation_reason = None
         structure_requires_confirmation = False
     data_source_schema = data_source.get("schema", {})
-    missing_fields = missing_required_fields(content_type, fields, data_source_schema)
-    missing_values = missing_required_values(content_type, normalized_record)
+    missing_fields = missing_required_fields(content_type, fields, data_source_schema, required_schema_fields)
+    missing_values = missing_required_values(content_type, normalized_record, required_value_fields)
     if missing_fields:
         warnings.append(f"{content_type}_schema_incomplete:{','.join(missing_fields)}")
     if missing_values:
