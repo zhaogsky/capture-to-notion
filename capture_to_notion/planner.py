@@ -60,7 +60,7 @@ def extract_labeled_value(raw_input: str, labels: list[str], known_labels: list[
     return value or None
 
 
-def extract_book_title(raw_input: str, parser_profile: dict[str, Any] | None = None) -> str:
+def extract_title(raw_input: str, parser_profile: dict[str, Any] | None = None) -> str:
     title_patterns = parser_profile.get("title_patterns", []) if isinstance(parser_profile, dict) else []
     for pattern in _string_list(title_patterns):
         try:
@@ -84,6 +84,9 @@ def extract_book_title(raw_input: str, parser_profile: dict[str, Any] | None = N
     if label_suffix:
         return raw_input[: label_suffix.start()].strip()
     return raw_input.strip()
+
+
+extract_book_title = extract_title
 
 
 def extract_page_count(raw_input: str, parser_profile: dict[str, Any] | None = None) -> int | None:
@@ -138,6 +141,7 @@ def _default_parser_profile(content_type: str) -> dict[str, Any]:
         return {
             "required_schema_fields": ["cover", "author", "isbn", "page_count", "state"],
             "required_value_fields": ["author", "isbn", "page_count"],
+            "summary_key_fields": ["cover", "author", "isbn", "page_count"],
         }
     return {}
 
@@ -247,6 +251,11 @@ def _required_value_fields(parser_profile: dict[str, Any]) -> list[str]:
 
 
 
+def _summary_key_fields(parser_profile: dict[str, Any]) -> list[str]:
+    return _string_list(parser_profile.get("summary_key_fields"))
+
+
+
 def _trusted_mapping_fields(
     content_type: str,
     fields: dict[str, str],
@@ -318,14 +327,14 @@ def build_plan_summary(
     requires_confirmation: bool,
     confirmation_reason: str | None,
     warnings: list[str],
+    summary_key_fields: list[str] | None = None,
 ) -> dict[str, Any]:
     key_fields: dict[str, dict[str, str | None]] = {}
-    if content_type == "book":
-        for key in ["cover", "author", "isbn", "page_count"]:
-            key_fields[key] = {
-                "target_field": field_mapping.get(key) or schema_fields.get(key),
-                "value_status": _value_status(normalized_record.get(key)),
-            }
+    for key in summary_key_fields or []:
+        key_fields[key] = {
+            "target_field": field_mapping.get(key) or schema_fields.get(key),
+            "value_status": _value_status(normalized_record.get(key)),
+        }
 
     return {
         "target_page": target_page,
@@ -375,7 +384,7 @@ def _base_normalized_record(
     content_type: str,
     parser_profile: dict[str, Any],
 ) -> dict[str, Any]:
-    title = extract_book_title(raw_input, parser_profile)
+    title = extract_title(raw_input, parser_profile)
     return {
         "title": title,
         "state": normalize_state(state),
@@ -459,7 +468,7 @@ def _normalized_record_for_capture(
 
 
 def unresolved_plan(capture: CaptureInput, content_type: str, reason: str) -> WritePlan:
-    title = extract_book_title(capture.raw_input)
+    title = extract_title(capture.raw_input)
     normalized_record = {"title": title, "state": normalize_state(capture.state)}
     warnings = ["目标页面未解析，需要先选择或确认存储页面。"]
     return WritePlan(
@@ -508,6 +517,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     parser_profile = parser_profile_for(structure, data_source, content_type)
     required_schema_fields = _required_schema_fields(parser_profile)
     required_value_fields = _required_value_fields(parser_profile)
+    summary_key_fields = _summary_key_fields(parser_profile)
     trusted_fields = _trusted_mapping_fields(content_type, fields, field_sources, required_schema_fields)
     untrusted_mapping_warnings = _untrusted_mapping_warnings(content_type, fields, field_sources, required_schema_fields)
     normalized_record = _normalized_record_for_capture(capture, content_type, parser_profile)
@@ -605,6 +615,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
             requires_confirmation=requires_confirmation,
             confirmation_reason=confirmation_reason,
             warnings=warnings,
+            summary_key_fields=summary_key_fields,
         ),
         normalized_record=normalized_record,
         field_mapping=field_mapping,

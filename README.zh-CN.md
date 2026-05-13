@@ -97,9 +97,9 @@ capture-to-notion capture plan --input input.json --output plan.json
 
 ## Parser Profile 与字段来源
 
-目标缓存可以在 target 层或 data source 层定义 `parser_profile`。data source 层会覆盖 target 层。默认 book profile 只提供 `required_schema_fields` 和 `required_value_fields`，不会添加业务标签。
+目标缓存可以在 target 层或 data source 层定义 `parser_profile`。data source 层会覆盖 target 层。默认 book profile 只提供 required/review 字段列表，不会添加业务标签。
 
-使用 `labels` 和 `title_patterns` 控制 raw input 如何解析为 normalized record。`required_schema_fields` 表示写入计划继续前必须映射到 Notion schema 的 record key；`required_value_fields` 表示计划中必须提取到值的 record key。
+使用 `labels` 和 `title_patterns` 控制 raw input 如何解析为 normalized record。`required_schema_fields` 表示写入计划继续前必须映射到 Notion schema 的 record key；`required_value_fields` 表示计划中必须提取到值的 record key；`summary_key_fields` 表示需要出现在计划审阅摘要中的字段。
 
 `field_sources` 记录每个缓存字段映射的来源。required book mapping 只有来源为 `explicit` 或 `profile` 时才可信；其他来源会通过 `untrusted_field_mapping`、`book_schema_incomplete` 或 `book_key_values_missing` 等 warning 触发确认。planner 不根据 Notion 字段名推断业务字段。
 
@@ -113,7 +113,8 @@ capture-to-notion capture plan --input input.json --output plan.json
         "page_count": ["页数", "pages"]
       },
       "required_schema_fields": ["cover", "author", "isbn", "page_count", "state"],
-      "required_value_fields": ["author", "isbn", "page_count"]
+      "required_value_fields": ["author", "isbn", "page_count"],
+      "summary_key_fields": ["cover", "author", "isbn", "page_count"]
     }
   },
   "data_sources": {

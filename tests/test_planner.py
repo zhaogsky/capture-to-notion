@@ -279,7 +279,36 @@ def test_default_book_parser_profile_supplies_required_fields_without_business_l
 
     assert profile["required_schema_fields"] == ["cover", "author", "isbn", "page_count", "state"]
     assert profile["required_value_fields"] == ["author", "isbn", "page_count"]
+    assert profile["summary_key_fields"] == ["cover", "author", "isbn", "page_count"]
     assert "labels" not in profile
+
+
+
+def test_extract_title_uses_generic_parser_profile_patterns():
+    assert hasattr(planner_module, "extract_title")
+    title = planner_module.extract_title(
+        "Episode: AI and Everything host: Acquired",
+        {"title_patterns": [r"Episode:\s*(.+?)(?=\s+host\s*:)"]},
+    )
+
+    assert title == "AI and Everything"
+
+
+
+def test_unresolved_plan_uses_generic_title_helper(monkeypatch):
+    monkeypatch.setattr(planner_module, "extract_title", lambda raw_input, parser_profile=None: "patched title", raising=False)
+    capture = CaptureInput(
+        raw_input="raw title",
+        target_hint="missing target",
+        state="initialized",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = planner_module.unresolved_plan(capture, "podcast_episode", "target_not_resolved")
+
+    assert plan.normalized_record["title"] == "patched title"
+    assert plan.summary["title"] == "patched title"
 
 
 
@@ -523,6 +552,32 @@ def test_book_capture_plan_does_not_parse_business_labels_without_parser_profile
     assert plan.normalized_record["author"] is None
     assert plan.normalized_record["isbn"] is None
     assert plan.normalized_record["page_count"] is None
+
+
+def test_podcast_capture_plan_summary_uses_parser_profile_key_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_podcast_target(config)
+    target = cache.read_json(config.targets_dir / "podcastshelf.json", {})
+    target["parser_profile"]["podcast_episode"]["summary_key_fields"] = ["podcast", "episode_url"]
+    cache.write_json(config.targets_dir / "podcastshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="收藏这期播客到播客库 节目：忽左忽右",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.summary["key_fields"] == {
+        "podcast": {"target_field": "播客", "value_status": "present"},
+        "episode_url": {"target_field": "链接", "value_status": "missing_value"},
+    }
+
 
 
 def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp_path, monkeypatch):

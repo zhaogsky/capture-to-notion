@@ -97,9 +97,9 @@ The generated plan includes a top-level `summary` block for review before any wr
 
 ## Parser Profiles and Field Sources
 
-Target cache entries can define `parser_profile` at the target level or data source level. Data source profiles override target profiles. The default book profile supplies only `required_schema_fields` and `required_value_fields`; it does not add business labels.
+Target cache entries can define `parser_profile` at the target level or data source level. Data source profiles override target profiles. The default book profile supplies only required/review field lists; it does not add business labels.
 
-Use `labels` and `title_patterns` to control raw input parsing into normalized record keys. Use `required_schema_fields` for record keys that must map to Notion schema before a write plan can proceed, and `required_value_fields` for record keys that must have extracted values.
+Use `labels` and `title_patterns` to control raw input parsing into normalized record keys. Use `required_schema_fields` for record keys that must map to Notion schema before a write plan can proceed, `required_value_fields` for record keys that must have extracted values, and `summary_key_fields` for fields that should appear in the plan review summary.
 
 `field_sources` records where each cached mapping came from. Required book mappings are trusted only when their source is `explicit` or `profile`; other sources trigger confirmation through warnings such as `untrusted_field_mapping`, `book_schema_incomplete`, or `book_key_values_missing`. The planner does not infer business fields from Notion property names.
 
@@ -113,7 +113,8 @@ Use `labels` and `title_patterns` to control raw input parsing into normalized r
         "page_count": ["页数", "pages"]
       },
       "required_schema_fields": ["cover", "author", "isbn", "page_count", "state"],
-      "required_value_fields": ["author", "isbn", "page_count"]
+      "required_value_fields": ["author", "isbn", "page_count"],
+      "summary_key_fields": ["cover", "author", "isbn", "page_count"]
     }
   },
   "data_sources": {
