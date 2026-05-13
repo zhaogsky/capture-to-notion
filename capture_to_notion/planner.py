@@ -60,6 +60,16 @@ def extract_labeled_value(raw_input: str, labels: list[str], known_labels: list[
     return value or None
 
 
+def _clean_title_suffix(title: str, parser_profile: dict[str, Any] | None = None) -> str:
+    cleaned = title.strip()
+    cleanup_terms = _string_list(parser_profile.get("title_cleanup_terms")) if isinstance(parser_profile, dict) else []
+    for term in sorted(cleanup_terms, key=len, reverse=True):
+        candidate = re.sub(rf"(?:{METADATA_DELIMITER_PATTERN})+{re.escape(term)}$", "", cleaned).strip()
+        if candidate:
+            cleaned = candidate
+    return cleaned
+
+
 def extract_title(raw_input: str, parser_profile: dict[str, Any] | None = None) -> str:
     title_patterns = parser_profile.get("title_patterns", []) if isinstance(parser_profile, dict) else []
     for pattern in _string_list(title_patterns):
@@ -68,12 +78,12 @@ def extract_title(raw_input: str, parser_profile: dict[str, Any] | None = None) 
         except re.error:
             continue
         if match:
-            title = match.group(1 if match.groups() else 0).strip()
+            title = _clean_title_suffix(match.group(1 if match.groups() else 0), parser_profile)
             if title:
                 return title
     match = re.search(r"《([^》]+)》", raw_input)
     if match:
-        return match.group(1)
+        return _clean_title_suffix(match.group(1), parser_profile)
     known_labels = _known_parser_labels(parser_profile)
     known_label_pattern = "|".join(re.escape(label) for label in known_labels)
     label_suffix = re.search(
@@ -82,8 +92,8 @@ def extract_title(raw_input: str, parser_profile: dict[str, Any] | None = None) 
         flags=re.IGNORECASE,
     ) if known_label_pattern else None
     if label_suffix:
-        return raw_input[: label_suffix.start()].strip()
-    return raw_input.strip()
+        return _clean_title_suffix(raw_input[: label_suffix.start()], parser_profile)
+    return _clean_title_suffix(raw_input, parser_profile)
 
 
 def extract_page_count(raw_input: str, parser_profile: dict[str, Any] | None = None) -> int | None:
@@ -483,6 +493,26 @@ def _podcast_normalized_record(
 
 
 
+def _capture_title_cleanup_terms(capture: CaptureInput, structure: dict[str, Any]) -> list[str]:
+    terms = _string_list(capture.target_hint)
+    target = structure.get("target")
+    if isinstance(target, dict):
+        terms.extend(_string_list(target.get("title")))
+    return list(dict.fromkeys(terms))
+
+
+def _parser_profile_with_title_cleanup_terms(
+    parser_profile: dict[str, Any],
+    capture: CaptureInput,
+    structure: dict[str, Any],
+) -> dict[str, Any]:
+    cleanup_terms = list(dict.fromkeys(_string_list(parser_profile.get("title_cleanup_terms")) + _capture_title_cleanup_terms(capture, structure)))
+    if not cleanup_terms:
+        return parser_profile
+    return {**parser_profile, "title_cleanup_terms": cleanup_terms}
+
+
+
 def _normalized_record_for_capture(
     capture: CaptureInput,
     content_type: str,
@@ -572,7 +602,11 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
 
     fields = data_source.get("fields", {})
     field_sources = data_source.get("field_sources", {})
-    parser_profile = parser_profile_for(structure, data_source, content_type)
+    parser_profile = _parser_profile_with_title_cleanup_terms(
+        parser_profile_for(structure, data_source, content_type),
+        capture,
+        structure,
+    )
     required_schema_fields = _required_schema_fields(parser_profile)
     required_value_fields = _required_value_fields(parser_profile)
     summary_key_fields = _summary_key_fields(parser_profile)

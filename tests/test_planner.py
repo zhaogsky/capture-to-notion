@@ -302,6 +302,25 @@ def test_extract_title_uses_generic_parser_profile_patterns():
 
 
 
+def test_book_capture_plan_strips_target_alias_from_title_prefix_before_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_book_target(config)
+
+    capture = CaptureInput(
+        raw_input="可能性的艺术 书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.normalized_record["title"] == "可能性的艺术"
+
+
+
 def test_unresolved_plan_uses_generic_title_helper(monkeypatch):
     monkeypatch.setattr(planner_module, "extract_title", lambda raw_input, parser_profile=None: "patched title", raising=False)
     capture = CaptureInput(
