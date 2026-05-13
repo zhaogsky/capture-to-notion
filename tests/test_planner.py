@@ -6,12 +6,16 @@ import pytest
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import ensure_config
 from capture_to_notion.models import CaptureInput, CaptureOptions, Target, WritePlan
+import capture_to_notion.planner as planner_module
 from capture_to_notion.planner import (
     build_asset_operations,
     build_capture_plan,
     build_plan_field_mapping,
     build_plan_summary,
     extract_labeled_value,
+    missing_required_fields,
+    missing_required_values,
+    parser_profile_for,
 )
 
 
@@ -270,6 +274,21 @@ def test_build_plan_summary_snapshots_mapped_fields_and_warnings():
 
 
 
+def test_default_book_parser_profile_supplies_required_fields_without_business_labels():
+    profile = parser_profile_for({}, {}, "book")
+
+    assert profile["required_schema_fields"] == ["cover", "author", "isbn", "page_count", "state"]
+    assert profile["required_value_fields"] == ["author", "isbn", "page_count"]
+    assert "labels" not in profile
+
+
+
+def test_missing_required_helpers_do_not_apply_book_defaults_without_required_fields():
+    assert missing_required_fields("book", {}) == []
+    assert missing_required_values("book", {"title": "可能性的艺术"}) == []
+
+
+
 def test_book_capture_plan_requires_confirmation_when_key_values_are_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -349,6 +368,45 @@ def test_book_capture_plan_uses_parser_profile_required_schema_fields(tmp_path, 
     assert plan.requires_confirmation is False
     assert plan.confirmation_reason is None
     assert not any(warning.startswith("book_schema_incomplete") for warning in plan.warnings)
+
+
+
+def test_book_normalized_record_helper_uses_parser_profile_labels_only():
+    assert hasattr(planner_module, "_book_normalized_record")
+    record = planner_module._book_normalized_record(
+        raw_input="Book: The Art of Possibility writer: 刘瑜 code: 9787559847357 length: 400",
+        state="想读",
+        parser_profile={
+            "labels": {
+                "author": ["writer"],
+                "isbn": ["code"],
+                "page_count": ["length"],
+            },
+            "title_patterns": [r"Book:\s*(.+?)(?=\s+writer\s*:)"]
+        },
+    )
+
+    assert record["title"] == "The Art of Possibility"
+    assert record["state"] == "initialized"
+    assert record["author"] == "刘瑜"
+    assert record["isbn"] == "9787559847357"
+    assert record["page_count"] == 400
+
+
+
+def test_podcast_normalized_record_helper_uses_parser_profile_labels_only():
+    assert hasattr(planner_module, "_podcast_normalized_record")
+    record = planner_module._podcast_normalized_record(
+        raw_input="收藏这期播客到播客库 节目名：忽左忽右",
+        state="初始化",
+        parser_profile={"labels": {"podcast": ["节目名"]}},
+    )
+
+    assert record["title"] == "收藏这期播客到播客库"
+    assert record["state"] == "initialized"
+    assert record["podcast"] == "忽左忽右"
+    assert record["episode_url"] is None
+    assert record["published_at"] is None
 
 
 

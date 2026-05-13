@@ -16,8 +16,6 @@ from capture_to_notion.schema import confirmation_blocking_warnings
 
 METADATA_DELIMITER_PATTERN = r"[\s,，;；|｜]"
 METADATA_COLON_PATTERN = r"[:：]"
-BOOK_REQUIRED_SCHEMA_FIELDS = ["cover", "author", "isbn", "page_count", "state"]
-BOOK_REQUIRED_VALUE_FIELDS = ["author", "isbn", "page_count"]
 TRUSTED_BOOK_FIELD_SOURCES = {"explicit", "profile"}
 
 
@@ -135,12 +133,21 @@ def _parser_profile_section(profile: Any, content_type: str) -> dict[str, Any]:
     return profile
 
 
+def _default_parser_profile(content_type: str) -> dict[str, Any]:
+    if content_type == "book":
+        return {
+            "required_schema_fields": ["cover", "author", "isbn", "page_count", "state"],
+            "required_value_fields": ["author", "isbn", "page_count"],
+        }
+    return {}
+
+
 def parser_profile_for(
     structure: dict[str, Any],
     data_source: dict[str, Any],
     content_type: str,
 ) -> dict[str, Any]:
-    profile: dict[str, Any] = {}
+    profile = _default_parser_profile(content_type)
     target_profile = _parser_profile_section(structure.get("parser_profile"), content_type)
     data_source_profile = _parser_profile_section(data_source.get("parser_profile"), content_type)
     for source in (target_profile, data_source_profile):
@@ -230,27 +237,13 @@ def _value_status(value: Any) -> str:
 
 
 
-def _profile_required_fields(
-    content_type: str,
-    parser_profile: dict[str, Any],
-    key: str,
-    default_fields: list[str],
-) -> list[str]:
-    if key in parser_profile:
-        return _string_list(parser_profile.get(key))
-    if content_type == "book":
-        return list(default_fields)
-    return []
+def _required_schema_fields(parser_profile: dict[str, Any]) -> list[str]:
+    return _string_list(parser_profile.get("required_schema_fields"))
 
 
 
-def _required_schema_fields(content_type: str, parser_profile: dict[str, Any]) -> list[str]:
-    return _profile_required_fields(content_type, parser_profile, "required_schema_fields", BOOK_REQUIRED_SCHEMA_FIELDS)
-
-
-
-def _required_value_fields(content_type: str, parser_profile: dict[str, Any]) -> list[str]:
-    return _profile_required_fields(content_type, parser_profile, "required_value_fields", BOOK_REQUIRED_VALUE_FIELDS)
+def _required_value_fields(parser_profile: dict[str, Any]) -> list[str]:
+    return _string_list(parser_profile.get("required_value_fields"))
 
 
 
@@ -356,7 +349,7 @@ def missing_required_fields(
     schema: dict[str, Any] | None = None,
     required_fields: list[str] | None = None,
 ) -> list[str]:
-    fields_to_check = required_fields if required_fields is not None else BOOK_REQUIRED_SCHEMA_FIELDS if content_type == "book" else []
+    fields_to_check = required_fields or []
     missing_fields = [field for field in fields_to_check if field not in fields]
     if "cover" not in missing_fields and "cover" in fields_to_check and schema:
         cover_field = fields.get("cover")
@@ -371,8 +364,98 @@ def missing_required_values(
     normalized_record: dict[str, Any],
     required_fields: list[str] | None = None,
 ) -> list[str]:
-    fields_to_check = required_fields if required_fields is not None else BOOK_REQUIRED_VALUE_FIELDS if content_type == "book" else []
+    fields_to_check = required_fields or []
     return [field for field in fields_to_check if normalized_record.get(field) in (None, "", [], {})]
+
+
+def _base_normalized_record(
+    *,
+    raw_input: str,
+    state: str | None,
+    content_type: str,
+    parser_profile: dict[str, Any],
+) -> dict[str, Any]:
+    title = extract_book_title(raw_input, parser_profile)
+    return {
+        "title": title,
+        "state": normalize_state(state),
+        "cover": default_cover_url(content_type, title),
+    }
+
+
+
+def _book_normalized_record(
+    *,
+    raw_input: str,
+    state: str | None,
+    parser_profile: dict[str, Any],
+) -> dict[str, Any]:
+    record = _base_normalized_record(
+        raw_input=raw_input,
+        state=state,
+        content_type="book",
+        parser_profile=parser_profile,
+    )
+    known_labels = _known_parser_labels(parser_profile)
+    record.update(
+        {
+            "author": extract_labeled_value(raw_input, _parser_labels(parser_profile, "author"), known_labels),
+            "isbn": extract_labeled_value(raw_input, _parser_labels(parser_profile, "isbn"), known_labels),
+            "publisher": extract_labeled_value(raw_input, _parser_labels(parser_profile, "publisher"), known_labels),
+            "page_count": extract_page_count(raw_input, parser_profile),
+        }
+    )
+    return record
+
+
+
+def _podcast_normalized_record(
+    *,
+    raw_input: str,
+    state: str | None,
+    parser_profile: dict[str, Any],
+) -> dict[str, Any]:
+    record = _base_normalized_record(
+        raw_input=raw_input,
+        state=state,
+        content_type="podcast_episode",
+        parser_profile=parser_profile,
+    )
+    known_labels = _known_parser_labels(parser_profile)
+    record.update(
+        {
+            "podcast": extract_labeled_value(raw_input, _parser_labels(parser_profile, "podcast"), known_labels),
+            "episode_url": None,
+            "published_at": None,
+        }
+    )
+    return record
+
+
+
+def _normalized_record_for_capture(
+    capture: CaptureInput,
+    content_type: str,
+    parser_profile: dict[str, Any],
+) -> dict[str, Any]:
+    if content_type == "book":
+        return _book_normalized_record(
+            raw_input=capture.raw_input,
+            state=capture.state,
+            parser_profile=parser_profile,
+        )
+    if content_type == "podcast_episode":
+        return _podcast_normalized_record(
+            raw_input=capture.raw_input,
+            state=capture.state,
+            parser_profile=parser_profile,
+        )
+    return _base_normalized_record(
+        raw_input=capture.raw_input,
+        state=capture.state,
+        content_type=content_type,
+        parser_profile=parser_profile,
+    )
 
 
 def unresolved_plan(capture: CaptureInput, content_type: str, reason: str) -> WritePlan:
@@ -423,54 +506,12 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     fields = data_source.get("fields", {})
     field_sources = data_source.get("field_sources", {})
     parser_profile = parser_profile_for(structure, data_source, content_type)
-    required_schema_fields = _required_schema_fields(content_type, parser_profile)
-    required_value_fields = _required_value_fields(content_type, parser_profile)
+    required_schema_fields = _required_schema_fields(parser_profile)
+    required_value_fields = _required_value_fields(parser_profile)
     trusted_fields = _trusted_mapping_fields(content_type, fields, field_sources, required_schema_fields)
     untrusted_mapping_warnings = _untrusted_mapping_warnings(content_type, fields, field_sources, required_schema_fields)
-    title = extract_book_title(capture.raw_input, parser_profile)
-    state = normalize_state(capture.state)
-    cover_url = default_cover_url(content_type, title)
-
-    normalized_record = {
-        "title": title,
-        "state": state,
-        "cover": cover_url,
-    }
-    if content_type == "book":
-        known_labels = _known_parser_labels(parser_profile)
-        normalized_record.update(
-            {
-                "author": extract_labeled_value(
-                    capture.raw_input,
-                    _parser_labels(parser_profile, "author"),
-                    known_labels,
-                ),
-                "isbn": extract_labeled_value(
-                    capture.raw_input,
-                    _parser_labels(parser_profile, "isbn"),
-                    known_labels,
-                ),
-                "publisher": extract_labeled_value(
-                    capture.raw_input,
-                    _parser_labels(parser_profile, "publisher"),
-                    known_labels,
-                ),
-                "page_count": extract_page_count(capture.raw_input, parser_profile),
-            }
-        )
-    if content_type == "podcast_episode":
-        known_labels = _known_parser_labels(parser_profile)
-        normalized_record.update(
-            {
-                "podcast": extract_labeled_value(
-                    capture.raw_input,
-                    _parser_labels(parser_profile, "podcast"),
-                    known_labels,
-                ),
-                "episode_url": None,
-                "published_at": None,
-            }
-        )
+    normalized_record = _normalized_record_for_capture(capture, content_type, parser_profile)
+    cover_url = normalized_record.get("cover")
 
     confirmation_reason = structure.get("confirmation_reason")
     warnings = list(data_source.get("mapping_warnings") or [])
