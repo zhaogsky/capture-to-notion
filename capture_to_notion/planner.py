@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -481,10 +482,21 @@ def _normalized_record_for_capture(
     )
 
 
-def unresolved_plan(capture: CaptureInput, content_type: str, reason: str) -> WritePlan:
+def _shell_arg(value: str) -> str:
+    if value and all(ch.isalnum() or ch in "@%+=:,./-" for ch in value):
+        return value
+    return shlex.quote(value)
+
+
+def unresolved_plan(
+    capture: CaptureInput,
+    content_type: str,
+    reason: str,
+    warnings: list[str] | None = None,
+) -> WritePlan:
     title = extract_title(capture.raw_input)
     normalized_record = {"title": title, "state": normalize_state(capture.state)}
-    warnings = ["目标页面未解析，需要先选择或确认存储页面。"]
+    warnings = warnings or ["目标页面未解析，需要先选择或确认存储页面。"]
     return WritePlan(
         plan_id=plan_id_for(capture),
         content_type=content_type,
@@ -520,7 +532,13 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
 
     structure = cache.target_structure(alias.get("target_id"))
     if not structure:
-        return unresolved_plan(capture, content_type, "target_structure_missing")
+        warnings = ["目标页面未解析，需要先选择或确认存储页面。"]
+        page_id = alias.get("page_id")
+        if isinstance(page_id, str) and page_id and capture.target_hint:
+            warnings.append(
+                f"capture-to-notion target scan --page-id {_shell_arg(page_id)} --alias {_shell_arg(capture.target_hint)}"
+            )
+        return unresolved_plan(capture, content_type, "target_structure_missing", warnings)
 
     _, data_source = primary_data_source(structure, content_type)
     if not data_source:

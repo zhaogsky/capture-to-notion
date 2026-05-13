@@ -190,6 +190,55 @@ def test_golden_completed_book_plan_maps_completed_state(tmp_path, monkeypatch):
     ]
 
 
+def test_golden_mixed_language_multi_author_book_plan(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_books_target(config)
+    capture = CaptureInput(
+        raw_input="把《The Left Hand of Darkness》初始化到书单 author: Ursula K. Le Guin, Ann Leckie ISBN: 9780441478125 页数：304",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.content_type == "book"
+    assert plan.target.page_title == "书单"
+    assert plan.normalized_record["title"] == "The Left Hand of Darkness"
+    assert plan.normalized_record["author"] == "Ursula K. Le Guin, Ann Leckie"
+    assert plan.normalized_record["isbn"] == "9780441478125"
+    assert plan.normalized_record["page_count"] == 304
+    assert plan.requires_confirmation is False
+    assert plan.field_mapping["author"] == "作者"
+    assert plan.field_mapping["isbn"] == "ISBN"
+    assert plan.field_mapping["page_count"] == "页数"
+    assert plan.field_mapping["cover"] == "封面"
+
+
+
+def test_golden_book_schema_missing_page_count_requires_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_books_target(config, include_page_count=False)
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "book_schema_incomplete"
+    assert "book_schema_incomplete:page_count" in plan.warnings
+    assert plan.operations == []
+    assert plan.asset_operations == []
+
+
 def test_golden_missing_target_returns_unresolved_plan(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()

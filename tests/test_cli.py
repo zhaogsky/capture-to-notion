@@ -132,6 +132,40 @@ def test_capture_plan_stdout_outputs_valid_json(tmp_path):
     assert data["target"]["data_source_id"] == "ds-books"
 
 
+
+def test_capture_plan_alias_missing_target_cache_suggests_target_scan(tmp_path):
+    write_json(
+        tmp_path / "aliases.json",
+        {
+            "aliases": {
+                "书单": {
+                    "type": "page",
+                    "page_id": "page-books",
+                    "target_id": "bookshelf",
+                }
+            }
+        },
+    )
+    input_file = tmp_path / "capture.json"
+    write_json(
+        input_file,
+        {
+            "raw_input": "把《可能性的艺术》初始化到书单",
+            "target_hint": "书单",
+            "state": "initialized",
+            "content_type_hint": "book",
+        },
+    )
+
+    result = run_cli(["capture", "plan", "--input", str(input_file)], tmp_path)
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["requires_confirmation"] is True
+    assert data["confirmation_reason"] == "target_structure_missing"
+    assert "capture-to-notion target scan --page-id page-books --alias 书单" in data["warnings"]
+
+
 def test_capture_plan_stdout_includes_review_summary(tmp_path):
     seed_book_target(tmp_path)
     input_file = tmp_path / "capture.json"

@@ -351,6 +351,74 @@ def test_capture_apply_includes_verification_summary_for_created_page(tmp_path, 
     assert fake_adapter.retrieved_pages == ["page-created"]
 
 
+
+def test_capture_apply_verification_reports_inaccessible_mapped_file_url(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    CacheStore(config).write_json(
+        config.targets_dir / "books.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单"},
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {
+                        "书名": {"name": "书名", "type": "title"},
+                        "封面": {"name": "封面", "type": "files"},
+                    },
+                },
+            },
+        },
+    )
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "normalized_record": {
+                "title": "可能性的艺术",
+                "cover": "https://example.com/cover.jpg",
+            },
+            "field_mapping": {"title": "书名", "cover": "封面"},
+            "operations": [{"type": "create_or_update_page", "data_source_id": "ds-books"}],
+        },
+    )
+    fake_adapter = FakeAdapter(
+        pages={
+            "page-created": {
+                "id": "page-created",
+                "object": "page",
+                "properties": {
+                    "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                    "封面": {
+                        "type": "files",
+                        "files": [
+                            {"type": "external", "name": "cover.jpg", "external": {"url": "https://example.com/cover.jpg"}}
+                        ],
+                    },
+                },
+            },
+        }
+    )
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+    monkeypatch.setattr(cli, "url_is_accessible", lambda url: False)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["applied"] is True
+    assert result["verification"]["verified"] is False
+    assert result["verification"]["pages"][0]["checks"]["cover"] == {
+        "status": "inaccessible",
+        "property": "封面",
+    }
+    assert "inaccessible:cover" in result["verification"]["pages"][0]["warnings"]
+    assert "inaccessible:cover" in result["verification"]["warnings"]
+    assert fake_adapter.created
+
+
 def test_apply_verification_uses_plan_mapping_property_types_not_business_names(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
     config = ensure_config()

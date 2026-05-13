@@ -502,6 +502,61 @@ def test_book_capture_plan_uses_parser_profile_labels_from_target_cache(tmp_path
     assert plan.field_mapping["page_count"] == "页数"
 
 
+@pytest.mark.parametrize(
+    ("raw_input", "expected_author"),
+    [
+        ("把《可能性的艺术》初始化到书单 作者：刘瑜、王小波 ISBN：9787559847357 页数：400", "刘瑜、王小波"),
+        (
+            "把《The Left Hand of Darkness》初始化到书单 author: Ursula K. Le Guin, Ann Leckie ISBN: 9780441478125 pages: 304",
+            "Ursula K. Le Guin, Ann Leckie",
+        ),
+    ],
+)
+def test_book_capture_plan_preserves_multi_author_value_from_parser_profile_labels(
+    tmp_path,
+    monkeypatch,
+    raw_input,
+    expected_author,
+):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_book_target(config)
+
+    capture = CaptureInput(
+        raw_input=raw_input,
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.normalized_record["author"] == expected_author
+    assert plan.requires_confirmation is False
+
+
+def test_book_capture_plan_parses_mixed_chinese_english_metadata_from_parser_profile_labels(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_book_target(config)
+    capture = CaptureInput(
+        raw_input="把《The Left Hand of Darkness》初始化到书单 author: Ursula K. Le Guin ISBN: 9780441478125 页数：304",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.normalized_record["title"] == "The Left Hand of Darkness"
+    assert plan.normalized_record["author"] == "Ursula K. Le Guin"
+    assert plan.normalized_record["isbn"] == "9780441478125"
+    assert plan.normalized_record["page_count"] == 304
+    assert plan.requires_confirmation is False
+
+
 def test_book_capture_plan_uses_target_level_parser_profile_labels(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
