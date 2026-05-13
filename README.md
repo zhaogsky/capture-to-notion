@@ -99,9 +99,9 @@ The generated plan includes a top-level `summary` block for review before any wr
 
 Target cache entries can define `parser_profile` at the target level or data source level. Data source profiles override target profiles. The default book profile supplies only required/review field lists; it does not add business labels.
 
-Use `labels` and `title_patterns` to control raw input parsing into normalized record keys. Use `required_schema_fields` for record keys that must map to Notion schema before a write plan can proceed, `required_value_fields` for record keys that must have extracted values, `summary_key_fields` for fields that should appear in the plan review summary, and `trusted_field_sources` for mapping source labels that can satisfy required schema fields without confirmation.
+Use `labels` and `title_patterns` to control raw input parsing into normalized record keys. Use `required_schema_fields` for record keys that must map to Notion schema before a write plan can proceed, `required_value_fields` for record keys that must have extracted values, `summary_key_fields` for fields that should appear in the plan review summary, `trusted_field_sources` for mapping source labels that can satisfy required schema fields without confirmation, and `asset_trust_required_fields` for asset-backed record keys whose attachment mappings must also come from trusted sources before asset operations are planned.
 
-`field_sources` records where each cached mapping came from. When `field_sources` are present, required mappings with a `trusted_field_sources` profile are trusted only when their source appears in that list; other sources trigger confirmation through warnings such as `untrusted_field_mapping`, `*_schema_incomplete`, or `*_key_values_missing`. The default book profile trusts `explicit` and `profile`. The planner does not infer business fields from Notion property names.
+`field_sources` records where each cached mapping came from. When `field_sources` are present, required mappings with a `trusted_field_sources` profile are trusted only when their source appears in that list; other sources trigger confirmation through warnings such as `untrusted_field_mapping`, `*_schema_incomplete`, or `*_key_values_missing`. `asset_trust_required_fields` reuses that same trust check for asset attachment planning, so untrusted asset mappings are removed before asset operations are generated. The default book profile trusts `explicit` and `profile`, and requires trusted asset mapping for `cover`. The planner does not infer business fields from Notion property names.
 
 ```json
 {
@@ -115,7 +115,8 @@ Use `labels` and `title_patterns` to control raw input parsing into normalized r
       "required_schema_fields": ["cover", "author", "isbn", "page_count", "state"],
       "required_value_fields": ["author", "isbn", "page_count"],
       "summary_key_fields": ["cover", "author", "isbn", "page_count"],
-      "trusted_field_sources": ["explicit", "profile"]
+      "trusted_field_sources": ["explicit", "profile"],
+      "asset_trust_required_fields": ["cover"]
     }
   },
   "data_sources": {

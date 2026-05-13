@@ -99,9 +99,9 @@ capture-to-notion capture plan --input input.json --output plan.json
 
 目标缓存可以在 target 层或 data source 层定义 `parser_profile`。data source 层会覆盖 target 层。默认 book profile 只提供 required/review 字段列表，不会添加业务标签。
 
-使用 `labels` 和 `title_patterns` 控制 raw input 如何解析为 normalized record。`required_schema_fields` 表示写入计划继续前必须映射到 Notion schema 的 record key；`required_value_fields` 表示计划中必须提取到值的 record key；`summary_key_fields` 表示需要出现在计划审阅摘要中的字段；`trusted_field_sources` 表示哪些字段映射来源可以无需确认地满足 required schema 字段。
+使用 `labels` 和 `title_patterns` 控制 raw input 如何解析为 normalized record。`required_schema_fields` 表示写入计划继续前必须映射到 Notion schema 的 record key；`required_value_fields` 表示计划中必须提取到值的 record key；`summary_key_fields` 表示需要出现在计划审阅摘要中的字段；`trusted_field_sources` 表示哪些字段映射来源可以无需确认地满足 required schema 字段；`asset_trust_required_fields` 表示哪些素材类 record key 在规划附件操作前也必须经过可信来源校验。
 
-`field_sources` 记录每个缓存字段映射的来源。当 `field_sources` 存在时，带有 `trusted_field_sources` profile 的 required mapping 只有来源在该列表中时才可信；其他来源会通过 `untrusted_field_mapping`、`*_schema_incomplete` 或 `*_key_values_missing` 等 warning 触发确认。默认 book profile 信任 `explicit` 和 `profile`。planner 不根据 Notion 字段名推断业务字段。
+`field_sources` 记录每个缓存字段映射的来源。当 `field_sources` 存在时，带有 `trusted_field_sources` profile 的 required mapping 只有来源在该列表中时才可信；其他来源会通过 `untrusted_field_mapping`、`*_schema_incomplete` 或 `*_key_values_missing` 等 warning 触发确认。`asset_trust_required_fields` 会复用同一套可信来源判断，未通过信任校验的素材映射会在生成 asset operation 之前被移除。默认 book profile 信任 `explicit` 和 `profile`，并要求 `cover` 的素材映射也必须可信。planner 不根据 Notion 字段名推断业务字段。
 
 ```json
 {
@@ -115,7 +115,8 @@ capture-to-notion capture plan --input input.json --output plan.json
       "required_schema_fields": ["cover", "author", "isbn", "page_count", "state"],
       "required_value_fields": ["author", "isbn", "page_count"],
       "summary_key_fields": ["cover", "author", "isbn", "page_count"],
-      "trusted_field_sources": ["explicit", "profile"]
+      "trusted_field_sources": ["explicit", "profile"],
+      "asset_trust_required_fields": ["cover"]
     }
   },
   "data_sources": {

@@ -142,6 +142,7 @@ def _default_parser_profile(content_type: str) -> dict[str, Any]:
             "required_value_fields": ["author", "isbn", "page_count"],
             "summary_key_fields": ["cover", "author", "isbn", "page_count"],
             "trusted_field_sources": ["explicit", "profile"],
+            "asset_trust_required_fields": ["cover"],
         }
     return {}
 
@@ -261,6 +262,11 @@ def _trusted_field_sources(parser_profile: dict[str, Any]) -> list[str]:
 
 
 
+def _asset_trust_required_fields(parser_profile: dict[str, Any]) -> list[str]:
+    return _string_list(parser_profile.get("asset_trust_required_fields"))
+
+
+
 def _trusted_mapping_fields(
     fields: dict[str, str],
     field_sources: dict[str, str] | None,
@@ -300,13 +306,14 @@ def _untrusted_mapping_warnings(
 
 
 def _filtered_asset_mapping(
-    content_type: str,
     asset_mapping: dict[str, Any],
     trusted_fields: dict[str, str],
+    asset_trust_required_fields: list[str],
 ) -> dict[str, Any]:
     filtered_asset_mapping = dict(asset_mapping)
-    if content_type == "book" and "cover" not in trusted_fields:
-        filtered_asset_mapping.pop("cover", None)
+    for record_key in asset_trust_required_fields:
+        if record_key not in trusted_fields:
+            filtered_asset_mapping.pop(record_key, None)
     return filtered_asset_mapping
 
 
@@ -524,11 +531,18 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     required_value_fields = _required_value_fields(parser_profile)
     summary_key_fields = _summary_key_fields(parser_profile)
     trusted_field_sources = _trusted_field_sources(parser_profile)
-    trusted_fields = _trusted_mapping_fields(fields, field_sources, required_schema_fields, trusted_field_sources)
+    asset_trust_required_fields = _asset_trust_required_fields(parser_profile)
+    trusted_mapping_required_fields = list(dict.fromkeys(required_schema_fields + asset_trust_required_fields))
+    trusted_fields = _trusted_mapping_fields(
+        fields,
+        field_sources,
+        trusted_mapping_required_fields,
+        trusted_field_sources,
+    )
     untrusted_mapping_warnings = _untrusted_mapping_warnings(
         fields,
         field_sources,
-        required_schema_fields,
+        trusted_mapping_required_fields,
         trusted_field_sources,
     )
     normalized_record = _normalized_record_for_capture(capture, content_type, parser_profile)
@@ -575,10 +589,16 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         or missing_fields
         or missing_values
     )
-    asset_mapping = _filtered_asset_mapping(content_type, structure.get("asset_mapping") or {}, trusted_fields)
-    cover_field = trusted_fields.get("cover")
-    if cover_field and data_source_schema.get(cover_field, {}).get("type") == "files":
-        asset_mapping["cover"] = {"field": cover_field, "type": "files", "strategy": "download_and_attach"}
+    asset_mapping = _filtered_asset_mapping(
+        structure.get("asset_mapping") or {},
+        trusted_fields,
+        asset_trust_required_fields,
+    )
+    for record_key in asset_trust_required_fields:
+        asset_mapping.pop(record_key, None)
+        target_field = trusted_fields.get(record_key)
+        if target_field and data_source_schema.get(target_field, {}).get("type") == "files":
+            asset_mapping[record_key] = {"field": target_field, "type": "files", "strategy": "download_and_attach"}
     field_mapping = build_plan_field_mapping(
         normalized_record,
         trusted_fields,

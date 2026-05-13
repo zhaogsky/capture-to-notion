@@ -281,6 +281,7 @@ def test_default_book_parser_profile_supplies_required_fields_without_business_l
     assert profile["required_value_fields"] == ["author", "isbn", "page_count"]
     assert profile["summary_key_fields"] == ["cover", "author", "isbn", "page_count"]
     assert profile["trusted_field_sources"] == ["explicit", "profile"]
+    assert profile["asset_trust_required_fields"] == ["cover"]
     assert "labels" not in profile
 
 
@@ -1098,6 +1099,125 @@ def test_podcast_capture_plan_requires_trusted_mapping_sources_from_parser_profi
     assert "podcast_episode_schema_incomplete:podcast" in plan.warnings
     assert "podcast" not in plan.field_mapping
     assert plan.operations == []
+
+
+
+def test_podcast_capture_plan_does_not_attach_untrusted_profile_required_asset(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_podcast_target(config)
+    target = cache.read_json(config.targets_dir / "podcastshelf.json", {})
+    target["parser_profile"]["podcast_episode"]["asset_trust_required_fields"] = ["cover"]
+    target["parser_profile"]["podcast_episode"]["trusted_field_sources"] = ["explicit", "profile"]
+    target["data_sources"]["episodes"]["schema"] = {"封面": {"type": "files"}}
+    target["data_sources"]["episodes"]["field_sources"] = {"cover": "type_fallback"}
+    cache.write_json(config.targets_dir / "podcastshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="收藏这期播客到播客库 播客：忽左忽右",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "untrusted_field_mapping"
+    assert "untrusted_field_mapping:cover:type_fallback" in plan.warnings
+    assert "cover" not in plan.field_mapping
+    assert plan.asset_operations == []
+    assert plan.summary["asset_actions"] == []
+
+
+
+def test_podcast_capture_plan_uses_trusted_asset_field_for_any_required_asset_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_podcast_target(config)
+    target = cache.read_json(config.targets_dir / "podcastshelf.json", {})
+    target["parser_profile"]["podcast_episode"]["asset_trust_required_fields"] = ["attachment"]
+    target["parser_profile"]["podcast_episode"]["trusted_field_sources"] = ["explicit", "profile"]
+    target["data_sources"]["episodes"]["fields"]["attachment"] = "附件"
+    target["data_sources"]["episodes"]["schema"] = {
+        "附件": {"type": "files"},
+        "旧附件": {"type": "files"},
+    }
+    target["data_sources"]["episodes"]["field_sources"] = {"attachment": "profile"}
+    target["asset_mapping"] = {"attachment": {"field": "旧附件", "type": "files", "strategy": "download_and_attach"}}
+    cache.write_json(config.targets_dir / "podcastshelf.json", target)
+    monkeypatch.setattr(
+        planner_module,
+        "_normalized_record_for_capture",
+        lambda capture, content_type, parser_profile: {
+            "title": "忽左忽右",
+            "state": "initialized",
+            "attachment": "https://example.com/transcript.pdf",
+        },
+    )
+
+    capture = CaptureInput(
+        raw_input="收藏这期播客到播客库 播客：忽左忽右",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.field_mapping["attachment"] == "附件"
+    assert plan.asset_operations[0].target_field == "附件"
+    assert plan.summary["asset_actions"] == [
+        {"record_key": "attachment", "target_field": "附件", "action": "download_and_attach"}
+    ]
+
+
+
+def test_podcast_capture_plan_removes_stale_asset_mapping_when_trusted_field_is_not_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_podcast_target(config)
+    target = cache.read_json(config.targets_dir / "podcastshelf.json", {})
+    target["parser_profile"]["podcast_episode"]["asset_trust_required_fields"] = ["attachment"]
+    target["parser_profile"]["podcast_episode"]["trusted_field_sources"] = ["explicit", "profile"]
+    target["data_sources"]["episodes"]["fields"]["attachment"] = "附件"
+    target["data_sources"]["episodes"]["schema"] = {
+        "附件": {"type": "url"},
+        "旧附件": {"type": "files"},
+    }
+    target["data_sources"]["episodes"]["field_sources"] = {"attachment": "profile"}
+    target["asset_mapping"] = {"attachment": {"field": "旧附件", "type": "files", "strategy": "download_and_attach"}}
+    cache.write_json(config.targets_dir / "podcastshelf.json", target)
+    monkeypatch.setattr(
+        planner_module,
+        "_normalized_record_for_capture",
+        lambda capture, content_type, parser_profile: {
+            "title": "忽左忽右",
+            "state": "initialized",
+            "attachment": "https://example.com/transcript.pdf",
+        },
+    )
+
+    capture = CaptureInput(
+        raw_input="收藏这期播客到播客库 播客：忽左忽右",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.field_mapping["attachment"] == "附件"
+    assert plan.asset_operations == []
+    assert plan.summary["asset_actions"] == []
 
 
 
