@@ -1238,6 +1238,59 @@ def test_podcast_capture_plan_uses_trusted_asset_field_for_any_required_asset_ke
 
 
 
+def test_data_source_asset_trust_extends_target_level_policy(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_podcast_target(config)
+    target = cache.read_json(config.targets_dir / "podcastshelf.json", {})
+    target["parser_profile"]["podcast_episode"]["asset_trust_required_fields"] = ["cover"]
+    target["parser_profile"]["podcast_episode"]["trusted_field_sources"] = ["profile"]
+    target["data_sources"]["episodes"]["parser_profile"] = {
+        "podcast_episode": {"asset_trust_required_fields": ["attachment"]}
+    }
+    target["data_sources"]["episodes"]["fields"]["attachment"] = "附件"
+    target["data_sources"]["episodes"]["schema"] = {
+        "封面": {"type": "files"},
+        "旧封面": {"type": "files"},
+        "附件": {"type": "files"},
+        "旧附件": {"type": "files"},
+    }
+    target["data_sources"]["episodes"]["field_sources"] = {"cover": "profile", "attachment": "profile"}
+    target["asset_mapping"] = {
+        "cover": {"field": "旧封面", "type": "files", "strategy": "download_and_attach"},
+        "attachment": {"field": "旧附件", "type": "files", "strategy": "download_and_attach"},
+    }
+    cache.write_json(config.targets_dir / "podcastshelf.json", target)
+    monkeypatch.setattr(
+        planner_module,
+        "_normalized_record_for_capture",
+        lambda capture, content_type, parser_profile: {
+            "title": "忽左忽右",
+            "state": "initialized",
+            "cover": "https://example.com/cover.jpg",
+            "attachment": "https://example.com/transcript.pdf",
+        },
+    )
+
+    capture = CaptureInput(
+        raw_input="收藏这期播客到播客库 播客：忽左忽右",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    asset_targets = {operation.record_key: operation.target_field for operation in plan.asset_operations}
+    assert plan.requires_confirmation is False
+    assert asset_targets == {"cover": "封面", "attachment": "附件"}
+    assert plan.field_mapping["cover"] == "封面"
+    assert plan.field_mapping["attachment"] == "附件"
+
+
+
 def test_podcast_capture_plan_removes_stale_asset_mapping_when_trusted_field_is_not_files(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -1426,6 +1479,97 @@ def test_capture_plan_applies_non_blocking_warning_prefixes_per_data_source(tmp_
     assert plan.requires_confirmation is False
     assert plan.confirmation_reason is None
     assert plan.warnings == ["ambiguous_field_mapping:tag:分类,标签"]
+    assert plan.operations == [
+        {
+            "type": "create_or_update_page",
+            "target_data_source": "Episodes",
+            "data_source_id": "db-episodes",
+        }
+    ]
+
+
+def test_data_source_warning_policy_extends_target_level_policy(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "播客库": {
+                    "type": "page",
+                    "page_id": "page-podcasts",
+                    "target_id": "podcastshelf",
+                }
+            }
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "podcastshelf.json",
+        {
+            "target": {"page_id": "page-podcasts", "title": "播客库", "target_id": "podcastshelf"},
+            "parser_profile": {
+                "podcast_episode": {
+                    "non_blocking_warning_prefixes": ["ambiguous_field_mapping:page_count:"],
+                }
+            },
+            "data_sources": {
+                "db-episodes": {
+                    "data_source_id": "db-episodes",
+                    "title": "Episodes",
+                    "role": "primary",
+                    "content_types": ["podcast_episode"],
+                    "fields": {"title": "标题", "podcast": "播客", "state": "状态"},
+                    "schema": {
+                        "标题": {"type": "title"},
+                        "播客": {"type": "rich_text"},
+                        "状态": {"type": "select"},
+                    },
+                },
+                "db-tags": {
+                    "data_source_id": "db-tags",
+                    "title": "Tags",
+                    "role": "secondary",
+                    "content_types": [],
+                    "parser_profile": {
+                        "non_blocking_warning_prefixes": ["ambiguous_field_mapping:tag:"],
+                    },
+                    "fields": {"tag": "标签", "page_count": "Page Count"},
+                    "mapping_warnings": [
+                        "ambiguous_field_mapping:page_count:Page Count,Pages",
+                        "ambiguous_field_mapping:tag:分类,标签",
+                    ],
+                    "schema": {
+                        "Page Count": {"type": "number"},
+                        "Pages": {"type": "rich_text"},
+                        "分类": {"type": "select"},
+                        "标签": {"type": "select"},
+                    },
+                },
+            },
+            "relations": [],
+            "state_mapping": {"field": "状态", "values": {}},
+            "asset_mapping": {},
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+    capture = CaptureInput(
+        raw_input="收藏这期播客到播客库 播客：忽左忽右",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.confirmation_reason is None
+    assert plan.warnings == [
+        "ambiguous_field_mapping:page_count:Page Count,Pages",
+        "ambiguous_field_mapping:tag:分类,标签",
+    ]
     assert plan.operations == [
         {
             "type": "create_or_update_page",

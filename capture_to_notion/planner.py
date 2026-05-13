@@ -156,7 +156,11 @@ def parser_profile_for(
     for source in (target_profile, data_source_profile):
         if not source:
             continue
-        profile.update(source)
+        for key, value in source.items():
+            if key in {"asset_trust_required_fields", "non_blocking_warning_prefixes"}:
+                profile[key] = list(dict.fromkeys(_string_list(profile.get(key)) + _string_list(value)))
+            else:
+                profile[key] = value
     return profile
 
 
