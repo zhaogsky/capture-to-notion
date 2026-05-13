@@ -270,6 +270,28 @@ def _non_blocking_warning_prefixes(parser_profile: dict[str, Any]) -> list[str]:
 
 
 
+def _mapping_warnings_for_structure(structure: dict[str, Any]) -> list[str]:
+    return [
+        warning
+        for source in structure.get("data_sources", {}).values()
+        for warning in (source.get("mapping_warnings") or [])
+    ]
+
+
+
+def _blocking_mapping_warnings_for_structure(structure: dict[str, Any], content_type: str) -> list[str]:
+    blocking_warnings: list[str] = []
+    for source in structure.get("data_sources", {}).values():
+        source_profile = parser_profile_for(structure, source, content_type)
+        source_blocking_warnings = confirmation_blocking_warnings(
+            source.get("mapping_warnings") or [],
+            _non_blocking_warning_prefixes(source_profile),
+        )
+        blocking_warnings.extend(source_blocking_warnings)
+    return blocking_warnings
+
+
+
 def _trusted_mapping_fields(
     fields: dict[str, str],
     field_sources: dict[str, str] | None,
@@ -575,16 +597,9 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         if warning not in warnings:
             warnings.append(warning)
     blocking_mapping_warnings = confirmation_blocking_warnings(warnings, non_blocking_warning_prefixes)
-    all_mapping_warnings = [
-        warning
-        for source in structure.get("data_sources", {}).values()
-        for warning in (source.get("mapping_warnings") or [])
-    ]
-    blocking_structure_mapping_warnings = confirmation_blocking_warnings(
-        all_mapping_warnings,
-        non_blocking_warning_prefixes,
-    )
-    for warning in blocking_structure_mapping_warnings:
+    structure_mapping_warnings = _mapping_warnings_for_structure(structure)
+    blocking_structure_mapping_warnings = _blocking_mapping_warnings_for_structure(structure, content_type)
+    for warning in structure_mapping_warnings:
         if warning not in warnings:
             warnings.append(warning)
     structure_requires_confirmation = bool(structure.get("requires_confirmation"))

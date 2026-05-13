@@ -1357,6 +1357,84 @@ def test_podcast_capture_plan_ignores_page_count_only_mapping_ambiguity(tmp_path
     ]
 
 
+def test_capture_plan_applies_non_blocking_warning_prefixes_per_data_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "播客库": {
+                    "type": "page",
+                    "page_id": "page-podcasts",
+                    "target_id": "podcastshelf",
+                }
+            }
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "podcastshelf.json",
+        {
+            "target": {"page_id": "page-podcasts", "title": "播客库", "target_id": "podcastshelf"},
+            "data_sources": {
+                "db-episodes": {
+                    "data_source_id": "db-episodes",
+                    "title": "Episodes",
+                    "role": "primary",
+                    "content_types": ["podcast_episode"],
+                    "fields": {"title": "标题", "podcast": "播客", "state": "状态"},
+                    "schema": {
+                        "标题": {"type": "title"},
+                        "播客": {"type": "rich_text"},
+                        "状态": {"type": "select"},
+                    },
+                },
+                "db-tags": {
+                    "data_source_id": "db-tags",
+                    "title": "Tags",
+                    "role": "secondary",
+                    "content_types": [],
+                    "parser_profile": {
+                        "non_blocking_warning_prefixes": ["ambiguous_field_mapping:tag:"],
+                    },
+                    "fields": {"tag": "标签"},
+                    "mapping_warnings": ["ambiguous_field_mapping:tag:分类,标签"],
+                    "schema": {
+                        "分类": {"type": "select"},
+                        "标签": {"type": "select"},
+                    },
+                },
+            },
+            "relations": [],
+            "state_mapping": {"field": "状态", "values": {}},
+            "asset_mapping": {},
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+    capture = CaptureInput(
+        raw_input="收藏这期播客到播客库 播客：忽左忽右",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.confirmation_reason is None
+    assert plan.warnings == ["ambiguous_field_mapping:tag:分类,标签"]
+    assert plan.operations == [
+        {
+            "type": "create_or_update_page",
+            "target_data_source": "Episodes",
+            "data_source_id": "db-episodes",
+        }
+    ]
+
+
 def test_podcast_capture_plan_keeps_confirmation_for_other_data_source_mapping_ambiguity(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
