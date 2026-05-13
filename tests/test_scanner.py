@@ -3,7 +3,7 @@ import json
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import ensure_config
 from capture_to_notion.scanner import _build_asset_mapping, _primary_score, scan_page_target
-from capture_to_notion.schema import normalize_database_schema
+from capture_to_notion.schema import SCHEMA_PROPERTY_TYPES, normalize_database_schema
 
 
 class FakeAdapter:
@@ -463,6 +463,34 @@ def test_scan_page_ignores_malformed_property_objects_without_type_payload(tmp_p
     assert "Broken State" not in data_source["schema"]
     assert result["asset_mapping"] == {}
     assert result["state_mapping"] == {}
+
+
+
+def test_scan_page_caches_official_property_types_and_ignores_nonofficial_types(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    properties = {
+        f"Official {property_type}": {"id": property_type, "type": property_type, property_type: {}}
+        for property_type in SCHEMA_PROPERTY_TYPES
+    }
+    properties["Unsupported"] = {"id": "unsupported", "type": "unsupported_widget", "unsupported_widget": {}}
+    adapter = FakeAdapter(
+        pages={"page-types": {"id": "page-types", "title": "Types"}},
+        children={"page-types": [{"type": "child_database", "id": "db-types", "child_database": {"title": "Types"}}]},
+        databases={
+            "db-types": {
+                "id": "db-types",
+                "title": "Types",
+                "properties": properties,
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-types", CacheStore(config), target_id="types")
+    schema = result["data_sources"]["db-types"]["schema"]
+
+    assert {value["type"] for value in schema.values()} == SCHEMA_PROPERTY_TYPES
+    assert "Unsupported" not in schema
 
 
 

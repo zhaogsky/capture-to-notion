@@ -1,6 +1,7 @@
 import pytest
 
 from capture_to_notion.schema import (
+    PAGE_PROPERTY_VALUE_TYPES,
     PROPERTY_TYPE_BUILDERS,
     READONLY_PROPERTY_TYPES,
     SCHEMA_PROPERTY_TYPES,
@@ -164,6 +165,15 @@ def test_property_value_builders_cover_supported_write_types_without_business_ke
     assert properties["Tags"] == {"multi_select": [{"name": "政治"}, {"name": "历史"}]}
 
 
+def test_build_properties_ignores_official_readonly_property_types_even_when_mapped():
+    schema = {f"Read Only {property_type}": {"type": property_type} for property_type in READONLY_PROPERTY_TYPES}
+    field_mapping = {property_type: f"Read Only {property_type}" for property_type in READONLY_PROPERTY_TYPES}
+    record = {property_type: "value" for property_type in READONLY_PROPERTY_TYPES}
+
+    assert build_properties(record, field_mapping, schema) == {}
+
+
+
 def test_build_properties_skips_empty_unknown_and_unmapped_values():
     schema = {
         "名称": {"type": "title"},
@@ -237,6 +247,16 @@ def test_build_properties_skips_invalid_date_dict_without_start():
         field_mapping,
         schema,
     ) == {}
+
+
+def test_property_has_value_uses_official_page_property_value_types():
+    assert all(
+        property_has_value({"type": property_type, property_type: "value"})
+        for property_type in PAGE_PROPERTY_VALUE_TYPES
+    )
+    assert property_has_value({"type": "unsupported_widget", "unsupported_widget": "value"}) is False
+    assert property_has_value({"type": "verification", "verification": {}}) is False
+
 
 
 def test_schema_hash_is_stable_for_field_order():
@@ -323,6 +343,7 @@ def test_normalize_database_schema_includes_multi_select_options():
 
 def test_property_type_registry_keeps_builder_and_type_sets_consistent():
     assert SUPPORTED_TYPES == SCHEMA_PROPERTY_TYPES
+    assert PAGE_PROPERTY_VALUE_TYPES == SCHEMA_PROPERTY_TYPES | {"verification"}
     assert WRITABLE_PROPERTY_TYPES == set(PROPERTY_TYPE_BUILDERS)
     assert READONLY_PROPERTY_TYPES == SCHEMA_PROPERTY_TYPES - WRITABLE_PROPERTY_TYPES
     assert WRITABLE_PROPERTY_TYPES.isdisjoint(READONLY_PROPERTY_TYPES)

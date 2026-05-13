@@ -118,7 +118,7 @@ def property_has_value(property_data: Any) -> bool:
     if not isinstance(property_data, dict):
         return False
     property_type = property_data.get("type")
-    if not isinstance(property_type, str):
+    if property_type not in PAGE_PROPERTY_VALUE_TYPES:
         return False
     value = property_data.get(property_type)
     return not _is_empty_property_value(value)
