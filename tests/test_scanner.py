@@ -2,7 +2,7 @@ import json
 
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import ensure_config
-from capture_to_notion.scanner import _build_asset_mapping, scan_page_target
+from capture_to_notion.scanner import _build_asset_mapping, _primary_score, scan_page_target
 
 
 class FakeAdapter:
@@ -43,6 +43,16 @@ def seed_profile_mapping(config, target_id, data_source_id, fields):
         ) + "\n",
         encoding="utf-8",
     )
+
+
+def test_primary_score_ignores_legacy_semantic_field_sources():
+    assert _primary_score(
+        {
+            "schema": {"名称": {"type": "title"}},
+            "fields": {"title": "名称"},
+            "field_sources": {"title": "semantic"},
+        }
+    ) == 0
 
 
 def test_scan_page_discovers_child_databases_normalizes_schema_and_saves_target(tmp_path, monkeypatch):

@@ -6,7 +6,7 @@ from capture_to_notion.cache import CacheStore
 from capture_to_notion.schema import confirmation_blocking_warnings, normalize_database_schema, plain_title, schema_hash
 
 PROFILE_FIELD_SOURCES = {"explicit", "profile"}
-PRIMARY_FIELD_SOURCES = {"semantic", *PROFILE_FIELD_SOURCES}
+PRIMARY_FIELD_SOURCES = PROFILE_FIELD_SOURCES
 
 
 def _target_title(page: dict[str, Any]) -> str | None:
@@ -43,12 +43,12 @@ def _build_state_mapping(data_sources: dict[str, Any]) -> dict[str, Any]:
 
 
 def _asset_record_key(field_name: str, fields: dict[str, str], asset_mapping: dict[str, Any]) -> str:
-    for semantic_key, mapped_field_name in fields.items():
+    for record_key, mapped_field_name in fields.items():
         if mapped_field_name == field_name:
-            return semantic_key
+            return record_key
 
-    existing_semantic_keys = set(fields)
-    record_key = field_name if field_name not in existing_semantic_keys else f"{field_name}_files"
+    existing_record_keys = set(fields)
+    record_key = field_name if field_name not in existing_record_keys else f"{field_name}_files"
     candidate = record_key
     index = 2
     while candidate in asset_mapping:
