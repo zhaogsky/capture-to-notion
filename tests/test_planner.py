@@ -29,6 +29,13 @@ BOOK_PARSER_PROFILE = {
 }
 
 
+PODCAST_PARSER_PROFILE = {
+    "labels": {
+        "podcast": ["播客", "podcast", "节目"],
+    }
+}
+
+
 def seed_book_target(config, parser_profile=True):
     write_json(
         config.aliases_file,
@@ -81,7 +88,7 @@ def seed_book_target(config, parser_profile=True):
     )
 
 
-def seed_podcast_target(config):
+def seed_podcast_target(config, parser_profile=True):
     write_json(
         config.aliases_file,
         {
@@ -99,6 +106,7 @@ def seed_podcast_target(config):
         config.targets_dir / "podcastshelf.json",
         {
             "target": {"page_id": "page-podcasts", "title": "播客库", "verified_at": "2026-05-05T10:00:00Z"},
+            "parser_profile": {"podcast_episode": PODCAST_PARSER_PROFILE} if parser_profile else {},
             "data_sources": {
                 "episodes": {
                     "data_source_id": "ds-podcasts",
@@ -849,6 +857,47 @@ def test_podcast_title_cleanup_strips_explicit_podcast_label(tmp_path, monkeypat
 
     assert plan.normalized_record["podcast"] == "Acquired"
     assert plan.normalized_record["title"] == "收藏这期播客到播客库"
+
+
+def test_podcast_capture_plan_uses_parser_profile_labels_for_podcast_and_title_cleanup(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_podcast_target(config)
+    target = json.loads((config.targets_dir / "podcastshelf.json").read_text())
+    target["parser_profile"] = {"podcast_episode": {"labels": {"podcast": ["节目名"]}}}
+    write_json(config.targets_dir / "podcastshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="收藏这期播客到播客库 节目名：忽左忽右",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.normalized_record["podcast"] == "忽左忽右"
+    assert plan.normalized_record["title"] == "收藏这期播客到播客库"
+
+
+def test_podcast_capture_plan_does_not_parse_business_labels_without_parser_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_podcast_target(config, parser_profile=False)
+
+    capture = CaptureInput(
+        raw_input="收藏这期播客到播客库 播客：忽左忽右",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.normalized_record["podcast"] is None
+    assert plan.normalized_record["title"] == "收藏这期播客到播客库 播客：忽左忽右"
 
 
 def test_podcast_capture_plan_ignores_page_count_only_mapping_ambiguity(tmp_path, monkeypatch):

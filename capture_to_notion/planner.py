@@ -76,11 +76,13 @@ def extract_book_title(raw_input: str, parser_profile: dict[str, Any] | None = N
     match = re.search(r"《([^》]+)》", raw_input)
     if match:
         return match.group(1)
+    known_labels = _known_parser_labels(parser_profile)
+    known_label_pattern = "|".join(re.escape(label) for label in known_labels)
     label_suffix = re.search(
-        rf"(?:^|{METADATA_DELIMITER_PATTERN})(?:作者|author|播客|podcast|节目)\s*{METADATA_COLON_PATTERN}",
+        rf"(?:^|{METADATA_DELIMITER_PATTERN})(?:{known_label_pattern})\s*{METADATA_COLON_PATTERN}",
         raw_input,
         flags=re.IGNORECASE,
-    )
+    ) if known_label_pattern else None
     if label_suffix:
         return raw_input[: label_suffix.start()].strip()
     return raw_input.strip()
@@ -391,7 +393,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     trusted_fields = _trusted_mapping_fields(content_type, fields, field_sources)
     untrusted_mapping_warnings = _untrusted_mapping_warnings(content_type, fields, field_sources)
     parser_profile = parser_profile_for(structure, data_source, content_type)
-    title = extract_book_title(capture.raw_input, parser_profile if content_type == "book" else None)
+    title = extract_book_title(capture.raw_input, parser_profile)
     state = normalize_state(capture.state)
     cover_url = default_cover_url(content_type, title)
 
@@ -423,9 +425,14 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
             }
         )
     if content_type == "podcast_episode":
+        known_labels = _known_parser_labels(parser_profile)
         normalized_record.update(
             {
-                "podcast": extract_labeled_value(capture.raw_input, ["播客", "podcast", "节目"]),
+                "podcast": extract_labeled_value(
+                    capture.raw_input,
+                    _parser_labels(parser_profile, "podcast"),
+                    known_labels,
+                ),
                 "episode_url": None,
                 "published_at": None,
             }

@@ -25,6 +25,15 @@ BOOK_PARSER_PROFILE = {
 }
 
 
+PODCAST_PARSER_PROFILE = {
+    "podcast_episode": {
+        "labels": {
+            "podcast": ["播客", "podcast", "节目"],
+        }
+    }
+}
+
+
 def seed_books_target(config, *, include_isbn: bool = True, include_cover: bool = True, include_page_count: bool = True) -> None:
     fields = {
         "title": "名称",
@@ -98,6 +107,7 @@ def seed_podcast_target(config) -> None:
         config.targets_dir / "podcastshelf.json",
         {
             "target": {"page_id": "page-podcasts", "title": "播客库", "verified_at": "2026-05-11T00:00:00Z"},
+            "parser_profile": PODCAST_PARSER_PROFILE,
             "data_sources": {
                 "episodes": {
                     "data_source_id": "ds-podcasts",
