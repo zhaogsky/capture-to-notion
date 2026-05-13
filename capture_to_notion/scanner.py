@@ -239,7 +239,7 @@ def scan_page_target(
 
     _assign_data_source_roles(data_sources)
     has_mapping_warnings = any(
-        confirmation_blocking_warnings(data_source.get("mapping_warnings"))
+        confirmation_blocking_warnings(data_source.get("mapping_warnings"), [])
         for data_source in data_sources.values()
     )
     has_primary_data_source = any(

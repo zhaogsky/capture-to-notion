@@ -1241,6 +1241,11 @@ def test_podcast_capture_plan_ignores_page_count_only_mapping_ambiguity(tmp_path
         config.targets_dir / "podcastshelf.json",
         {
             "target": {"page_id": "page-podcasts", "title": "播客库", "target_id": "podcastshelf"},
+            "parser_profile": {
+                "podcast_episode": {
+                    "non_blocking_warning_prefixes": ["ambiguous_field_mapping:page_count:"],
+                }
+            },
             "data_sources": {
                 "db-episodes": {
                     "data_source_id": "db-episodes",

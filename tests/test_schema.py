@@ -7,6 +7,7 @@ from capture_to_notion.schema import (
     SUPPORTED_TYPES,
     WRITABLE_PROPERTY_TYPES,
     build_properties,
+    confirmation_blocking_warnings,
     cover_url_from_page,
     file_urls_from_property,
     normalize_database_schema,
@@ -22,6 +23,24 @@ def test_schema_module_does_not_expose_business_field_mapping():
     assert not hasattr(schema_module, "semantic_field_mapping")
     assert not hasattr(schema_module, "SEMANTIC_FIELD_RULES")
     assert not hasattr(schema_module, "FIELD_KEYS")
+
+
+def test_confirmation_blocking_warnings_uses_explicit_non_blocking_prefixes():
+    warnings = [
+        "ambiguous_field_mapping:page_count:Page Count,Pages",
+        "ambiguous_field_mapping:author:Author,Creator",
+    ]
+
+    assert confirmation_blocking_warnings(
+        warnings,
+        non_blocking_prefixes=["ambiguous_field_mapping:page_count:"],
+    ) == ["ambiguous_field_mapping:author:Author,Creator"]
+
+
+def test_confirmation_blocking_warnings_blocks_everything_without_policy():
+    warnings = ["ambiguous_field_mapping:page_count:Page Count,Pages"]
+
+    assert confirmation_blocking_warnings(warnings) == warnings
 
 
 def test_build_properties_for_text_status_select_url_and_date():

@@ -33,11 +33,6 @@ SCHEMA_PROPERTY_TYPES = {
 PAGE_PROPERTY_VALUE_TYPES = SCHEMA_PROPERTY_TYPES | {"verification"}
 SUPPORTED_TYPES = SCHEMA_PROPERTY_TYPES
 
-NON_BLOCKING_CONFIRMATION_WARNING_PREFIXES = (
-    "ambiguous_field_mapping:page_count:",
-)
-
-
 def plain_title(value: Any) -> str | None:
     if isinstance(value, str):
         return value
@@ -96,12 +91,15 @@ def schema_hash(schema: dict[str, Any]) -> str:
 
 
 
-def confirmation_blocking_warnings(warnings: list[str] | None, content_type: str | None = None) -> list[str]:
-    non_blocking_prefixes = () if content_type == "book" else NON_BLOCKING_CONFIRMATION_WARNING_PREFIXES
+def confirmation_blocking_warnings(
+    warnings: list[str] | None,
+    non_blocking_prefixes: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    prefixes = tuple(non_blocking_prefixes or ())
     return [
         warning
         for warning in (warnings or [])
-        if not warning.startswith(non_blocking_prefixes)
+        if not warning.startswith(prefixes)
     ]
 
 

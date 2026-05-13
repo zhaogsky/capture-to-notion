@@ -267,6 +267,11 @@ def _asset_trust_required_fields(parser_profile: dict[str, Any]) -> list[str]:
 
 
 
+def _non_blocking_warning_prefixes(parser_profile: dict[str, Any]) -> list[str]:
+    return _string_list(parser_profile.get("non_blocking_warning_prefixes"))
+
+
+
 def _trusted_mapping_fields(
     fields: dict[str, str],
     field_sources: dict[str, str] | None,
@@ -532,6 +537,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     summary_key_fields = _summary_key_fields(parser_profile)
     trusted_field_sources = _trusted_field_sources(parser_profile)
     asset_trust_required_fields = _asset_trust_required_fields(parser_profile)
+    non_blocking_warning_prefixes = _non_blocking_warning_prefixes(parser_profile)
     trusted_mapping_required_fields = list(dict.fromkeys(required_schema_fields + asset_trust_required_fields))
     trusted_fields = _trusted_mapping_fields(
         fields,
@@ -553,13 +559,16 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     for warning in untrusted_mapping_warnings:
         if warning not in warnings:
             warnings.append(warning)
-    blocking_mapping_warnings = confirmation_blocking_warnings(warnings, content_type)
+    blocking_mapping_warnings = confirmation_blocking_warnings(warnings, non_blocking_warning_prefixes)
     all_mapping_warnings = [
         warning
         for source in structure.get("data_sources", {}).values()
         for warning in (source.get("mapping_warnings") or [])
     ]
-    blocking_structure_mapping_warnings = confirmation_blocking_warnings(all_mapping_warnings, content_type)
+    blocking_structure_mapping_warnings = confirmation_blocking_warnings(
+        all_mapping_warnings,
+        non_blocking_warning_prefixes,
+    )
     for warning in blocking_structure_mapping_warnings:
         if warning not in warnings:
             warnings.append(warning)
