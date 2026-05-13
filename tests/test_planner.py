@@ -19,7 +19,17 @@ def write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
-def seed_book_target(config):
+BOOK_PARSER_PROFILE = {
+    "labels": {
+        "author": ["作者", "author"],
+        "isbn": ["ISBN", "isbn"],
+        "publisher": ["出版社", "publisher"],
+        "page_count": ["页数", "pages", "page_count"],
+    }
+}
+
+
+def seed_book_target(config, parser_profile=True):
     write_json(
         config.aliases_file,
         {
@@ -37,6 +47,7 @@ def seed_book_target(config):
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "verified_at": "2026-05-05T10:00:00Z"},
+            "parser_profile": {"book": BOOK_PARSER_PROFILE} if parser_profile else {},
             "data_sources": {
                 "books": {
                     "data_source_id": "ds-books",
@@ -367,11 +378,11 @@ def test_book_capture_plan_uses_target_level_parser_profile_labels(tmp_path, mon
     assert plan.normalized_record["page_count"] == 400
 
 
-def test_book_capture_plan_keeps_legacy_labels_without_parser_profile(tmp_path, monkeypatch):
+def test_book_capture_plan_does_not_parse_business_labels_without_parser_profile(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
     cache = CacheStore(config)
-    seed_book_target(config)
+    seed_book_target(config, parser_profile=False)
 
     capture = CaptureInput(
         raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
@@ -383,11 +394,12 @@ def test_book_capture_plan_keeps_legacy_labels_without_parser_profile(tmp_path, 
 
     plan = build_capture_plan(capture, cache)
 
-    assert plan.requires_confirmation is False
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "book_key_values_missing"
     assert plan.normalized_record["title"] == "可能性的艺术"
-    assert plan.normalized_record["author"] == "刘瑜"
-    assert plan.normalized_record["isbn"] == "9787559847357"
-    assert plan.normalized_record["page_count"] == 400
+    assert plan.normalized_record["author"] is None
+    assert plan.normalized_record["isbn"] is None
+    assert plan.normalized_record["page_count"] is None
 
 
 def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp_path, monkeypatch):
@@ -455,6 +467,7 @@ def test_book_capture_plan_requires_confirmation_for_page_count_mapping_ambiguit
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
+            "parser_profile": {"book": BOOK_PARSER_PROFILE},
             "data_sources": {
                 "db-books": {
                     "data_source_id": "db-books",
@@ -740,7 +753,11 @@ def test_book_without_labeled_author_keeps_none(tmp_path, monkeypatch):
 
 
 def test_extract_labeled_author_stops_before_following_label():
-    assert extract_labeled_value("作者：刘瑜，出版社：广西师范大学出版社", ["作者", "author"]) == "刘瑜"
+    assert extract_labeled_value(
+        "作者：刘瑜，出版社：广西师范大学出版社",
+        ["作者", "author"],
+        ["作者", "author", "出版社", "publisher"],
+    ) == "刘瑜"
 
 
 @pytest.mark.parametrize(
@@ -756,7 +773,11 @@ def test_extract_labeled_author_stops_before_following_label():
     ],
 )
 def test_extract_labeled_author_stops_before_following_label_delimiters(raw_input, expected):
-    assert extract_labeled_value(raw_input, ["作者", "author"]) == expected
+    assert extract_labeled_value(
+        raw_input,
+        ["作者", "author"],
+        ["作者", "author", "出版社", "publisher"],
+    ) == expected
 
 
 def test_extract_labeled_author_supports_english_and_colon_variants():
@@ -790,8 +811,9 @@ def test_extract_labeled_podcast_supports_english_and_program_labels():
 
 
 def test_extract_labeled_podcast_stops_before_chinese_date_labels():
-    assert extract_labeled_value("播客：忽左忽右 发布日期：2026-05-10", ["播客", "podcast", "节目"]) == "忽左忽右"
-    assert extract_labeled_value("节目：忽左忽右 发布于：2026-05-10", ["播客", "podcast", "节目"]) == "忽左忽右"
+    known_labels = ["播客", "podcast", "节目", "发布日期", "发布于", "published_at"]
+    assert extract_labeled_value("播客：忽左忽右 发布日期：2026-05-10", ["播客", "podcast", "节目"], known_labels) == "忽左忽右"
+    assert extract_labeled_value("节目：忽左忽右 发布于：2026-05-10", ["播客", "podcast", "节目"], known_labels) == "忽左忽右"
 
 
 @pytest.mark.parametrize(
@@ -803,7 +825,11 @@ def test_extract_labeled_podcast_stops_before_chinese_date_labels():
     ],
 )
 def test_extract_labeled_podcast_stops_before_following_labels(raw_input, expected):
-    assert extract_labeled_value(raw_input, ["播客", "podcast", "节目"]) == expected
+    assert extract_labeled_value(
+        raw_input,
+        ["播客", "podcast", "节目"],
+        ["播客", "podcast", "节目", "标题", "title", "链接", "url", "published_at"],
+    ) == expected
 
 
 def test_podcast_title_cleanup_strips_explicit_podcast_label(tmp_path, monkeypatch):
@@ -1125,6 +1151,7 @@ def test_capture_plan_merges_scanned_files_asset_mapping_into_field_mapping(tmp_
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
+            "parser_profile": {"book": BOOK_PARSER_PROFILE},
             "data_sources": {
                 "db-books": {
                     "data_source_id": "db-books",
@@ -1200,6 +1227,7 @@ def test_capture_plan_uses_semantic_fields_from_scanned_target(tmp_path, monkeyp
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
+            "parser_profile": {"book": BOOK_PARSER_PROFILE},
             "data_sources": {
                 "db-books": {
                     "data_source_id": "db-books",
@@ -1277,6 +1305,7 @@ def test_book_capture_plan_maps_page_count_from_scanned_semantic_field(tmp_path,
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
+            "parser_profile": {"book": BOOK_PARSER_PROFILE},
             "data_sources": {
                 "db-books": {
                     "data_source_id": "db-books",
@@ -1346,6 +1375,7 @@ def test_book_capture_plan_requires_confirmation_for_minimal_schema(tmp_path, mo
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
+            "parser_profile": {"book": BOOK_PARSER_PROFILE},
             "data_sources": {
                 "db-minimal": {
                     "data_source_id": "db-minimal",
@@ -1405,6 +1435,7 @@ def test_capture_plan_uses_primary_cover_field_over_stale_global_asset_mapping(t
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
+            "parser_profile": {"book": BOOK_PARSER_PROFILE},
             "data_sources": {
                 "db-posters": {
                     "data_source_id": "db-posters",
@@ -1483,6 +1514,7 @@ def test_book_capture_plan_requires_confirmation_when_cover_field_source_is_untr
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
+            "parser_profile": {"book": BOOK_PARSER_PROFILE},
             "data_sources": {
                 "db-books": {
                     "data_source_id": "db-books",
@@ -1562,6 +1594,7 @@ def test_capture_plan_preserves_scanned_confirmation_signal(tmp_path, monkeypatc
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
+            "parser_profile": {"book": BOOK_PARSER_PROFILE},
             "data_sources": {
                 "db-books": {
                     "data_source_id": "db-books",

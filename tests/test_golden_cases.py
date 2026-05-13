@@ -13,6 +13,18 @@ def write_json(path, data):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+BOOK_PARSER_PROFILE = {
+    "book": {
+        "labels": {
+            "author": ["作者", "author"],
+            "isbn": ["ISBN", "isbn"],
+            "publisher": ["出版社", "publisher"],
+            "page_count": ["页数", "pages", "page_count"],
+        }
+    }
+}
+
+
 def seed_books_target(config, *, include_isbn: bool = True, include_cover: bool = True, include_page_count: bool = True) -> None:
     fields = {
         "title": "名称",
@@ -50,6 +62,7 @@ def seed_books_target(config, *, include_isbn: bool = True, include_cover: bool 
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "verified_at": "2026-05-11T00:00:00Z"},
+            "parser_profile": BOOK_PARSER_PROFILE,
             "data_sources": {
                 "books": {
                     "data_source_id": "ds-books",

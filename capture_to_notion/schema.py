@@ -33,78 +33,9 @@ SCHEMA_PROPERTY_TYPES = {
 PAGE_PROPERTY_VALUE_TYPES = SCHEMA_PROPERTY_TYPES | {"verification"}
 SUPPORTED_TYPES = SCHEMA_PROPERTY_TYPES
 
-FIELD_KEYS = {
-    "title": "title",
-    "rich_text": "notes",
-    "status": "state",
-    "select": "tag",
-    "multi_select": "tag",
-    "url": "url",
-    "date": "date",
-}
-
 NON_BLOCKING_CONFIRMATION_WARNING_PREFIXES = (
     "ambiguous_field_mapping:page_count:",
 )
-
-SEMANTIC_FIELD_RULES = {
-    "title": {
-        "types": {"title"},
-        "aliases": ["名称", "标题", "书名", "片名", "name", "title"],
-    },
-    "state": {
-        "types": {"status", "select"},
-        "aliases": ["状态", "阅读状态", "阅读进度", "进度", "收听状态", "status", "state"],
-    },
-    "cover": {
-        "types": {"files"},
-        "aliases": ["封面", "封面图", "海报", "cover", "cover image", "book cover"],
-    },
-    "url": {
-        "types": {"url"},
-        "aliases": ["链接", "网址", "url", "website", "豆瓣链接", "原文链接"],
-    },
-    "episode_url": {
-        "types": {"url"},
-        "aliases": ["单集链接", "节目链接", "播客链接", "episode url", "episode_url"],
-    },
-    "date": {
-        "types": {"date"},
-        "aliases": ["日期", "时间", "date", "time"],
-    },
-    "published_at": {
-        "types": {"date"},
-        "aliases": ["发布日期", "出版日期", "发布时间", "发布于", "published", "published_at", "published date"],
-    },
-    "notes": {
-        "types": {"rich_text"},
-        "aliases": ["备注", "笔记", "摘要", "简介", "描述", "notes", "summary", "description"],
-    },
-    "author": {
-        "types": {"relation", "rich_text"},
-        "aliases": ["作者", "作者页面", "作者名", "author", "authors"],
-    },
-    "publisher": {
-        "types": {"rich_text", "select", "relation"},
-        "aliases": ["出版社", "出版方", "publisher"],
-    },
-    "isbn": {
-        "types": {"rich_text", "url"},
-        "aliases": ["isbn", "ISBN"],
-    },
-    "page_count": {
-        "types": {"number", "rich_text"},
-        "aliases": ["页数", "页码", "pages", "page count", "page_count"],
-    },
-    "podcast": {
-        "types": {"relation", "rich_text", "select"},
-        "aliases": ["播客", "节目", "podcast", "show"],
-    },
-    "tag": {
-        "types": {"select", "multi_select"},
-        "aliases": ["标签", "分类", "类型", "tag", "category"],
-    },
-}
 
 
 def plain_title(value: Any) -> str | None:
@@ -164,21 +95,6 @@ def schema_hash(schema: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
-def _normalized_field_name(name: str) -> str:
-    return "".join(str(name).strip().lower().replace("_", " ").replace("-", " ").split())
-
-
-def _semantic_candidates(schema: dict[str, dict[str, Any]], semantic_key: str) -> list[str]:
-    rule = SEMANTIC_FIELD_RULES[semantic_key]
-    aliases = {_normalized_field_name(alias) for alias in rule["aliases"]}
-    candidates = []
-    for name, property_schema in schema.items():
-        if property_schema.get("type") not in rule["types"]:
-            continue
-        if _normalized_field_name(name) in aliases:
-            candidates.append(name)
-    return sorted(candidates)
-
 
 def confirmation_blocking_warnings(warnings: list[str] | None, content_type: str | None = None) -> list[str]:
     non_blocking_prefixes = () if content_type == "book" else NON_BLOCKING_CONFIRMATION_WARNING_PREFIXES
@@ -189,55 +105,6 @@ def confirmation_blocking_warnings(warnings: list[str] | None, content_type: str
     ]
 
 
-def semantic_field_mapping(schema: dict[str, dict[str, Any]], include_sources: bool = False) -> dict[str, Any]:
-    fields: dict[str, str] = {}
-    field_sources: dict[str, str] = {}
-    warnings: list[str] = []
-
-    for semantic_key in SEMANTIC_FIELD_RULES:
-        candidates = _semantic_candidates(schema, semantic_key)
-        if not candidates:
-            continue
-        fields[semantic_key] = candidates[0]
-        field_sources[semantic_key] = "semantic"
-        if len(candidates) > 1:
-            warnings.append(f"ambiguous_field_mapping:{semantic_key}:{','.join(candidates)}")
-
-    for name in sorted(schema):
-        if name in fields.values():
-            continue
-        property_schema = schema[name]
-        property_type = property_schema.get("type")
-        fallback_key = FIELD_KEYS.get(property_type)
-        if fallback_key and fallback_key not in fields:
-            fields[fallback_key] = name
-            field_sources[fallback_key] = "type_fallback"
-        elif not fallback_key and property_type == "relation":
-            is_semantic_relation_candidate = any(
-                name in _semantic_candidates(schema, semantic_key)
-                for semantic_key, rule in SEMANTIC_FIELD_RULES.items()
-                if "relation" in rule["types"]
-            )
-            if (
-                not is_semantic_relation_candidate
-                and name not in fields
-                and name not in fields.values()
-            ):
-                fields[name] = name
-                field_sources[name] = "relation_fallback"
-
-    result: dict[str, Any] = {
-        "fields": fields,
-        "warnings": warnings,
-        "requires_confirmation": bool(warnings),
-    }
-    if include_sources:
-        result["field_sources"] = field_sources
-    return result
-
-
-def field_mapping(schema: dict[str, dict[str, Any]]) -> dict[str, str]:
-    return semantic_field_mapping(schema)["fields"]
 
 
 def _is_empty_property_value(value: Any) -> bool:

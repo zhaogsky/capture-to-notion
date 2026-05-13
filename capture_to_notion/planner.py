@@ -14,31 +14,6 @@ from capture_to_notion.models import AssetOperation, CaptureInput, Target, Write
 from capture_to_notion.schema import confirmation_blocking_warnings
 
 
-KNOWN_METADATA_LABELS = [
-    "作者",
-    "author",
-    "播客",
-    "podcast",
-    "节目",
-    "show",
-    "ISBN",
-    "isbn",
-    "出版社",
-    "publisher",
-    "页数",
-    "pages",
-    "page_count",
-    "标题",
-    "title",
-    "链接",
-    "url",
-    "日期",
-    "发布日期",
-    "出版日期",
-    "发布时间",
-    "发布于",
-    "published_at",
-]
 METADATA_DELIMITER_PATTERN = r"[\s,，;；|｜]"
 METADATA_COLON_PATTERN = r"[:：]"
 BOOK_REQUIRED_SCHEMA_FIELDS = ["cover", "author", "isbn", "page_count", "state"]
@@ -54,17 +29,15 @@ def _string_list(value: Any) -> list[str]:
     return []
 
 
-def _parser_labels(parser_profile: dict[str, Any] | None, record_key: str, fallback: list[str]) -> list[str]:
+def _parser_labels(parser_profile: dict[str, Any] | None, record_key: str) -> list[str]:
     labels = parser_profile.get("labels", {}) if isinstance(parser_profile, dict) else {}
     if isinstance(labels, dict):
-        configured_labels = _string_list(labels.get(record_key))
-        if configured_labels:
-            return configured_labels
-    return fallback
+        return _string_list(labels.get(record_key))
+    return []
 
 
 def _known_parser_labels(parser_profile: dict[str, Any] | None) -> list[str]:
-    known_labels = list(KNOWN_METADATA_LABELS)
+    known_labels: list[str] = []
     labels = parser_profile.get("labels", {}) if isinstance(parser_profile, dict) else {}
     if isinstance(labels, dict):
         for value in labels.values():
@@ -73,8 +46,11 @@ def _known_parser_labels(parser_profile: dict[str, Any] | None) -> list[str]:
 
 
 def extract_labeled_value(raw_input: str, labels: list[str], known_labels: list[str] | None = None) -> str | None:
+    if not labels:
+        return None
     label_pattern = "|".join(re.escape(label) for label in labels)
-    known_label_pattern = "|".join(re.escape(label) for label in (known_labels or KNOWN_METADATA_LABELS))
+    known_label_values = known_labels if known_labels is not None else labels
+    known_label_pattern = "|".join(re.escape(label) for label in known_label_values)
     match = re.search(
         rf"(?:^|{METADATA_DELIMITER_PATTERN})(?:{label_pattern})\s*{METADATA_COLON_PATTERN}\s*(.+?)(?=(?:{METADATA_DELIMITER_PATTERN}+(?:{known_label_pattern})\s*{METADATA_COLON_PATTERN})|[\r\n;；|｜]|$)",
         raw_input,
@@ -114,7 +90,7 @@ def extract_page_count(raw_input: str, parser_profile: dict[str, Any] | None = N
     known_labels = _known_parser_labels(parser_profile)
     value = extract_labeled_value(
         raw_input,
-        _parser_labels(parser_profile, "page_count", ["页数", "pages", "page_count"]),
+        _parser_labels(parser_profile, "page_count"),
         known_labels,
     )
     if not value:
@@ -430,17 +406,17 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
             {
                 "author": extract_labeled_value(
                     capture.raw_input,
-                    _parser_labels(parser_profile, "author", ["作者", "author"]),
+                    _parser_labels(parser_profile, "author"),
                     known_labels,
                 ),
                 "isbn": extract_labeled_value(
                     capture.raw_input,
-                    _parser_labels(parser_profile, "isbn", ["ISBN", "isbn"]),
+                    _parser_labels(parser_profile, "isbn"),
                     known_labels,
                 ),
                 "publisher": extract_labeled_value(
                     capture.raw_input,
-                    _parser_labels(parser_profile, "publisher", ["出版社", "publisher"]),
+                    _parser_labels(parser_profile, "publisher"),
                     known_labels,
                 ),
                 "page_count": extract_page_count(capture.raw_input, parser_profile),
