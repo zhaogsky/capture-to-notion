@@ -432,6 +432,34 @@ def test_scanner_does_not_map_business_fields_from_property_names_without_profil
 
 
 
+def test_scan_page_preserves_official_button_property_type_without_mapping(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    adapter = FakeAdapter(
+        pages={"page-dashboard": {"id": "page-dashboard", "title": "Dashboard"}},
+        children={"page-dashboard": [{"type": "child_database", "id": "db-actions", "child_database": {"title": "Actions"}}]},
+        databases={
+            "db-actions": {
+                "id": "db-actions",
+                "title": "Actions",
+                "properties": {
+                    "Name": {"id": "title", "type": "title", "title": {}},
+                    "Run": {"id": "button", "type": "button", "button": {}},
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-dashboard", CacheStore(config), target_id="dashboard")
+    data_source = result["data_sources"]["db-actions"]
+
+    assert data_source["schema"]["Run"] == {"name": "Run", "id": "button", "type": "button"}
+    assert data_source["fields"] == {}
+    assert result["asset_mapping"] == {}
+    assert result["requires_confirmation"] is True
+
+
+
 def test_scan_page_does_not_infer_business_fields_from_schema_names(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()

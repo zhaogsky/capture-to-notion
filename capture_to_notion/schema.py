@@ -6,6 +6,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 SCHEMA_PROPERTY_TYPES = {
+    "button",
     "checkbox",
     "created_by",
     "created_time",
