@@ -79,6 +79,91 @@ def test_build_properties_for_text_status_select_url_and_date():
     }
 
 
+def test_property_value_builders_cover_supported_write_types_without_business_keys():
+    mapped_schema = {
+        "Primary Text": {"type": "title"},
+        "Long Text": {"type": "rich_text"},
+        "Metric": {"type": "number"},
+        "Workflow State": {"type": "status"},
+        "Single Choice": {"type": "select"},
+        "Timeline": {"type": "date"},
+        "Reference Link": {"type": "url"},
+        "Attachments": {"type": "files"},
+        "Related Item": {"type": "relation"},
+        "Flag": {"type": "checkbox"},
+        "Contact Email": {"type": "email"},
+        "Contact Phone": {"type": "phone_number"},
+        "Assigned People": {"type": "people"},
+        "Tags": {"type": "multi_select"},
+    }
+    business_schema = {
+        "Title": {"type": "title"},
+        "State": {"type": "status"},
+        "ISBN": {"type": "rich_text"},
+        "Page Count": {"type": "number"},
+        "Author": {"type": "relation"},
+        "封面": {"type": "files"},
+    }
+    schema = {**mapped_schema, **business_schema}
+    record = {
+        "value_title": "可能性的艺术",
+        "value_text": "公共讨论",
+        "value_number": 400,
+        "value_status": "想读",
+        "value_select": "政治",
+        "value_date": "2022-01-01",
+        "value_url": "https://example.com/book",
+        "value_files": "https://example.com/cover.jpg",
+        "value_relation": ["page-related"],
+        "value_checkbox": True,
+        "value_email": "reader@example.com",
+        "value_phone": "+86 13900000000",
+        "value_people": ["user-1", "user-2"],
+        "value_multi_select": ["政治", "历史"],
+        "title": "业务标题不应被猜测",
+        "state": "业务状态不应被猜测",
+        "isbn": "业务 ISBN 不应被猜测",
+        "page_count": 999,
+        "author": ["business-author"],
+        "cover": "https://example.com/business-cover.jpg",
+    }
+    mapping = {
+        "value_title": "Primary Text",
+        "value_text": "Long Text",
+        "value_number": "Metric",
+        "value_status": "Workflow State",
+        "value_select": "Single Choice",
+        "value_date": "Timeline",
+        "value_url": "Reference Link",
+        "value_files": "Attachments",
+        "value_relation": "Related Item",
+        "value_checkbox": "Flag",
+        "value_email": "Contact Email",
+        "value_phone": "Contact Phone",
+        "value_people": "Assigned People",
+        "value_multi_select": "Tags",
+    }
+
+    properties = build_properties(record, mapping, schema)
+
+    assert {item["type"] for item in mapped_schema.values()} == WRITABLE_PROPERTY_TYPES
+    assert set(properties) == set(mapped_schema)
+    assert properties["Primary Text"]["title"][0]["text"]["content"] == "可能性的艺术"
+    assert properties["Long Text"]["rich_text"][0]["text"]["content"] == "公共讨论"
+    assert properties["Metric"] == {"number": 400}
+    assert properties["Workflow State"] == {"status": {"name": "想读"}}
+    assert properties["Single Choice"] == {"select": {"name": "政治"}}
+    assert properties["Timeline"] == {"date": {"start": "2022-01-01"}}
+    assert properties["Reference Link"] == {"url": "https://example.com/book"}
+    assert properties["Attachments"]["files"][0]["external"]["url"] == "https://example.com/cover.jpg"
+    assert properties["Related Item"] == {"relation": [{"id": "page-related"}]}
+    assert properties["Flag"] == {"checkbox": True}
+    assert properties["Contact Email"] == {"email": "reader@example.com"}
+    assert properties["Contact Phone"] == {"phone_number": "+86 13900000000"}
+    assert properties["Assigned People"] == {"people": [{"id": "user-1"}, {"id": "user-2"}]}
+    assert properties["Tags"] == {"multi_select": [{"name": "政治"}, {"name": "历史"}]}
+
+
 def test_build_properties_skips_empty_unknown_and_unmapped_values():
     schema = {
         "名称": {"type": "title"},

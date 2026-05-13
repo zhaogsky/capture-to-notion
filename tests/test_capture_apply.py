@@ -351,6 +351,80 @@ def test_capture_apply_includes_verification_summary_for_created_page(tmp_path, 
     assert fake_adapter.retrieved_pages == ["page-created"]
 
 
+def test_apply_verification_uses_plan_mapping_property_types_not_business_names(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    CacheStore(config).write_json(
+        config.targets_dir / "custom.json",
+        {
+            "target": {"page_id": "page-custom", "title": "Custom"},
+            "data_sources": {
+                "items": {
+                    "data_source_id": "ds-custom",
+                    "title": "Items",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {"title": "Cached Primary", "page_count": "Cached Metric"},
+                    "field_sources": {"title": "profile", "page_count": "profile"},
+                    "schema": {
+                        "Primary": {"type": "title"},
+                        "Metric": {"type": "number"},
+                    },
+                }
+            },
+        },
+    )
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "target": {
+                "page_title": "Custom",
+                "page_id": "page-custom",
+                "data_source_id": "ds-custom",
+                "confidence": "high",
+                "source": "cache",
+            },
+            "normalized_record": {"title": "任意条目", "page_count": 400},
+            "field_mapping": {"title": "Primary", "page_count": "Metric"},
+            "operations": [{"type": "create_or_update_page", "data_source_id": "ds-custom"}],
+        },
+    )
+    fake_adapter = FakeAdapter(
+        pages={
+            "page-created": {
+                "id": "page-created",
+                "object": "page",
+                "properties": {
+                    "Primary": {"type": "title", "title": [{"plain_text": "任意条目"}]},
+                    "Metric": {"type": "rich_text", "rich_text": [{"plain_text": "400"}]},
+                },
+            }
+        }
+    )
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert fake_adapter.created == [
+        (
+            "ds-custom",
+            {
+                "Primary": {"title": [{"text": {"content": "任意条目"}}]},
+                "Metric": {"number": 400},
+            },
+        )
+    ]
+    assert result["verification"]["pages"][0]["checks"]["page_count"] == {
+        "status": "missing",
+        "property": "Metric",
+    }
+    assert "missing:page_count" in result["verification"]["warnings"]
+
+
 def test_capture_apply_preserves_result_when_verification_page_retrieval_fails(tmp_path, monkeypatch, capsys):
     class VerificationPermissionAdapter(FakeAdapter):
         def retrieve_page(self, page_id: str) -> dict[str, Any]:
