@@ -535,12 +535,12 @@ def test_book_capture_plan_requires_confirmation_for_untrusted_page_count_fallba
     target = cache.read_json(config.targets_dir / "bookshelf.json", {})
     target["data_sources"]["books"]["fields"]["page_count"] = "Pages"
     target["data_sources"]["books"]["field_sources"] = {
-        "title": "semantic",
-        "author": "semantic",
-        "isbn": "semantic",
+        "title": "profile",
+        "author": "profile",
+        "isbn": "profile",
         "page_count": "type_fallback",
-        "state": "semantic",
-        "cover": "semantic",
+        "state": "profile",
+        "cover": "profile",
     }
     target["data_sources"]["books"]["schema"]["Pages"] = {"type": "number"}
     target["data_sources"]["books"]["schema"].pop("页数")
@@ -572,12 +572,12 @@ def test_book_capture_plan_requires_confirmation_for_untrusted_author_relation_f
     target = cache.read_json(config.targets_dir / "bookshelf.json", {})
     target["data_sources"]["books"]["fields"]["author"] = "Relation"
     target["data_sources"]["books"]["field_sources"] = {
-        "title": "semantic",
+        "title": "profile",
         "author": "relation_fallback",
-        "isbn": "semantic",
-        "page_count": "semantic",
-        "state": "semantic",
-        "cover": "semantic",
+        "isbn": "profile",
+        "page_count": "profile",
+        "state": "profile",
+        "cover": "profile",
     }
     target["data_sources"]["books"]["schema"]["Relation"] = {"type": "relation", "target_database_id": "db-authors"}
     target["data_sources"]["books"]["schema"].pop("作者")
@@ -607,12 +607,12 @@ def test_book_capture_plan_requires_confirmation_for_unknown_key_field_source(tm
     seed_book_target(config)
     target = cache.read_json(config.targets_dir / "bookshelf.json", {})
     target["data_sources"]["books"]["field_sources"] = {
-        "title": "semantic",
-        "author": "semantic",
-        "isbn": "semantic",
+        "title": "profile",
+        "author": "profile",
+        "isbn": "profile",
         "page_count": "generated",
-        "state": "semantic",
-        "cover": "semantic",
+        "state": "profile",
+        "cover": "profile",
     }
     cache.write_json(config.targets_dir / "bookshelf.json", target)
 
@@ -677,11 +677,11 @@ def test_book_capture_plan_does_not_attach_untrusted_cover_fallback_mapping(tmp_
     target = cache.read_json(config.targets_dir / "bookshelf.json", {})
     target["data_sources"]["books"]["fields"]["cover"] = "Attachment"
     target["data_sources"]["books"]["field_sources"] = {
-        "title": "semantic",
-        "author": "semantic",
-        "isbn": "semantic",
-        "page_count": "semantic",
-        "state": "semantic",
+        "title": "profile",
+        "author": "profile",
+        "isbn": "profile",
+        "page_count": "profile",
+        "state": "profile",
         "cover": "type_fallback",
     }
     target["data_sources"]["books"]["schema"]["Attachment"] = {"type": "files"}
@@ -707,7 +707,7 @@ def test_book_capture_plan_does_not_attach_untrusted_cover_fallback_mapping(tmp_
     assert plan.summary["asset_actions"] == []
 
 
-def test_book_capture_plan_accepts_profile_cover_mapping_without_semantic_alias(tmp_path, monkeypatch):
+def test_book_capture_plan_accepts_profile_cover_mapping_for_custom_files_field(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
     cache = CacheStore(config)
@@ -1256,7 +1256,7 @@ def test_capture_plan_merges_scanned_files_asset_mapping_into_field_mapping(tmp_
     assert plan.field_mapping["state"] == "阅读进度"
 
 
-def test_capture_plan_uses_semantic_fields_from_scanned_target(tmp_path, monkeypatch):
+def test_capture_plan_uses_cached_fields_from_scanned_target(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
     cache = CacheStore(config)
@@ -1334,7 +1334,7 @@ def test_capture_plan_uses_semantic_fields_from_scanned_target(tmp_path, monkeyp
 
 
 
-def test_book_capture_plan_maps_page_count_from_scanned_semantic_field(tmp_path, monkeypatch):
+def test_book_capture_plan_maps_page_count_from_cached_field_mapping(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
     cache = CacheStore(config)
@@ -1579,12 +1579,12 @@ def test_book_capture_plan_requires_confirmation_when_cover_field_source_is_untr
                         "page_count": "页数",
                     },
                     "field_sources": {
-                        "title": "semantic",
-                        "state": "semantic",
+                        "title": "profile",
+                        "state": "profile",
                         "cover": "type_fallback",
-                        "author": "semantic",
-                        "isbn": "semantic",
-                        "page_count": "semantic",
+                        "author": "profile",
+                        "isbn": "profile",
+                        "page_count": "profile",
                     },
                     "mapping_warnings": [],
                     "schema": {
