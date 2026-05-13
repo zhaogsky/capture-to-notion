@@ -53,6 +53,8 @@ capture-to-notion version
 capture-to-notion doctor
 ```
 
+`doctor` 也会在缓存目标早于 `field_sources` 时发出警告；在依赖可信映射门槛前，请重新扫描这些目标。
+
 迁移历史和重命名说明见 `CHANGELOG.md`。
 
 ## 常用命令

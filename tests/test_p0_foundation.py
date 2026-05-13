@@ -10,6 +10,9 @@ from typing import Mapping
 
 import capture_to_notion
 import capture_to_notion.cli
+from capture_to_notion.cache import CacheStore
+from capture_to_notion.config import ensure_config
+from capture_to_notion.diagnostics import doctor_report
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -128,6 +131,96 @@ def test_doctor_reports_nested_config_token_without_revealing_secret(tmp_path: P
     assert data["checks"]["token"]["configured"] is True
     assert "secret-token-value" not in result.stdout
     assert result.stderr == ""
+
+
+def test_doctor_warns_about_target_cache_missing_field_sources(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.targets_dir / "bookshelf.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单"},
+            "data_sources": {
+                "books": {
+                    "title": "Books",
+                    "fields": {"title": "名称", "author": "作者"},
+                    "schema": {
+                        "名称": {"type": "title"},
+                        "作者": {"type": "rich_text"},
+                    },
+                }
+            },
+        },
+    )
+    report = doctor_report(config)
+    stale_check = report["checks"]["target_cache_field_sources"]
+    assert list(report["checks"]) == [
+        "config_root",
+        "config_file",
+        "token",
+        "legacy_config_dir",
+        "target_cache_field_sources",
+    ]
+    assert stale_check["status"] == "warning"
+    assert stale_check["details"] == {
+        "targets_missing_field_sources": ["bookshelf"],
+        "message": "Rescan these targets to record mapping field_sources.",
+    }
+
+
+def test_doctor_warns_about_target_cache_partial_field_sources(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.targets_dir / "bookshelf.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单"},
+            "data_sources": {
+                "books": {
+                    "title": "Books",
+                    "fields": {"title": "名称", "author": "作者"},
+                    "field_sources": {"title": "profile"},
+                }
+            },
+        },
+    )
+
+    report = doctor_report(config)
+
+    assert report["checks"]["target_cache_field_sources"]["status"] == "warning"
+    assert report["checks"]["target_cache_field_sources"]["details"]["targets_missing_field_sources"] == ["bookshelf"]
+
+
+def test_doctor_accepts_target_cache_with_complete_field_sources(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.targets_dir / "bookshelf.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单"},
+            "data_sources": {
+                "books": {
+                    "title": "Books",
+                    "fields": {"title": "名称", "author": "作者"},
+                    "field_sources": {"title": "profile", "author": "explicit"},
+                }
+            },
+        },
+    )
+
+    report = doctor_report(config)
+
+    assert report["checks"]["target_cache_field_sources"] == {
+        "name": "target_cache_field_sources",
+        "status": "ok",
+        "details": {
+            "targets_missing_field_sources": [],
+            "message": "All cached targets with fields include field_sources.",
+        },
+    }
 
 
 def test_doctor_reports_default_notion_token_env_without_revealing_secret(tmp_path: Path) -> None:

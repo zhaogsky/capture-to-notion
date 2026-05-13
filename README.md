@@ -53,6 +53,8 @@ Run a read-only local diagnostic for config paths, whether a token is configured
 capture-to-notion doctor
 ```
 
+`doctor` also warns when cached targets predate `field_sources`; rescan those targets before relying on trusted mapping gates.
+
 For migration history and rename details, see `CHANGELOG.md`.
 
 ## Common Commands
