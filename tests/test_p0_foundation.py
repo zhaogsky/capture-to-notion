@@ -129,6 +129,7 @@ def test_doctor_reports_nested_config_token_without_revealing_secret(tmp_path: P
     assert data["checks"]["config_file"]["exists"] is True
     assert data["checks"]["config_file"]["valid_json"] is True
     assert data["checks"]["token"]["configured"] is True
+    assert data["checks"]["token"]["next_steps"] == []
     assert "secret-token-value" not in result.stdout
     assert result.stderr == ""
 
@@ -138,7 +139,7 @@ def test_doctor_warns_about_target_cache_missing_field_sources(tmp_path, monkeyp
     config = ensure_config()
     cache = CacheStore(config)
     cache.write_json(
-        config.targets_dir / "bookshelf.json",
+        config.targets_dir / "z-bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单"},
             "data_sources": {
@@ -153,6 +154,31 @@ def test_doctor_warns_about_target_cache_missing_field_sources(tmp_path, monkeyp
             },
         },
     )
+    cache.write_json(
+        config.targets_dir / "a-authorshelf.json",
+        {
+            "target": {"page_id": "page-authors", "title": "作者"},
+            "data_sources": {
+                "authors": {
+                    "title": "Authors",
+                    "fields": {"name": "姓名"},
+                }
+            },
+        },
+    )
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "My Shelf": {
+                    "type": "page",
+                    "page_id": "page-books",
+                    "title": "书单",
+                    "target_id": "z-bookshelf",
+                }
+            }
+        },
+    )
     report = doctor_report(config)
     stale_check = report["checks"]["target_cache_field_sources"]
     assert list(report["checks"]) == [
@@ -164,7 +190,11 @@ def test_doctor_warns_about_target_cache_missing_field_sources(tmp_path, monkeyp
     ]
     assert stale_check["status"] == "warning"
     assert stale_check["details"] == {
-        "targets_missing_field_sources": ["bookshelf"],
+        "targets_missing_field_sources": ["a-authorshelf", "z-bookshelf"],
+        "rescan_commands": [
+            "capture-to-notion target scan --page-id page-authors --target-id a-authorshelf",
+            "capture-to-notion target scan --page-id page-books --alias 'My Shelf'",
+        ],
         "message": "Rescan these targets to record mapping field_sources.",
     }
 
@@ -190,7 +220,11 @@ def test_doctor_warns_about_target_cache_partial_field_sources(tmp_path, monkeyp
     report = doctor_report(config)
 
     assert report["checks"]["target_cache_field_sources"]["status"] == "warning"
-    assert report["checks"]["target_cache_field_sources"]["details"]["targets_missing_field_sources"] == ["bookshelf"]
+    assert report["checks"]["target_cache_field_sources"]["details"] == {
+        "targets_missing_field_sources": ["bookshelf"],
+        "rescan_commands": ["capture-to-notion target scan --page-id page-books --target-id bookshelf"],
+        "message": "Rescan these targets to record mapping field_sources.",
+    }
 
 
 def test_doctor_accepts_target_cache_with_complete_field_sources(tmp_path, monkeypatch):
@@ -218,6 +252,7 @@ def test_doctor_accepts_target_cache_with_complete_field_sources(tmp_path, monke
         "status": "ok",
         "details": {
             "targets_missing_field_sources": [],
+            "rescan_commands": [],
             "message": "All cached targets with fields include field_sources.",
         },
     }
@@ -231,8 +266,24 @@ def test_doctor_reports_default_notion_token_env_without_revealing_secret(tmp_pa
     assert data["checks"]["config_file"]["exists"] is False
     assert data["checks"]["config_file"]["valid_json"] is False
     assert data["checks"]["token"]["configured"] is True
+    assert data["checks"]["token"]["next_steps"] == []
     assert "secret-token-value" not in result.stdout
     assert result.stderr == ""
+
+
+
+def test_doctor_reports_next_steps_when_token_is_missing(tmp_path: Path) -> None:
+    result = run_cli(["doctor"], tmp_path)
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["checks"]["token"] == {
+        "configured": False,
+        "source": "redacted",
+        "next_steps": [
+            "Set NOTION_TOKEN or configure notion.auth.env_token_name/token in config.json."
+        ],
+    }
 
 
 
@@ -374,9 +425,29 @@ def test_doctor_warns_when_legacy_config_dir_exists(tmp_path: Path) -> None:
 
     assert result.returncode == 0
     data = json.loads(result.stdout)
-    assert data["checks"]["legacy_config_dir"]["exists"] is True
-    assert data["checks"]["legacy_config_dir"]["path"] == str(legacy_dir)
+    assert data["checks"]["legacy_config_dir"] == {
+        "path": str(legacy_dir),
+        "exists": True,
+        "next_steps": [
+            f"Review legacy config at {legacy_dir}; migrate settings into CAPTURE_TO_NOTION_CONFIG_DIR before deleting it."
+        ],
+    }
     assert "secret-token-value" not in result.stdout
+
+
+
+def test_doctor_reports_no_legacy_config_dir_next_steps_when_absent(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+
+    result = run_cli(["doctor"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["checks"]["legacy_config_dir"] == {
+        "path": str(fake_home / ".config" / "notion-skill"),
+        "exists": False,
+        "next_steps": [],
+    }
 
 
 

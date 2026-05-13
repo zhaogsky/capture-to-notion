@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -70,8 +71,22 @@ def _token_configured(config_data: dict[str, Any] | None) -> bool:
     return bool(os.environ.get(env_token_name))
 
 
-def _targets_missing_field_sources(config: AppConfig) -> list[str]:
-    missing: list[str] = []
+def _token_next_steps(configured: bool) -> list[str]:
+    if configured:
+        return []
+    return ["Set NOTION_TOKEN or configure notion.auth.env_token_name/token in config.json."]
+
+
+def _legacy_config_dir_next_steps(legacy_config_dir: Path, exists: bool) -> list[str]:
+    if not exists:
+        return []
+    return [
+        f"Review legacy config at {legacy_config_dir}; migrate settings into CAPTURE_TO_NOTION_CONFIG_DIR before deleting it."
+    ]
+
+
+def _stale_target_cache_entries(config: AppConfig) -> list[dict[str, str | None]]:
+    stale_entries: list[dict[str, str | None]] = []
     for target_file in sorted(config.targets_dir.glob("*.json")):
         try:
             target_cache = json.loads(target_file.read_text(encoding="utf-8"))
@@ -90,9 +105,46 @@ def _targets_missing_field_sources(config: AppConfig) -> list[str]:
             if not isinstance(fields, dict) or not fields:
                 continue
             if not isinstance(field_sources, dict) or any(key not in field_sources for key in fields):
-                missing.append(target_file.stem)
+                target = target_cache.get("target")
+                page_id = target.get("page_id") if isinstance(target, dict) else None
+                stale_entries.append(
+                    {
+                        "target_id": target_file.stem,
+                        "page_id": page_id if isinstance(page_id, str) else None,
+                    }
+                )
                 break
-    return missing
+    return stale_entries
+
+
+def _aliases_by_target_id(config: AppConfig) -> dict[str, str]:
+    data = _load_json_file(config.aliases_file) or {}
+    aliases = data.get("aliases")
+    if not isinstance(aliases, dict):
+        return {}
+
+    aliases_by_target_id: dict[str, str] = {}
+    for alias_name, alias in sorted(aliases.items()):
+        if not isinstance(alias_name, str) or not isinstance(alias, dict):
+            continue
+        target_id = alias.get("target_id")
+        if isinstance(target_id, str) and target_id not in aliases_by_target_id:
+            aliases_by_target_id[target_id] = alias_name
+    return aliases_by_target_id
+
+
+def _rescan_commands(config: AppConfig, stale_entries: list[dict[str, str | None]]) -> list[str]:
+    aliases_by_target_id = _aliases_by_target_id(config)
+    commands: list[str] = []
+    for entry in stale_entries:
+        target_id = entry.get("target_id")
+        page_id = entry.get("page_id")
+        if not target_id or not page_id:
+            continue
+        alias = aliases_by_target_id.get(target_id)
+        target_option = f"--alias {shlex.quote(alias)}" if alias else f"--target-id {shlex.quote(target_id)}"
+        commands.append(f"capture-to-notion target scan --page-id {shlex.quote(page_id)} {target_option}")
+    return commands
 
 
 def _config_from_root(config_root_path: Path) -> AppConfig:
@@ -121,13 +173,17 @@ def doctor_report(config: AppConfig | Path) -> dict[str, Any]:
     legacy_config_dir = Path.home() / ".config" / "notion-skill"
     parent_dir = config_root_path.parent
 
-    missing_field_sources = _targets_missing_field_sources(app_config)
+    stale_target_entries = _stale_target_cache_entries(app_config)
+    missing_field_sources = [entry["target_id"] for entry in stale_target_entries if entry.get("target_id")]
+    rescan_commands = _rescan_commands(app_config, stale_target_entries)
     field_sources_status = "warning" if missing_field_sources else "ok"
     field_sources_message = (
         "Rescan these targets to record mapping field_sources."
         if missing_field_sources
         else "All cached targets with fields include field_sources."
     )
+    token_configured = _token_configured(config_data)
+    legacy_config_dir_exists = legacy_config_dir.exists()
 
     report = version_info(config_root_path)
     report["checks"] = {
@@ -146,18 +202,21 @@ def doctor_report(config: AppConfig | Path) -> dict[str, Any]:
             "valid_json": config_data is not None,
         },
         "token": {
-            "configured": _token_configured(config_data),
+            "configured": token_configured,
             "source": "redacted",
+            "next_steps": _token_next_steps(token_configured),
         },
         "legacy_config_dir": {
             "path": str(legacy_config_dir),
-            "exists": legacy_config_dir.exists(),
+            "exists": legacy_config_dir_exists,
+            "next_steps": _legacy_config_dir_next_steps(legacy_config_dir, legacy_config_dir_exists),
         },
         "target_cache_field_sources": {
             "name": "target_cache_field_sources",
             "status": field_sources_status,
             "details": {
                 "targets_missing_field_sources": missing_field_sources,
+                "rescan_commands": rescan_commands,
                 "message": field_sources_message,
             },
         },
