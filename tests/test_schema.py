@@ -167,6 +167,54 @@ def test_schema_hash_is_stable_for_field_order():
     assert schema_hash(left) == schema_hash(right)
 
 
+def test_normalize_database_schema_preserves_supported_notion_property_types():
+    raw_schema = {
+        "Title": {"type": "title"},
+        "Text": {"type": "rich_text"},
+        "Number": {"type": "number"},
+        "Select": {"type": "select"},
+        "Status": {"type": "status"},
+        "Date": {"type": "date"},
+        "Url": {"type": "url"},
+        "Files": {"type": "files"},
+        "Relation": {"type": "relation", "relation": {"database_id": "db-related"}},
+        "Checkbox": {"type": "checkbox"},
+        "Email": {"type": "email"},
+        "Phone": {"type": "phone_number"},
+    }
+    normalized = normalize_database_schema(raw_schema)
+
+    assert {name: value["type"] for name, value in normalized.items()} == {
+        "Title": "title",
+        "Text": "rich_text",
+        "Number": "number",
+        "Select": "select",
+        "Status": "status",
+        "Date": "date",
+        "Url": "url",
+        "Files": "files",
+        "Relation": "relation",
+        "Checkbox": "checkbox",
+        "Email": "email",
+        "Phone": "phone_number",
+    }
+    assert normalized["Relation"]["target_database_id"] == "db-related"
+
+
+
+def test_normalize_database_schema_allows_raw_property_named_properties():
+    raw_schema = {
+        "properties": {"type": "rich_text", "rich_text": {}},
+        "Title": {"type": "title", "title": {}},
+    }
+
+    normalized = normalize_database_schema(raw_schema)
+
+    assert normalized["properties"]["type"] == "rich_text"
+    assert normalized["Title"]["type"] == "title"
+
+
+
 def test_normalize_database_schema_includes_multi_select_options():
     database = {
         "properties": {

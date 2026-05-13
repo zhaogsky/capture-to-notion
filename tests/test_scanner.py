@@ -3,6 +3,7 @@ import json
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import ensure_config
 from capture_to_notion.scanner import _build_asset_mapping, _primary_score, scan_page_target
+from capture_to_notion.schema import normalize_database_schema
 
 
 class FakeAdapter:
@@ -420,6 +421,17 @@ def test_scan_page_primary_score_does_not_use_schema_size_as_tiebreaker(tmp_path
     assert result["data_sources"]["db-wide"]["role"] == "secondary"
 
 
+def test_scanner_does_not_map_business_fields_from_property_names_without_profile():
+    schema = {"作者": {"type": "rich_text"}, "ISBN": {"type": "rich_text"}, "页数": {"type": "number"}, "封面": {"type": "files"}}
+    normalized = normalize_database_schema(schema)
+
+    assert normalized["作者"]["type"] == "rich_text"
+    assert normalized["ISBN"]["type"] == "rich_text"
+    assert normalized["页数"]["type"] == "number"
+    assert normalized["封面"]["type"] == "files"
+
+
+
 def test_scan_page_does_not_infer_business_fields_from_schema_names(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -433,11 +445,12 @@ def test_scan_page_does_not_infer_business_fields_from_schema_names(tmp_path, mo
                 "properties": {
                     "书名": {"id": "title", "type": "title", "title": {}},
                     "阅读进度": {"id": "status", "type": "status", "status": {"options": []}},
-                    "封面图": {"id": "files", "type": "files", "files": {}},
+                    "封面": {"id": "files", "type": "files", "files": {}},
                     "豆瓣链接": {"id": "url", "type": "url", "url": {}},
                     "作者": {"id": "author", "type": "relation", "relation": {"database_id": "db-authors"}},
                     "出版社": {"id": "publisher", "type": "rich_text", "rich_text": {}},
                     "ISBN": {"id": "isbn", "type": "rich_text", "rich_text": {}},
+                    "页数": {"id": "pages", "type": "number", "number": {}},
                 },
             }
         },
@@ -452,6 +465,10 @@ def test_scan_page_does_not_infer_business_fields_from_schema_names(tmp_path, mo
     assert data_source["fields"] == {}
     assert data_source["field_sources"] == {}
     assert data_source["mapping_warnings"] == []
+    assert data_source["schema"]["作者"]["type"] == "relation"
+    assert data_source["schema"]["ISBN"]["type"] == "rich_text"
+    assert data_source["schema"]["页数"]["type"] == "number"
+    assert data_source["schema"]["封面"]["type"] == "files"
 
 
 def test_scan_page_uses_cached_profile_field_mapping_over_ambiguous_schema_names(tmp_path, monkeypatch):

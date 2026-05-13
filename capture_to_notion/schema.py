@@ -73,7 +73,10 @@ def normalize_property(name: str, property_data: dict[str, Any]) -> dict[str, An
 
 
 def normalize_database_schema(database: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    properties = database.get("properties", {})
+    properties = database
+    if not all(isinstance(value, dict) and isinstance(value.get("type"), str) for value in database.values()):
+        wrapped_properties = database.get("properties")
+        properties = wrapped_properties if isinstance(wrapped_properties, dict) else {}
     normalized = {}
     for name in sorted(properties):
         property_data = properties[name]

@@ -97,7 +97,7 @@ The generated plan includes a top-level `summary` block for review before any wr
 
 ## Parser Profiles and Field Sources
 
-Target cache entries can define `parser_profile` at the target level or data source level. Data source profiles override target profiles. The default book profile supplies only required/review field lists; it does not add business labels.
+Target cache entries can define `parser_profile` at the target level or data source level. Data source profiles override target profiles. The default book profile supplies only required/review field lists; it does not add business labels. Target scanning records Notion property names and official property types; it does not infer business record keys from property names unless a parser profile or explicit mapping supplies that key.
 
 Use `labels` and `title_patterns` to control raw input parsing into normalized record keys. Use `required_schema_fields` for record keys that must map to Notion schema before a write plan can proceed, `required_value_fields` for record keys that must have extracted values, `summary_key_fields` for fields that should appear in the plan review summary, `trusted_field_sources` for mapping source labels that can satisfy required schema fields without confirmation, and `asset_trust_required_fields` for asset-backed record keys whose attachment mappings must also come from trusted sources before asset operations are planned.
 

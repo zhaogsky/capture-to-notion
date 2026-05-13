@@ -97,7 +97,7 @@ capture-to-notion capture plan --input input.json --output plan.json
 
 ## Parser Profile 与字段来源
 
-目标缓存可以在 target 层或 data source 层定义 `parser_profile`。data source 层会覆盖 target 层。默认 book profile 只提供 required/review 字段列表，不会添加业务标签。
+目标缓存可以在 target 层或 data source 层定义 `parser_profile`。data source 层会覆盖 target 层。默认 book profile 只提供 required/review 字段列表，不会添加业务标签。目标扫描只记录 Notion 字段名和官方字段类型；除非 parser profile 或显式映射提供对应 key，否则不会根据字段名推断业务 record key。
 
 使用 `labels` 和 `title_patterns` 控制 raw input 如何解析为 normalized record。`required_schema_fields` 表示写入计划继续前必须映射到 Notion schema 的 record key；`required_value_fields` 表示计划中必须提取到值的 record key；`summary_key_fields` 表示需要出现在计划审阅摘要中的字段；`trusted_field_sources` 表示哪些字段映射来源可以无需确认地满足 required schema 字段；`asset_trust_required_fields` 表示哪些素材类 record key 在规划附件操作前也必须经过可信来源校验。
 
