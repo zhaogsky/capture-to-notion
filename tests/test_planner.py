@@ -40,6 +40,11 @@ PODCAST_PARSER_PROFILE = {
 }
 
 
+def test_planner_exposes_generic_title_helper_only():
+    assert hasattr(planner_module, "extract_title")
+    assert not hasattr(planner_module, "extract_book_title")
+
+
 def seed_book_target(config, parser_profile=True):
     write_json(
         config.aliases_file,

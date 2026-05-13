@@ -85,9 +85,6 @@ def extract_title(raw_input: str, parser_profile: dict[str, Any] | None = None) 
     return raw_input.strip()
 
 
-extract_book_title = extract_title
-
-
 def extract_page_count(raw_input: str, parser_profile: dict[str, Any] | None = None) -> int | None:
     known_labels = _known_parser_labels(parser_profile)
     value = extract_labeled_value(
