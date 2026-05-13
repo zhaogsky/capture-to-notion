@@ -13,7 +13,7 @@ The CLI can plan captures, suggest targets, scan Notion pages/databases, and app
 
 Supported first-version write behavior includes cached target/schema mapping, explicit author/podcast relation resolution, cover download/cache/upload fallback to external URL, and warning reporting when optional enrichment fails.
 
-Capture plans depend on target cache `parser_profile`, `fields`, and `field_sources`. Do not use Notion MCP or property-name guessing to fill business mappings. Treat `explicit` and `profile` field sources as trusted; warnings such as `*_schema_incomplete`, `*_key_values_missing`, and `untrusted_field_mapping` must be shown to the user for confirmation.
+Capture plans depend on target cache `parser_profile`, `fields`, and `field_sources`. Do not use Notion MCP or property-name guessing to fill business mappings. When `field_sources` are present, treat only sources listed in the active parser profile `trusted_field_sources` as trusted for required mappings; warnings such as `*_schema_incomplete`, `*_key_values_missing`, and `untrusted_field_mapping` must be shown to the user for confirmation.
 
 ## Summary Preprocessing
 

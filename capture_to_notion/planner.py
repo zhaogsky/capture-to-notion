@@ -16,7 +16,6 @@ from capture_to_notion.schema import confirmation_blocking_warnings
 
 METADATA_DELIMITER_PATTERN = r"[\s,，;；|｜]"
 METADATA_COLON_PATTERN = r"[:：]"
-TRUSTED_BOOK_FIELD_SOURCES = {"explicit", "profile"}
 
 
 def _string_list(value: Any) -> list[str]:
@@ -142,6 +141,7 @@ def _default_parser_profile(content_type: str) -> dict[str, Any]:
             "required_schema_fields": ["cover", "author", "isbn", "page_count", "state"],
             "required_value_fields": ["author", "isbn", "page_count"],
             "summary_key_fields": ["cover", "author", "isbn", "page_count"],
+            "trusted_field_sources": ["explicit", "profile"],
         }
     return {}
 
@@ -256,31 +256,36 @@ def _summary_key_fields(parser_profile: dict[str, Any]) -> list[str]:
 
 
 
+def _trusted_field_sources(parser_profile: dict[str, Any]) -> list[str]:
+    return _string_list(parser_profile.get("trusted_field_sources"))
+
+
+
 def _trusted_mapping_fields(
-    content_type: str,
     fields: dict[str, str],
     field_sources: dict[str, str] | None,
     required_schema_fields: list[str],
+    trusted_field_sources: list[str],
 ) -> dict[str, str]:
-    if content_type != "book" or not field_sources:
+    if not trusted_field_sources or not field_sources:
         return dict(fields)
 
     trusted_fields = dict(fields)
     for key in required_schema_fields:
         source = field_sources.get(key)
-        if source not in TRUSTED_BOOK_FIELD_SOURCES:
+        if source not in trusted_field_sources:
             trusted_fields.pop(key, None)
     return trusted_fields
 
 
 
 def _untrusted_mapping_warnings(
-    content_type: str,
     fields: dict[str, str],
     field_sources: dict[str, str] | None,
     required_schema_fields: list[str],
+    trusted_field_sources: list[str],
 ) -> list[str]:
-    if content_type != "book" or not field_sources:
+    if not trusted_field_sources or not field_sources:
         return []
 
     warnings: list[str] = []
@@ -288,7 +293,7 @@ def _untrusted_mapping_warnings(
         if key not in fields:
             continue
         source = field_sources.get(key)
-        if source not in TRUSTED_BOOK_FIELD_SOURCES:
+        if source not in trusted_field_sources:
             warnings.append(f"untrusted_field_mapping:{key}:{source or 'missing'}")
     return warnings
 
@@ -518,8 +523,14 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     required_schema_fields = _required_schema_fields(parser_profile)
     required_value_fields = _required_value_fields(parser_profile)
     summary_key_fields = _summary_key_fields(parser_profile)
-    trusted_fields = _trusted_mapping_fields(content_type, fields, field_sources, required_schema_fields)
-    untrusted_mapping_warnings = _untrusted_mapping_warnings(content_type, fields, field_sources, required_schema_fields)
+    trusted_field_sources = _trusted_field_sources(parser_profile)
+    trusted_fields = _trusted_mapping_fields(fields, field_sources, required_schema_fields, trusted_field_sources)
+    untrusted_mapping_warnings = _untrusted_mapping_warnings(
+        fields,
+        field_sources,
+        required_schema_fields,
+        trusted_field_sources,
+    )
     normalized_record = _normalized_record_for_capture(capture, content_type, parser_profile)
     cover_url = normalized_record.get("cover")
 
@@ -543,7 +554,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         confirmation_reason = None
         structure_requires_confirmation = False
     data_source_schema = data_source.get("schema", {})
-    missing_fields = missing_required_fields(content_type, fields, data_source_schema, required_schema_fields)
+    missing_fields = missing_required_fields(content_type, trusted_fields, data_source_schema, required_schema_fields)
     missing_values = missing_required_values(content_type, normalized_record, required_value_fields)
     if missing_fields:
         warnings.append(f"{content_type}_schema_incomplete:{','.join(missing_fields)}")

@@ -280,6 +280,7 @@ def test_default_book_parser_profile_supplies_required_fields_without_business_l
     assert profile["required_schema_fields"] == ["cover", "author", "isbn", "page_count", "state"]
     assert profile["required_value_fields"] == ["author", "isbn", "page_count"]
     assert profile["summary_key_fields"] == ["cover", "author", "isbn", "page_count"]
+    assert profile["trusted_field_sources"] == ["explicit", "profile"]
     assert "labels" not in profile
 
 
@@ -1068,6 +1069,36 @@ def test_podcast_capture_plan_does_not_parse_business_labels_without_parser_prof
 
     assert plan.normalized_record["podcast"] is None
     assert plan.normalized_record["title"] == "收藏这期播客到播客库 播客：忽左忽右"
+
+
+def test_podcast_capture_plan_requires_trusted_mapping_sources_from_parser_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_podcast_target(config)
+    target = cache.read_json(config.targets_dir / "podcastshelf.json", {})
+    target["parser_profile"]["podcast_episode"]["required_schema_fields"] = ["podcast"]
+    target["parser_profile"]["podcast_episode"]["trusted_field_sources"] = ["explicit", "profile"]
+    target["data_sources"]["episodes"]["field_sources"] = {"podcast": "inferred"}
+    cache.write_json(config.targets_dir / "podcastshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="收藏这期播客到播客库 播客：忽左忽右",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "untrusted_field_mapping"
+    assert "untrusted_field_mapping:podcast:inferred" in plan.warnings
+    assert "podcast_episode_schema_incomplete:podcast" in plan.warnings
+    assert "podcast" not in plan.field_mapping
+    assert plan.operations == []
+
 
 
 def test_podcast_capture_plan_ignores_page_count_only_mapping_ambiguity(tmp_path, monkeypatch):
