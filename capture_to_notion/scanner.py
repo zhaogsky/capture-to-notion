@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from capture_to_notion.cache import CacheStore
-from capture_to_notion.schema import confirmation_blocking_warnings, normalize_database_schema, plain_title, schema_hash, semantic_field_mapping
+from capture_to_notion.schema import confirmation_blocking_warnings, normalize_database_schema, plain_title, schema_hash
 
 PROFILE_FIELD_SOURCES = {"explicit", "profile"}
 PRIMARY_FIELD_SOURCES = {"semantic", *PROFILE_FIELD_SOURCES}
@@ -221,9 +221,8 @@ def scan_page_target(
             data_source_id = source["id"]
             data_source = adapter.retrieve_data_source(data_source_id) if data_source_id != database_id else database
             schema = normalize_database_schema(data_source)
-            mapping = semantic_field_mapping(schema, include_sources=True)
             mapping = _merge_profile_field_mapping(
-                mapping,
+                {"fields": {}, "field_sources": {}, "warnings": [], "requires_confirmation": False},
                 _profile_field_mapping(cache, resolved_target_id, data_source_id, schema),
             )
             data_sources[data_source_id] = {
@@ -264,7 +263,7 @@ def scan_page_target(
             if not data_sources
             else "data_source_schema_empty"
             if not has_primary_data_source and not has_schema
-            else "semantic_field_mapping_missing"
+            else "field_mapping_missing"
             if not has_primary_data_source
             else "field_mapping_ambiguous"
             if has_mapping_warnings

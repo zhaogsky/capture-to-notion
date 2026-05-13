@@ -25,9 +25,45 @@ class FakeAdapter:
         return self.data_sources[data_source_id]
 
 
+def seed_profile_mapping(config, target_id, data_source_id, fields):
+    (config.targets_dir / f"{target_id}.json").write_text(
+        json.dumps(
+            {
+                "target": {"page_id": "page", "target_id": target_id},
+                "data_sources": {
+                    data_source_id: {
+                        "data_source_id": data_source_id,
+                        "fields": fields,
+                        "field_sources": {key: "profile" for key in fields},
+                    }
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_scan_page_discovers_child_databases_normalizes_schema_and_saves_target(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
+    cache = CacheStore(config)
+    seed_profile_mapping(
+        config,
+        "bookshelf",
+        "db-books",
+        {
+            "title": "名称",
+            "notes": "笔记",
+            "state": "状态",
+            "tag": "标签",
+            "url": "链接",
+            "date": "日期",
+            "cover": "封面",
+            "author": "作者",
+        },
+    )
     adapter = FakeAdapter(
         pages={"page-books": {"id": "page-books", "title": "书单"}},
         children={
@@ -74,7 +110,7 @@ def test_scan_page_discovers_child_databases_normalizes_schema_and_saves_target(
     result = scan_page_target(
         adapter,
         "page-books",
-        CacheStore(config),
+        cache,
         target_id="bookshelf",
         alias="书单",
     )
@@ -121,6 +157,8 @@ def test_scan_page_discovers_child_databases_normalizes_schema_and_saves_target(
 def test_scan_page_uses_real_data_source_schema_from_database_metadata(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
+    cache = CacheStore(config)
+    seed_profile_mapping(config, "bookshelf", "ds-reading", {"title": "书名", "cover": "封面"})
     adapter = FakeAdapter(
         pages={"page-books": {"id": "page-books", "title": "书单"}},
         children={"page-books": [{"type": "child_database", "id": "db-container", "child_database": {"title": "阅读记录"}}]},
@@ -144,7 +182,7 @@ def test_scan_page_uses_real_data_source_schema_from_database_metadata(tmp_path,
         },
     )
 
-    result = scan_page_target(adapter, "page-books", CacheStore(config), target_id="bookshelf")
+    result = scan_page_target(adapter, "page-books", cache, target_id="bookshelf")
 
     data_source = result["data_sources"]["ds-reading"]
     assert "db-container" not in result["data_sources"]
@@ -154,9 +192,16 @@ def test_scan_page_uses_real_data_source_schema_from_database_metadata(tmp_path,
     assert data_source["schema"]["书名"]["type"] == "title"
 
 
-def test_scan_page_marks_real_book_schema_as_primary_over_empty_sources(tmp_path, monkeypatch):
+def test_scan_page_marks_profile_mapped_book_schema_as_primary_over_empty_sources(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
+    cache = CacheStore(config)
+    seed_profile_mapping(
+        config,
+        "bookshelf",
+        "db-books",
+        {"title": "书名", "state": "阅读进度", "cover": "封面图", "author": "作者", "isbn": "ISBN"},
+    )
     adapter = FakeAdapter(
         pages={"page-books": {"id": "page-books", "title": "书单"}},
         children={
@@ -185,7 +230,7 @@ def test_scan_page_marks_real_book_schema_as_primary_over_empty_sources(tmp_path
         },
     )
 
-    result = scan_page_target(adapter, "page-books", CacheStore(config), target_id="bookshelf")
+    result = scan_page_target(adapter, "page-books", cache, target_id="bookshelf")
 
     assert result["data_sources"]["db-empty"]["role"] == "secondary"
     assert result["data_sources"]["db-books"]["role"] == "primary"
@@ -199,9 +244,11 @@ def test_scan_page_marks_real_book_schema_as_primary_over_empty_sources(tmp_path
     assert result["state_mapping"] == {"field": "阅读进度", "values": {}}
 
 
-def test_scan_page_prefers_book_schema_over_generic_fallback_schema(tmp_path, monkeypatch):
+def test_scan_page_prefers_profile_mapped_book_schema_over_unmapped_schema(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
+    cache = CacheStore(config)
+    seed_profile_mapping(config, "bookshelf", "db-books", {"title": "书名", "author": "作者", "isbn": "ISBN"})
     adapter = FakeAdapter(
         pages={"page-books": {"id": "page-books", "title": "书单"}},
         children={
@@ -233,14 +280,10 @@ def test_scan_page_prefers_book_schema_over_generic_fallback_schema(tmp_path, mo
         },
     )
 
-    result = scan_page_target(adapter, "page-books", CacheStore(config), target_id="bookshelf")
+    result = scan_page_target(adapter, "page-books", cache, target_id="bookshelf")
 
     assert result["data_sources"]["db-generic"]["role"] == "secondary"
-    assert result["data_sources"]["db-generic"]["fields"] == {
-        "state": "Status",
-        "url": "Website",
-        "title": "Project",
-    }
+    assert result["data_sources"]["db-generic"]["fields"] == {}
     assert result["data_sources"]["db-books"]["role"] == "primary"
 
 
@@ -321,18 +364,16 @@ def test_scan_page_with_only_type_fallback_fields_requires_confirmation(tmp_path
     result = scan_page_target(adapter, "page-generic", CacheStore(config), target_id="generic")
 
     assert result["requires_confirmation"] is True
-    assert result["confirmation_reason"] == "semantic_field_mapping_missing"
+    assert result["confirmation_reason"] == "field_mapping_missing"
     assert result["data_sources"]["db-generic"]["role"] == "secondary"
-    assert result["data_sources"]["db-generic"]["fields"] == {
-        "title": "Project",
-        "notes": "Details",
-        "tag": "Phase",
-    }
+    assert result["data_sources"]["db-generic"]["fields"] == {}
 
 
 def test_scan_page_primary_score_does_not_use_schema_size_as_tiebreaker(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
+    cache = CacheStore(config)
+    seed_profile_mapping(config, "bookshelf", "db-first", {"title": "书名"})
     adapter = FakeAdapter(
         pages={"page-books": {"id": "page-books", "title": "书单"}},
         children={
@@ -363,13 +404,13 @@ def test_scan_page_primary_score_does_not_use_schema_size_as_tiebreaker(tmp_path
         },
     )
 
-    result = scan_page_target(adapter, "page-books", CacheStore(config), target_id="bookshelf")
+    result = scan_page_target(adapter, "page-books", cache, target_id="bookshelf")
 
     assert result["data_sources"]["db-first"]["role"] == "primary"
     assert result["data_sources"]["db-wide"]["role"] == "secondary"
 
 
-def test_scan_page_uses_semantic_field_mapping_from_real_schema_names(tmp_path, monkeypatch):
+def test_scan_page_does_not_infer_business_fields_from_schema_names(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
     adapter = FakeAdapter(
@@ -395,17 +436,11 @@ def test_scan_page_uses_semantic_field_mapping_from_real_schema_names(tmp_path, 
     result = scan_page_target(adapter, "page-books", CacheStore(config), target_id="bookshelf")
     data_source = result["data_sources"]["db-books"]
 
-    assert result["requires_confirmation"] is False
-    assert result["confirmation_reason"] is None
-    assert data_source["fields"] == {
-        "title": "书名",
-        "state": "阅读进度",
-        "cover": "封面图",
-        "url": "豆瓣链接",
-        "author": "作者",
-        "publisher": "出版社",
-        "isbn": "ISBN",
-    }
+    assert result["requires_confirmation"] is True
+    assert result["confirmation_reason"] == "field_mapping_missing"
+    assert data_source["role"] == "secondary"
+    assert data_source["fields"] == {}
+    assert data_source["field_sources"] == {}
     assert data_source["mapping_warnings"] == []
 
 
@@ -458,7 +493,7 @@ def test_scan_page_uses_cached_profile_field_mapping_over_ambiguous_schema_names
     }
 
 
-def test_scan_page_requires_confirmation_when_field_mapping_is_ambiguous(tmp_path, monkeypatch):
+def test_scan_page_requires_confirmation_when_field_mapping_is_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
     adapter = FakeAdapter(
@@ -482,20 +517,17 @@ def test_scan_page_requires_confirmation_when_field_mapping_is_ambiguous(tmp_pat
     data_source = result["data_sources"]["db-books"]
 
     assert result["requires_confirmation"] is True
-    assert result["confirmation_reason"] == "field_mapping_ambiguous"
-    assert data_source["fields"] == {
-        "title": "名称",
-        "author": "作者",
-    }
-    assert data_source["mapping_warnings"] == [
-        "ambiguous_field_mapping:title:名称,标题",
-        "ambiguous_field_mapping:author:作者,作者页面",
-    ]
+    assert result["confirmation_reason"] == "field_mapping_missing"
+    assert data_source["fields"] == {}
+    assert data_source["field_sources"] == {}
+    assert data_source["mapping_warnings"] == []
 
 
-def test_scan_page_does_not_require_confirmation_for_page_count_ambiguity_on_podcast_like_schema(tmp_path, monkeypatch):
+def test_scan_page_does_not_require_confirmation_for_profile_mapped_podcast_schema(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
+    cache = CacheStore(config)
+    seed_profile_mapping(config, "podcastshelf", "db-episodes", {"title": "标题", "state": "状态", "podcast": "播客"})
     adapter = FakeAdapter(
         pages={"page-podcasts": {"id": "page-podcasts", "title": "播客库"}},
         children={"page-podcasts": [{"type": "child_database", "id": "db-episodes", "child_database": {"title": "Episodes"}}]},
@@ -514,7 +546,7 @@ def test_scan_page_does_not_require_confirmation_for_page_count_ambiguity_on_pod
         },
     )
 
-    result = scan_page_target(adapter, "page-podcasts", CacheStore(config), target_id="podcastshelf")
+    result = scan_page_target(adapter, "page-podcasts", cache, target_id="podcastshelf")
     data_source = result["data_sources"]["db-episodes"]
 
     assert result["requires_confirmation"] is False
@@ -524,17 +556,15 @@ def test_scan_page_does_not_require_confirmation_for_page_count_ambiguity_on_pod
         "title": "标题",
         "state": "状态",
         "podcast": "播客",
-        "page_count": "Page Count",
-        "notes": "Pages",
     }
-    assert data_source["mapping_warnings"] == [
-        "ambiguous_field_mapping:page_count:Page Count,Pages",
-    ]
+    assert data_source["mapping_warnings"] == []
 
 
-def test_scan_page_builds_state_mapping_from_semantic_select_state_field(tmp_path, monkeypatch):
+def test_scan_page_builds_state_mapping_from_profile_mapped_select_state_field(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
+    cache = CacheStore(config)
+    seed_profile_mapping(config, "bookshelf", "db-books", {"title": "名称", "state": "状态"})
     adapter = FakeAdapter(
         pages={"page-books": {"id": "page-books", "title": "书单"}},
         children={"page-books": [{"type": "child_database", "id": "db-books", "child_database": {"title": "Books"}}]},
@@ -554,16 +584,18 @@ def test_scan_page_builds_state_mapping_from_semantic_select_state_field(tmp_pat
         },
     )
 
-    result = scan_page_target(adapter, "page-books", CacheStore(config), target_id="bookshelf")
+    result = scan_page_target(adapter, "page-books", cache, target_id="bookshelf")
     data_source = result["data_sources"]["db-books"]
 
     assert data_source["fields"]["state"] == "状态"
     assert result["state_mapping"] == {"field": "状态", "values": {}}
 
 
-def test_scan_page_builds_cover_asset_mapping_from_semantic_cover_field(tmp_path, monkeypatch):
+def test_scan_page_builds_cover_asset_mapping_from_profile_mapped_cover_field(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
+    cache = CacheStore(config)
+    seed_profile_mapping(config, "bookshelf", "db-books", {"title": "名称", "cover": "封面图"})
     adapter = FakeAdapter(
         pages={"page-books": {"id": "page-books", "title": "书单"}},
         children={"page-books": [{"type": "child_database", "id": "db-books", "child_database": {"title": "Books"}}]},
@@ -580,7 +612,7 @@ def test_scan_page_builds_cover_asset_mapping_from_semantic_cover_field(tmp_path
         },
     )
 
-    result = scan_page_target(adapter, "page-books", CacheStore(config), target_id="bookshelf")
+    result = scan_page_target(adapter, "page-books", cache, target_id="bookshelf")
     data_source = result["data_sources"]["db-books"]
 
     assert data_source["fields"]["cover"] == "封面图"

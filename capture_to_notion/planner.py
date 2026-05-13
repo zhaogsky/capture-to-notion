@@ -11,7 +11,7 @@ from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import AppConfig
 from capture_to_notion.classifier import classify_content_type, normalize_state
 from capture_to_notion.models import AssetOperation, CaptureInput, Target, WritePlan
-from capture_to_notion.schema import confirmation_blocking_warnings, semantic_field_mapping
+from capture_to_notion.schema import confirmation_blocking_warnings
 
 
 KNOWN_METADATA_LABELS = [
@@ -43,7 +43,7 @@ METADATA_DELIMITER_PATTERN = r"[\s,，;；|｜]"
 METADATA_COLON_PATTERN = r"[:：]"
 BOOK_REQUIRED_SCHEMA_FIELDS = ["cover", "author", "isbn", "page_count", "state"]
 BOOK_REQUIRED_VALUE_FIELDS = ["author", "isbn", "page_count"]
-TRUSTED_BOOK_FIELD_SOURCES = {"semantic", "explicit", "profile"}
+TRUSTED_BOOK_FIELD_SOURCES = {"explicit", "profile"}
 
 
 def _string_list(value: Any) -> list[str]:
@@ -352,8 +352,8 @@ def missing_required_fields(content_type: str, fields: dict[str, str], schema: d
 
     missing_fields = [field for field in BOOK_REQUIRED_SCHEMA_FIELDS if field not in fields]
     if "cover" not in missing_fields and schema:
-        semantic_fields = semantic_field_mapping(schema)["fields"]
-        if semantic_fields.get("cover") != fields.get("cover"):
+        cover_field = fields.get("cover")
+        if schema.get(cover_field, {}).get("type") != "files":
             missing_fields.append("cover")
     return missing_fields
 

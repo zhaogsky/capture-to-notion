@@ -332,6 +332,64 @@ def test_book_capture_plan_uses_parser_profile_labels_from_target_cache(tmp_path
     assert plan.field_mapping["page_count"] == "页数"
 
 
+def test_book_capture_plan_uses_target_level_parser_profile_labels(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["parser_profile"] = {
+        "book": {
+            "labels": {
+                "author": ["writer"],
+                "isbn": ["code"],
+                "page_count": ["length"],
+            },
+            "title_patterns": [r"Book:\s*(.+?)(?=\s+writer\s*:)"]
+        }
+    }
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="Book: The Art of Possibility writer: 刘瑜 code: 9787559847357 length: 400",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.normalized_record["title"] == "The Art of Possibility"
+    assert plan.normalized_record["author"] == "刘瑜"
+    assert plan.normalized_record["isbn"] == "9787559847357"
+    assert plan.normalized_record["page_count"] == 400
+
+
+def test_book_capture_plan_keeps_legacy_labels_without_parser_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.normalized_record["title"] == "可能性的艺术"
+    assert plan.normalized_record["author"] == "刘瑜"
+    assert plan.normalized_record["isbn"] == "9787559847357"
+    assert plan.normalized_record["page_count"] == 400
+
+
 def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -554,6 +612,42 @@ def test_book_capture_plan_requires_confirmation_for_unknown_key_field_source(tm
     assert "page_count" not in plan.summary["mapped_fields"]
 
 
+def test_book_capture_plan_requires_confirmation_for_legacy_semantic_field_sources(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["field_sources"] = {
+        "title": "semantic",
+        "author": "semantic",
+        "isbn": "semantic",
+        "page_count": "semantic",
+        "state": "semantic",
+        "cover": "semantic",
+    }
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "untrusted_field_mapping"
+    assert "untrusted_field_mapping:cover:semantic" in plan.warnings
+    assert "cover" not in plan.field_mapping
+    assert "author" not in plan.field_mapping
+    assert "isbn" not in plan.field_mapping
+    assert "page_count" not in plan.field_mapping
+
+
+
 def test_book_capture_plan_does_not_attach_untrusted_cover_fallback_mapping(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -590,6 +684,41 @@ def test_book_capture_plan_does_not_attach_untrusted_cover_fallback_mapping(tmp_
     assert "cover" not in plan.field_mapping
     assert plan.asset_operations == []
     assert plan.summary["asset_actions"] == []
+
+
+def test_book_capture_plan_accepts_profile_cover_mapping_without_semantic_alias(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["fields"]["cover"] = "Attachment"
+    target["data_sources"]["books"]["field_sources"] = {
+        "title": "profile",
+        "author": "profile",
+        "isbn": "profile",
+        "page_count": "profile",
+        "state": "profile",
+        "cover": "profile",
+    }
+    target["data_sources"]["books"]["schema"]["Attachment"] = {"type": "files"}
+    target["data_sources"]["books"]["schema"].pop("封面")
+    target["asset_mapping"] = {"cover": {"field": "Attachment", "type": "files", "strategy": "download_and_attach"}}
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.field_mapping["cover"] == "Attachment"
+    assert plan.asset_operations[0].target_field == "Attachment"
 
 
 def test_book_without_labeled_author_keeps_none(tmp_path, monkeypatch):
@@ -1334,7 +1463,7 @@ def test_capture_plan_uses_primary_cover_field_over_stale_global_asset_mapping(t
 
 
 
-def test_book_capture_plan_requires_confirmation_when_cover_field_is_generic_files(tmp_path, monkeypatch):
+def test_book_capture_plan_requires_confirmation_when_cover_field_source_is_untrusted(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
     cache = CacheStore(config)
@@ -1368,6 +1497,14 @@ def test_book_capture_plan_requires_confirmation_when_cover_field_is_generic_fil
                         "isbn": "ISBN",
                         "page_count": "页数",
                     },
+                    "field_sources": {
+                        "title": "semantic",
+                        "state": "semantic",
+                        "cover": "type_fallback",
+                        "author": "semantic",
+                        "isbn": "semantic",
+                        "page_count": "semantic",
+                    },
                     "mapping_warnings": [],
                     "schema": {
                         "书名": {"type": "title"},
@@ -1398,10 +1535,10 @@ def test_book_capture_plan_requires_confirmation_when_cover_field_is_generic_fil
     plan = build_capture_plan(capture, cache)
 
     assert plan.requires_confirmation is True
-    assert plan.confirmation_reason == "book_schema_incomplete"
+    assert plan.confirmation_reason == "untrusted_field_mapping"
     assert plan.operations == []
     assert plan.asset_operations == []
-    assert "book_schema_incomplete:cover" in plan.warnings
+    assert "untrusted_field_mapping:cover:type_fallback" in plan.warnings
 
 
 

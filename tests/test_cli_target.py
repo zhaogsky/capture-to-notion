@@ -180,14 +180,11 @@ def test_target_scan_saves_target_cache_and_alias(tmp_path, monkeypatch, capsys)
         "target_id": "bookshelf",
         "target_file": str(tmp_path / "targets" / "bookshelf.json"),
         "data_sources": ["Books"],
-        "requires_confirmation": False,
+        "requires_confirmation": True,
     }
     target = json.loads((tmp_path / "targets" / "bookshelf.json").read_text(encoding="utf-8"))
-    assert target["data_sources"]["db-books"]["fields"] == {
-        "title": "名称",
-        "state": "阅读状态",
-        "cover": "封面",
-    }
+    assert target["confirmation_reason"] == "field_mapping_missing"
+    assert target["data_sources"]["db-books"]["fields"] == {}
     aliases = json.loads((tmp_path / "aliases.json").read_text(encoding="utf-8"))["aliases"]
     assert aliases["书单"]["target_id"] == "bookshelf"
 
