@@ -254,18 +254,18 @@ def test_schema_hash_is_stable_for_field_order():
 
 def test_normalize_database_schema_preserves_supported_notion_property_types():
     raw_schema = {
-        "Title": {"type": "title"},
-        "Text": {"type": "rich_text"},
-        "Number": {"type": "number"},
-        "Select": {"type": "select"},
-        "Status": {"type": "status"},
-        "Date": {"type": "date"},
-        "Url": {"type": "url"},
-        "Files": {"type": "files"},
+        "Title": {"type": "title", "title": {}},
+        "Text": {"type": "rich_text", "rich_text": {}},
+        "Number": {"type": "number", "number": {}},
+        "Select": {"type": "select", "select": {}},
+        "Status": {"type": "status", "status": {}},
+        "Date": {"type": "date", "date": {}},
+        "Url": {"type": "url", "url": {}},
+        "Files": {"type": "files", "files": {}},
         "Relation": {"type": "relation", "relation": {"database_id": "db-related"}},
-        "Checkbox": {"type": "checkbox"},
-        "Email": {"type": "email"},
-        "Phone": {"type": "phone_number"},
+        "Checkbox": {"type": "checkbox", "checkbox": {}},
+        "Email": {"type": "email", "email": {}},
+        "Phone": {"type": "phone_number", "phone_number": {}},
     }
     normalized = normalize_database_schema(raw_schema)
 

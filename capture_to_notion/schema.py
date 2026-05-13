@@ -51,6 +51,9 @@ def normalize_property(name: str, property_data: dict[str, Any]) -> dict[str, An
     property_type = property_data.get("type")
     if property_type not in SUPPORTED_TYPES:
         return None
+    type_data = property_data.get(property_type)
+    if not isinstance(type_data, dict):
+        return None
 
     normalized: dict[str, Any] = {
         "name": name,
@@ -59,7 +62,6 @@ def normalize_property(name: str, property_data: dict[str, Any]) -> dict[str, An
     }
 
     if property_type in {"status", "select", "multi_select"}:
-        type_data = property_data.get(property_type, {})
         normalized["options"] = [
             {"name": option.get("name"), "color": option.get("color")}
             for option in type_data.get("options", [])
@@ -67,8 +69,7 @@ def normalize_property(name: str, property_data: dict[str, Any]) -> dict[str, An
         ]
 
     if property_type == "relation":
-        relation = property_data.get("relation", {})
-        normalized["target_database_id"] = relation.get("database_id")
+        normalized["target_database_id"] = type_data.get("database_id")
 
     return normalized
 

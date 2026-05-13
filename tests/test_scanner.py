@@ -422,13 +422,47 @@ def test_scan_page_primary_score_does_not_use_schema_size_as_tiebreaker(tmp_path
 
 
 def test_scanner_does_not_map_business_fields_from_property_names_without_profile():
-    schema = {"作者": {"type": "rich_text"}, "ISBN": {"type": "rich_text"}, "页数": {"type": "number"}, "封面": {"type": "files"}}
+    schema = {
+        "作者": {"type": "rich_text", "rich_text": {}},
+        "ISBN": {"type": "rich_text", "rich_text": {}},
+        "页数": {"type": "number", "number": {}},
+        "封面": {"type": "files", "files": {}},
+    }
     normalized = normalize_database_schema(schema)
 
     assert normalized["作者"]["type"] == "rich_text"
     assert normalized["ISBN"]["type"] == "rich_text"
     assert normalized["页数"]["type"] == "number"
     assert normalized["封面"]["type"] == "files"
+
+
+
+def test_scan_page_ignores_malformed_property_objects_without_type_payload(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    adapter = FakeAdapter(
+        pages={"page-broken": {"id": "page-broken", "title": "Broken"}},
+        children={"page-broken": [{"type": "child_database", "id": "db-broken", "child_database": {"title": "Broken"}}]},
+        databases={
+            "db-broken": {
+                "id": "db-broken",
+                "title": "Broken",
+                "properties": {
+                    "Name": {"id": "title", "type": "title", "title": {}},
+                    "Broken Files": {"id": "files", "type": "files"},
+                    "Broken State": {"id": "state", "type": "status"},
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-broken", CacheStore(config), target_id="broken")
+    data_source = result["data_sources"]["db-broken"]
+
+    assert "Broken Files" not in data_source["schema"]
+    assert "Broken State" not in data_source["schema"]
+    assert result["asset_mapping"] == {}
+    assert result["state_mapping"] == {}
 
 
 
