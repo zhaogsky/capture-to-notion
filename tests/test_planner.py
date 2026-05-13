@@ -296,6 +296,42 @@ def test_book_labeled_author_populates_normalized_record_and_mapping(tmp_path, m
     assert plan.field_mapping["author"] == "作者"
 
 
+def test_book_capture_plan_uses_parser_profile_labels_from_target_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["parser_profile"] = {
+        "labels": {
+            "author": ["writer"],
+            "isbn": ["code"],
+            "page_count": ["length"],
+        },
+        "title_patterns": [r"Book:\s*(.+?)(?=\s+writer\s*:)"]
+    }
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="Book: The Art of Possibility writer: 刘瑜 code: 9787559847357 length: 400",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.normalized_record["title"] == "The Art of Possibility"
+    assert plan.normalized_record["author"] == "刘瑜"
+    assert plan.normalized_record["isbn"] == "9787559847357"
+    assert plan.normalized_record["page_count"] == 400
+    assert plan.field_mapping["author"] == "作者"
+    assert plan.field_mapping["isbn"] == "ISBN"
+    assert plan.field_mapping["page_count"] == "页数"
+
+
 def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()

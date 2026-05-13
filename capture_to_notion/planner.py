@@ -46,9 +46,35 @@ BOOK_REQUIRED_VALUE_FIELDS = ["author", "isbn", "page_count"]
 TRUSTED_BOOK_FIELD_SOURCES = {"semantic", "explicit", "profile"}
 
 
-def extract_labeled_value(raw_input: str, labels: list[str]) -> str | None:
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str) and item]
+    return []
+
+
+def _parser_labels(parser_profile: dict[str, Any] | None, record_key: str, fallback: list[str]) -> list[str]:
+    labels = parser_profile.get("labels", {}) if isinstance(parser_profile, dict) else {}
+    if isinstance(labels, dict):
+        configured_labels = _string_list(labels.get(record_key))
+        if configured_labels:
+            return configured_labels
+    return fallback
+
+
+def _known_parser_labels(parser_profile: dict[str, Any] | None) -> list[str]:
+    known_labels = list(KNOWN_METADATA_LABELS)
+    labels = parser_profile.get("labels", {}) if isinstance(parser_profile, dict) else {}
+    if isinstance(labels, dict):
+        for value in labels.values():
+            known_labels.extend(label for label in _string_list(value) if label not in known_labels)
+    return known_labels
+
+
+def extract_labeled_value(raw_input: str, labels: list[str], known_labels: list[str] | None = None) -> str | None:
     label_pattern = "|".join(re.escape(label) for label in labels)
-    known_label_pattern = "|".join(re.escape(label) for label in KNOWN_METADATA_LABELS)
+    known_label_pattern = "|".join(re.escape(label) for label in (known_labels or KNOWN_METADATA_LABELS))
     match = re.search(
         rf"(?:^|{METADATA_DELIMITER_PATTERN})(?:{label_pattern})\s*{METADATA_COLON_PATTERN}\s*(.+?)(?=(?:{METADATA_DELIMITER_PATTERN}+(?:{known_label_pattern})\s*{METADATA_COLON_PATTERN})|[\r\n;；|｜]|$)",
         raw_input,
@@ -60,7 +86,17 @@ def extract_labeled_value(raw_input: str, labels: list[str]) -> str | None:
     return value or None
 
 
-def extract_book_title(raw_input: str) -> str:
+def extract_book_title(raw_input: str, parser_profile: dict[str, Any] | None = None) -> str:
+    title_patterns = parser_profile.get("title_patterns", []) if isinstance(parser_profile, dict) else []
+    for pattern in _string_list(title_patterns):
+        try:
+            match = re.search(pattern, raw_input, flags=re.IGNORECASE)
+        except re.error:
+            continue
+        if match:
+            title = match.group(1 if match.groups() else 0).strip()
+            if title:
+                return title
     match = re.search(r"《([^》]+)》", raw_input)
     if match:
         return match.group(1)
@@ -74,8 +110,13 @@ def extract_book_title(raw_input: str) -> str:
     return raw_input.strip()
 
 
-def extract_page_count(raw_input: str) -> int | None:
-    value = extract_labeled_value(raw_input, ["页数", "pages", "page_count"])
+def extract_page_count(raw_input: str, parser_profile: dict[str, Any] | None = None) -> int | None:
+    known_labels = _known_parser_labels(parser_profile)
+    value = extract_labeled_value(
+        raw_input,
+        _parser_labels(parser_profile, "page_count", ["页数", "pages", "page_count"]),
+        known_labels,
+    )
     if not value:
         return None
     match = re.search(r"\d+", value)
@@ -105,6 +146,30 @@ def primary_data_source(structure: dict[str, Any], content_type: str) -> tuple[s
         if value.get("role") == "primary":
             return key, value
     return None, None
+
+
+def _parser_profile_section(profile: Any, content_type: str) -> dict[str, Any]:
+    if not isinstance(profile, dict):
+        return {}
+    section = profile.get(content_type)
+    if isinstance(section, dict):
+        return section
+    return profile
+
+
+def parser_profile_for(
+    structure: dict[str, Any],
+    data_source: dict[str, Any],
+    content_type: str,
+) -> dict[str, Any]:
+    profile: dict[str, Any] = {}
+    target_profile = _parser_profile_section(structure.get("parser_profile"), content_type)
+    data_source_profile = _parser_profile_section(data_source.get("parser_profile"), content_type)
+    for source in (target_profile, data_source_profile):
+        if not source:
+            continue
+        profile.update(source)
+    return profile
 
 
 def _is_url(value: Any) -> bool:
@@ -349,7 +414,8 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     field_sources = data_source.get("field_sources", {})
     trusted_fields = _trusted_mapping_fields(content_type, fields, field_sources)
     untrusted_mapping_warnings = _untrusted_mapping_warnings(content_type, fields, field_sources)
-    title = extract_book_title(capture.raw_input)
+    parser_profile = parser_profile_for(structure, data_source, content_type)
+    title = extract_book_title(capture.raw_input, parser_profile if content_type == "book" else None)
     state = normalize_state(capture.state)
     cover_url = default_cover_url(content_type, title)
 
@@ -359,12 +425,25 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         "cover": cover_url,
     }
     if content_type == "book":
+        known_labels = _known_parser_labels(parser_profile)
         normalized_record.update(
             {
-                "author": extract_labeled_value(capture.raw_input, ["作者", "author"]),
-                "isbn": extract_labeled_value(capture.raw_input, ["ISBN", "isbn"]),
-                "publisher": extract_labeled_value(capture.raw_input, ["出版社", "publisher"]),
-                "page_count": extract_page_count(capture.raw_input),
+                "author": extract_labeled_value(
+                    capture.raw_input,
+                    _parser_labels(parser_profile, "author", ["作者", "author"]),
+                    known_labels,
+                ),
+                "isbn": extract_labeled_value(
+                    capture.raw_input,
+                    _parser_labels(parser_profile, "isbn", ["ISBN", "isbn"]),
+                    known_labels,
+                ),
+                "publisher": extract_labeled_value(
+                    capture.raw_input,
+                    _parser_labels(parser_profile, "publisher", ["出版社", "publisher"]),
+                    known_labels,
+                ),
+                "page_count": extract_page_count(capture.raw_input, parser_profile),
             }
         )
     if content_type == "podcast_episode":
