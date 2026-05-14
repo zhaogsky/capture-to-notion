@@ -73,17 +73,35 @@ def _plain_text(value: Any) -> str | None:
     return None
 
 
+def _find_title_property_name(properties: dict[str, Any]) -> str | None:
+    for property_name, property_data in properties.items():
+        if isinstance(property_data, dict) and property_data.get("type") == "title":
+            return property_name
+    return None
+
+
+def _first_data_source_id(database: dict[str, Any]) -> str | None:
+    data_sources = database.get("data_sources")
+    if not isinstance(data_sources, list) or not data_sources:
+        return None
+    first = data_sources[0]
+    if not isinstance(first, dict):
+        return None
+    data_source_id = first.get("id")
+    return str(data_source_id) if data_source_id else None
+
+
 def _result_title(result: dict[str, Any]) -> str | None:
     title = _plain_text(result.get("title"))
     if title:
         return title
     properties = result.get("properties", {})
     if isinstance(properties, dict):
-        for property_data in properties.values():
-            if isinstance(property_data, dict) and property_data.get("type") == "title":
-                title = _plain_text(property_data)
-                if title:
-                    return title
+        title_property_name = _find_title_property_name(properties)
+        if title_property_name:
+            title = _plain_text(properties.get(title_property_name))
+            if title:
+                return title
     return result.get("name")
 
 
@@ -142,15 +160,33 @@ class NotionAdapter:
         response = self._call(self.client.databases.query, **kwargs)
         return response.get("results", [])
 
+    def query_data_source(self, data_source_id: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        kwargs: dict[str, Any] = {"data_source_id": data_source_id}
+        if filters is not None:
+            kwargs["filter"] = filters
+        response = self._call(self.client.data_sources.query, **kwargs)
+        return response.get("results", [])
+
     def query_database_title_exact(self, database_id: str, title: str) -> list[dict[str, Any]]:
         database = self.retrieve_database(database_id)
+        data_source_id = _first_data_source_id(database)
+        if data_source_id:
+            data_source = self.retrieve_data_source(data_source_id)
+            properties = data_source.get("properties", {})
+            if not isinstance(properties, dict):
+                properties = {}
+            title_property_name = _find_title_property_name(properties)
+            if title_property_name is None:
+                raise NotionApiError(f"Data source has no title property: {data_source_id}")
+            return self.query_data_source(
+                data_source_id,
+                filters={"property": title_property_name, "title": {"equals": title}},
+            )
+
         properties = database.get("properties", {})
-        title_property_name = None
-        if isinstance(properties, dict):
-            for property_name, property_data in properties.items():
-                if isinstance(property_data, dict) and property_data.get("type") == "title":
-                    title_property_name = property_name
-                    break
+        if not isinstance(properties, dict):
+            properties = {}
+        title_property_name = _find_title_property_name(properties)
         if title_property_name is None:
             raise NotionApiError(f"Database has no title property: {database_id}")
         return self.query_database(

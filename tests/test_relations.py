@@ -69,6 +69,31 @@ def test_resolves_podcast_by_exact_title():
     assert adapter.calls == [("db-podcasts", "忽左忽右")]
 
 
+def test_resolves_schema_driven_relation_key_without_hardcoded_allowlist():
+    adapter = FakeRelationAdapter({("db-contributors", "张三"): [{"id": "contributor-page-1"}]})
+    structure = target_structure(
+        podcast_field={"type": "rich_text"},
+    )
+    structure["data_sources"]["db-books"]["schema"]["贡献者"] = {
+        "type": "relation",
+        "target_database_id": "db-contributors",
+    }
+    structure["relations"].append(
+        {"data_source_id": "db-books", "field": "贡献者", "target_database_id": "db-contributors"}
+    )
+
+    resolved, warnings = resolve_record_relations(
+        {"contributor": "张三"},
+        {"contributor": "贡献者"},
+        structure,
+        adapter,
+    )
+
+    assert resolved["contributor"] == "contributor-page-1"
+    assert warnings == []
+    assert adapter.calls == [("db-contributors", "张三")]
+
+
 def test_unresolved_relation_warns_and_clears_value():
     adapter = FakeRelationAdapter()
 

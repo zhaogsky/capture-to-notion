@@ -111,6 +111,42 @@ def extract_page_count(raw_input: str, parser_profile: dict[str, Any] | None = N
     return int(match.group(0))
 
 
+NUMERIC_RECORD_KEYS = {"page_count", "current_page", "reading_count"}
+
+
+
+def _coerce_numeric_record_value(record_key: str, value: Any) -> Any:
+    if record_key not in NUMERIC_RECORD_KEYS or not isinstance(value, str):
+        return value
+    match = re.search(r"\d+", value)
+    if not match:
+        return value
+    return int(match.group(0))
+
+
+
+def _profile_labeled_values(
+    raw_input: str,
+    parser_profile: dict[str, Any] | None,
+    exclude_keys: set[str] | None = None,
+) -> dict[str, Any]:
+    labels = parser_profile.get("labels", {}) if isinstance(parser_profile, dict) else {}
+    if not isinstance(labels, dict):
+        return {}
+
+    known_labels = _known_parser_labels(parser_profile)
+    excluded = exclude_keys or set()
+    values: dict[str, Any] = {}
+    for record_key in labels:
+        if record_key in excluded:
+            continue
+        value = extract_labeled_value(raw_input, _parser_labels(parser_profile, record_key), known_labels)
+        if value is None:
+            continue
+        values[record_key] = _coerce_numeric_record_value(record_key, value)
+    return values
+
+
 def default_cover_url(content_type: str, title: str) -> str | None:
     if content_type == "unknown":
         return None
@@ -387,6 +423,16 @@ def build_plan_summary(
             "value_status": _value_status(normalized_record.get(key)),
         }
 
+    writable_fields: dict[str, dict[str, str | None]] = {}
+    for key, target_field in schema_fields.items():
+        value_status = _value_status(normalized_record.get(key))
+        write_status = "planned" if key in field_mapping else "omitted_missing_value"
+        writable_fields[key] = {
+            "target_field": field_mapping.get(key) or target_field,
+            "value_status": value_status,
+            "write_status": write_status,
+        }
+
     return {
         "target_page": target_page,
         "target_data_source": target_data_source,
@@ -395,6 +441,7 @@ def build_plan_summary(
         "state": normalized_record.get("state"),
         "mapped_fields": dict(field_mapping),
         "key_fields": key_fields,
+        "writable_fields": writable_fields,
         "asset_actions": [_asset_summary(operation) for operation in asset_operations],
         "requires_confirmation": requires_confirmation,
         "confirmation_reason": confirmation_reason,
@@ -464,6 +511,13 @@ def _book_normalized_record(
             "publisher": extract_labeled_value(raw_input, _parser_labels(parser_profile, "publisher"), known_labels),
             "page_count": extract_page_count(raw_input, parser_profile),
         }
+    )
+    record.update(
+        _profile_labeled_values(
+            raw_input,
+            parser_profile,
+            exclude_keys={"author", "isbn", "publisher", "page_count"},
+        )
     )
     return record
 

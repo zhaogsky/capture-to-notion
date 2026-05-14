@@ -21,6 +21,7 @@ class FakeClient:
     def __init__(self):
         self.search_calls = []
         self.query_calls = []
+        self.data_source_query_calls = []
         self.create_page_calls = []
         self.update_page_calls = []
         self.file_upload_create_calls = []
@@ -29,7 +30,7 @@ class FakeClient:
         self.database = {"id": "db-1", "object": "database"}
         self.pages = types.SimpleNamespace(retrieve=self.retrieve_page, update=self.update_page, create=self.create_page)
         self.databases = types.SimpleNamespace(retrieve=self.retrieve_database, query=self.query_database)
-        self.data_sources = types.SimpleNamespace(retrieve=self.retrieve_data_source)
+        self.data_sources = types.SimpleNamespace(retrieve=self.retrieve_data_source, query=self.query_data_source)
         self.blocks = types.SimpleNamespace(children=types.SimpleNamespace(list=self.list_block_children))
         self.file_uploads = types.SimpleNamespace(create=self.create_file_upload, send=self.send_file_upload)
 
@@ -58,6 +59,10 @@ class FakeClient:
 
     def query_database(self, database_id, filter=None):
         self.query_calls.append({"database_id": database_id, "filter": filter})
+        return {"results": [{"id": "row-1"}]}
+
+    def query_data_source(self, data_source_id, filter=None):
+        self.data_source_query_calls.append({"data_source_id": data_source_id, "filter": filter})
         return {"results": [{"id": "row-1"}]}
 
     def list_block_children(self, block_id, start_cursor=None, page_size=100):
@@ -309,6 +314,41 @@ def test_query_database_title_exact_raises_when_database_has_no_title_property()
 
     with pytest.raises(NotionApiError, match="Database has no title property: db-authors"):
         adapter.query_database_title_exact("db-authors", "刘慈欣")
+
+
+def test_query_database_title_exact_uses_database_data_source_and_queries_by_data_source_title():
+    client = FakeClient()
+    client.database = {
+        "object": "database",
+        "data_sources": [{"id": "ds-authors"}],
+        "properties": {"备注": {"type": "rich_text"}},
+    }
+
+    def retrieve_data_source(data_source_id):
+        return {
+            "id": data_source_id,
+            "object": "data_source",
+            "properties": {
+                "作者名称": {"type": "title", "title": {}},
+                "备注": {"type": "rich_text", "rich_text": {}},
+            },
+        }
+
+    client.retrieve_data_source = retrieve_data_source
+    client.data_sources = types.SimpleNamespace(
+        retrieve=client.retrieve_data_source,
+        query=client.query_data_source,
+    )
+    adapter = NotionAdapter(client)
+
+    assert adapter.query_database_title_exact("db-authors", "刘慈欣") == [{"id": "row-1"}]
+    assert client.data_source_query_calls == [
+        {
+            "data_source_id": "ds-authors",
+            "filter": {"property": "作者名称", "title": {"equals": "刘慈欣"}},
+        }
+    ]
+    assert client.query_calls == []
 
 
 def test_update_page_converts_file_upload_cover_to_external_url():

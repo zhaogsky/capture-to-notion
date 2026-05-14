@@ -199,6 +199,27 @@ def test_apply_write_plan_skips_unresolved_author_relation_and_returns_warning()
     assert result["warnings"] == ["relation_unresolved:author:不存在"]
 
 
+def test_apply_write_plan_resolves_schema_driven_relation_key_before_building_properties():
+    plan = make_plan()
+    plan.normalized_record["contributor"] = "张三"
+    plan.field_mapping["contributor"] = "贡献者"
+    target_structure = make_target_structure()
+    target_structure["data_sources"]["books"]["schema"]["贡献者"] = {
+        "type": "relation",
+        "target_database_id": "ds-contributors",
+    }
+    adapter = FakeApplyAdapter(
+        relation_responses={("ds-contributors", "张三"): [{"id": "contributor-page-1"}]}
+    )
+
+    result = apply_write_plan(plan, target_structure, adapter)
+
+    properties = adapter.calls[0][2]
+    assert properties["贡献者"] == {"relation": [{"id": "contributor-page-1"}]}
+    assert adapter.relation_calls == [("ds-contributors", "张三")]
+    assert result["warnings"] == []
+
+
 def test_apply_write_plan_uses_uploaded_cover_file_object(tmp_path):
     cache_path = tmp_path / "covers" / "cover.jpg"
     uploaded = {"type": "file_upload", "name": "cover.jpg", "file_upload": {"id": "file-1"}}

@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-_RELATION_KEYS = ("author", "podcast")
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 _PAGE_ID_32_HEX_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
@@ -78,10 +77,7 @@ def resolve_record_relations(
     resolved_record = dict(record)
     warnings: list[str] = []
 
-    for key in _RELATION_KEYS:
-        if key not in resolved_record:
-            continue
-        value = resolved_record[key]
+    for key, value in list(resolved_record.items()):
         if _is_empty(value):
             continue
 

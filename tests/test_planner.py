@@ -279,6 +279,221 @@ def test_build_plan_summary_snapshots_mapped_fields_and_warnings():
 
 
 
+def test_book_capture_plan_supports_profile_labeled_extra_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "书单": {
+                    "type": "page",
+                    "page_id": "page-books",
+                    "target_id": "bookshelf",
+                }
+            }
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "bookshelf.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
+            "parser_profile": {
+                "book": {
+                    "labels": {
+                        "author": ["作者", "author"],
+                        "isbn": ["ISBN", "isbn"],
+                        "publisher": ["出版社", "publisher"],
+                        "page_count": ["页数", "pages", "page_count"],
+                        "url": ["url", "链接"],
+                        "current_page": ["current_page", "当前页"],
+                        "language": ["language", "语言"],
+                        "country": ["country", "国家"],
+                        "format": ["format", "装帧"],
+                        "edition": ["edition", "版本"],
+                        "start_date": ["start_date", "开始日期"],
+                    }
+                }
+            },
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {
+                        "title": "名称",
+                        "state": "阅读状态",
+                        "cover": "封面",
+                        "author": "作者",
+                        "isbn": "ISBN",
+                        "publisher": "出版社",
+                        "page_count": "页数",
+                        "url": "豆瓣链接",
+                        "current_page": "当前页",
+                        "language": "语言",
+                        "country": "国家",
+                        "format": "装帧",
+                        "edition": "版本",
+                        "start_date": "开始日期",
+                    },
+                    "field_sources": {
+                        "title": "profile",
+                        "state": "profile",
+                        "cover": "profile",
+                        "author": "profile",
+                        "isbn": "profile",
+                        "publisher": "profile",
+                        "page_count": "profile",
+                        "url": "profile",
+                        "current_page": "profile",
+                        "language": "profile",
+                        "country": "profile",
+                        "format": "profile",
+                        "edition": "profile",
+                        "start_date": "profile",
+                    },
+                    "schema": {
+                        "名称": {"type": "title"},
+                        "阅读状态": {"type": "status"},
+                        "封面": {"type": "files"},
+                        "作者": {"type": "rich_text"},
+                        "ISBN": {"type": "rich_text"},
+                        "出版社": {"type": "rich_text"},
+                        "页数": {"type": "number"},
+                        "豆瓣链接": {"type": "url"},
+                        "当前页": {"type": "number"},
+                        "语言": {"type": "select"},
+                        "国家": {"type": "rich_text"},
+                        "装帧": {"type": "select"},
+                        "版本": {"type": "rich_text"},
+                        "开始日期": {"type": "date"},
+                    },
+                }
+            },
+            "state_mapping": {"field": "阅读状态", "values": {"initialized": "想读", "completed": "已读"}},
+            "asset_mapping": {"cover": {"field": "封面", "type": "files", "strategy": "download_and_attach"}},
+        },
+    )
+
+    capture = CaptureInput(
+        raw_input=(
+            "把《失落的大陆》初始化到书单 作者：比尔·布莱森 ISBN：9787532760138 出版社：上海译文出版社 "
+            "页数：337 url: https://book.douban.com/subject/20375524/ current_page: 0 language: 简体中文 "
+            "country: 美国 format: 平装本 edition: 2013年版 start_date: 2026-05-14"
+        ),
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.normalized_record["author"] == "比尔·布莱森"
+    assert plan.normalized_record["isbn"] == "9787532760138"
+    assert plan.normalized_record["publisher"] == "上海译文出版社"
+    assert plan.normalized_record["page_count"] == 337
+    assert isinstance(plan.normalized_record["page_count"], int)
+    assert plan.normalized_record["url"] == "https://book.douban.com/subject/20375524/"
+    assert plan.normalized_record["current_page"] == 0
+    assert isinstance(plan.normalized_record["current_page"], int)
+    assert plan.normalized_record["language"] == "简体中文"
+    assert plan.normalized_record["country"] == "美国"
+    assert plan.normalized_record["format"] == "平装本"
+    assert plan.normalized_record["edition"] == "2013年版"
+    assert plan.normalized_record["start_date"] == "2026-05-14"
+    assert plan.field_mapping == {
+        "title": "名称",
+        "state": "阅读状态",
+        "cover": "封面",
+        "author": "作者",
+        "isbn": "ISBN",
+        "publisher": "出版社",
+        "page_count": "页数",
+        "url": "豆瓣链接",
+        "current_page": "当前页",
+        "language": "语言",
+        "country": "国家",
+        "format": "装帧",
+        "edition": "版本",
+        "start_date": "开始日期",
+    }
+
+
+
+def test_build_plan_summary_reports_writable_fields_for_missing_mapped_values():
+    summary = build_plan_summary(
+        content_type="book",
+        target_page="书单",
+        target_data_source="Books",
+        normalized_record={
+            "title": "失落的大陆",
+            "state": "initialized",
+            "author": "比尔·布莱森",
+        },
+        field_mapping={
+            "title": "名称",
+            "state": "阅读状态",
+            "author": "作者",
+        },
+        schema_fields={
+            "title": "名称",
+            "state": "阅读状态",
+            "author": "作者",
+            "language": "语言",
+            "category": "分类",
+            "rating": "评分",
+        },
+        asset_operations=[],
+        requires_confirmation=False,
+        confirmation_reason=None,
+        warnings=[],
+        summary_key_fields=["author"],
+    )
+
+    assert "language" not in summary["mapped_fields"]
+    assert "category" not in summary["mapped_fields"]
+    assert "rating" not in summary["mapped_fields"]
+    assert summary["writable_fields"] == {
+        "title": {
+            "target_field": "名称",
+            "value_status": "present",
+            "write_status": "planned",
+        },
+        "state": {
+            "target_field": "阅读状态",
+            "value_status": "present",
+            "write_status": "planned",
+        },
+        "author": {
+            "target_field": "作者",
+            "value_status": "present",
+            "write_status": "planned",
+        },
+        "language": {
+            "target_field": "语言",
+            "value_status": "missing_value",
+            "write_status": "omitted_missing_value",
+        },
+        "category": {
+            "target_field": "分类",
+            "value_status": "missing_value",
+            "write_status": "omitted_missing_value",
+        },
+        "rating": {
+            "target_field": "评分",
+            "value_status": "missing_value",
+            "write_status": "omitted_missing_value",
+        },
+    }
+    assert summary["key_fields"] == {
+        "author": {"target_field": "作者", "value_status": "present"}
+    }
+
+
+
 def test_default_book_parser_profile_supplies_required_fields_without_business_labels():
     profile = parser_profile_for({}, {}, "book")
 
@@ -695,6 +910,15 @@ def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp
             "author": {"target_field": "作者", "value_status": "present"},
             "isbn": {"target_field": "ISBN", "value_status": "present"},
             "page_count": {"target_field": "页数", "value_status": "present"},
+        },
+        "writable_fields": {
+            "title": {"target_field": "名称", "value_status": "present", "write_status": "planned"},
+            "state": {"target_field": "阅读状态", "value_status": "present", "write_status": "planned"},
+            "cover": {"target_field": "封面", "value_status": "present", "write_status": "planned"},
+            "author": {"target_field": "作者", "value_status": "present", "write_status": "planned"},
+            "isbn": {"target_field": "ISBN", "value_status": "present", "write_status": "planned"},
+            "publisher": {"target_field": "出版社", "value_status": "missing_value", "write_status": "omitted_missing_value"},
+            "page_count": {"target_field": "页数", "value_status": "present", "write_status": "planned"},
         },
         "asset_actions": [
             {"record_key": "cover", "target_field": "封面", "action": "download_and_attach"}
