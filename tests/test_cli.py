@@ -111,6 +111,31 @@ def test_target_suggest_without_route_requires_confirmation(tmp_path):
     assert data["requires_confirmation"] is True
 
 
+def test_capture_preflight_stdout_outputs_valid_json(tmp_path):
+    seed_book_target(tmp_path)
+    input_file = tmp_path / "capture.json"
+    write_json(
+        input_file,
+        {
+            "raw_input": "把《可能性的艺术》初始化到书单",
+            "target_hint": "书单",
+            "state": "initialized",
+            "content_type_hint": "book",
+            "intent_hint": "direct_write",
+        },
+    )
+
+    result = run_cli(["capture", "preflight", "--input", str(input_file)], tmp_path)
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["content_type"] == "book"
+    assert data["intent_hint"] == "direct_write"
+    assert data["target"]["status"] == "cache_hit"
+    assert {"action": "plan_directly", "reason": "direct_plan_allowed"} in data["safe_actions"]
+
+
+
 def test_capture_plan_stdout_outputs_valid_json(tmp_path):
     seed_book_target(tmp_path)
     input_file = tmp_path / "capture.json"
@@ -186,7 +211,7 @@ def test_capture_plan_stdout_includes_review_summary(tmp_path):
     assert data["summary"]["target_page"] == "书单"
     assert data["summary"]["target_data_source"] == "Books"
     assert data["summary"]["state"] == "initialized"
-    assert data["summary"]["mapped_fields"]["cover"] == "封面"
+    assert "cover" not in data["summary"]["mapped_fields"]
     assert data["summary"]["key_fields"]["isbn"] == {"target_field": "ISBN", "value_status": "present"}
 
 

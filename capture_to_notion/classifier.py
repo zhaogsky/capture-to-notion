@@ -1,21 +1,40 @@
 from __future__ import annotations
 
+from typing import Any
+
+from capture_to_notion.config import DEFAULT_STATES
 from capture_to_notion.models import CaptureInput
 
 
-INITIALIZED_ALIASES = {"initialized", "初始化", "待处理", "待读", "待听", "想读", "想听", "收藏"}
-COMPLETED_ALIASES = {"completed", "完成", "已完成", "已读", "读完", "听完"}
+def _state_aliases(states_config: dict[str, Any] | None) -> dict[str, str]:
+    config = states_config if isinstance(states_config, dict) else DEFAULT_STATES
+    states = config.get("states", {})
+    if not isinstance(states, dict):
+        return {}
+
+    aliases: dict[str, str] = {}
+    for canonical, state_config in states.items():
+        if not isinstance(canonical, str):
+            continue
+        aliases[canonical.strip().lower()] = canonical
+        raw_aliases = state_config.get("aliases", []) if isinstance(state_config, dict) else []
+        if not isinstance(raw_aliases, list):
+            continue
+        for alias in raw_aliases:
+            if isinstance(alias, str):
+                aliases[alias.strip().lower()] = canonical
+    return aliases
 
 
-def normalize_state(value: str | None) -> str:
+def normalize_state(
+    value: str | None,
+    states_config: dict[str, Any] | None = None,
+    default_state: str = "initialized",
+) -> str:
     if value is None:
-        return "initialized"
+        return default_state
     normalized = value.strip().lower()
-    if normalized in COMPLETED_ALIASES:
-        return "completed"
-    if normalized in INITIALIZED_ALIASES:
-        return "initialized"
-    return "initialized"
+    return _state_aliases(states_config).get(normalized, default_state)
 
 
 def classify_content_type(capture: CaptureInput) -> str:

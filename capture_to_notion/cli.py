@@ -24,7 +24,8 @@ from capture_to_notion.notion_adapter import (
     NotionRateLimitError,
 )
 from capture_to_notion.planner import build_capture_plan
-from capture_to_notion.scanner import scan_page_target
+from capture_to_notion.preflight import build_capture_preflight
+from capture_to_notion.scanner import scan_data_source_target, scan_page_target
 from capture_to_notion.verifier import url_is_accessible, verify_capture_page
 from capture_to_notion.writer import NotionWriterError, apply_write_plan
 
@@ -160,7 +161,10 @@ def cmd_target_scan(args: argparse.Namespace) -> int:
     config = ensure_config()
     cache = CacheStore(config)
     adapter = NotionAdapter.from_config(config)
-    target = scan_page_target(adapter, args.page_id, cache, target_id=args.target_id, alias=args.alias)
+    if args.data_source_id:
+        target = scan_data_source_target(adapter, args.data_source_id, cache, target_id=args.target_id, alias=args.alias)
+    else:
+        target = scan_page_target(adapter, args.page_id, cache, target_id=args.target_id, alias=args.alias)
     target_id = target["target"]["target_id"]
     print_json(
         {
@@ -175,6 +179,15 @@ def cmd_target_scan(args: argparse.Namespace) -> int:
         }
     )
     return 0
+
+
+def cmd_capture_preflight(args: argparse.Namespace) -> int:
+    config = ensure_config()
+    cache = CacheStore(config)
+    capture = load_capture_input(args.input)
+    print_json(build_capture_preflight(capture, cache))
+    return 0
+
 
 
 def cmd_capture_plan(args: argparse.Namespace) -> int:
@@ -269,7 +282,7 @@ def _append_verification_page(
                 include_page_cover=False,
             )
         )
-    except (NotionApiError, NotionAuthError, NotionPermissionError, NotionRateLimitError):
+    except (NotionApiError, NotionAuthError, NotionNotFoundError, NotionPermissionError, NotionRateLimitError):
         pages.append(_inaccessible_verification_page(page_id))
 
 
@@ -356,6 +369,112 @@ def _apply_verification_summary(
     }
 
 
+def _notion_error_body_text(exc: Exception) -> str:
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        return json.dumps(body, ensure_ascii=False).lower()
+    if isinstance(body, str):
+        return body.lower()
+    return ""
+
+
+def _is_stale_cache_error(exc: Exception) -> bool:
+    if not isinstance(exc, (NotionApiError, NotionNotFoundError)):
+        return False
+    code = getattr(exc, "code", None)
+    status = getattr(exc, "status", None)
+    if code == "object_not_found" or status == 404:
+        return True
+    if code != "validation_error":
+        return False
+    body_text = _notion_error_body_text(exc)
+    return "data_source" in body_text or "schema" in body_text
+
+
+def _can_recover_stale_cache(plan: WritePlan) -> bool:
+    return all(not operation.get("page_id") for operation in plan.operations)
+
+
+def _is_uncertain_create_error(plan: WritePlan, exc: Exception) -> bool:
+    if not isinstance(exc, NotionApiError):
+        return False
+    if not all(not operation.get("page_id") for operation in plan.operations):
+        return False
+    status = getattr(exc, "status", None)
+    return status is None or (isinstance(status, int) and status >= 500)
+
+
+def _target_id_for_recovery(cache: CacheStore, plan: WritePlan, capture: CaptureInput) -> str | None:
+    alias = cache.find_alias(capture.target_hint)
+    if isinstance(alias, dict) and isinstance(alias.get("target_id"), str):
+        return alias["target_id"]
+    structure = cache.target_structure_for_data_source(plan.target.data_source_id)
+    target = structure.get("target", {}) if isinstance(structure, dict) else {}
+    target_id = target.get("target_id")
+    return target_id if isinstance(target_id, str) else None
+
+
+
+def _page_id_for_recovery(plan: WritePlan, capture: CaptureInput, cache: CacheStore) -> str | None:
+    alias = cache.find_alias(capture.target_hint)
+    if isinstance(alias, dict) and isinstance(alias.get("page_id"), str):
+        return alias["page_id"]
+    return plan.target.page_id
+
+
+
+def _apply_plan_with_verification(
+    plan: WritePlan,
+    target_structure: dict[str, Any],
+    adapter: Any,
+) -> dict[str, Any]:
+    result = apply_write_plan(plan, target_structure, adapter)
+    verification = _apply_verification_summary(result, adapter, plan, target_structure)
+    if verification is not None:
+        result["verification"] = verification
+    return result
+
+
+
+def _recover_stale_cache_and_apply(
+    *,
+    plan_path: Path,
+    plan: WritePlan,
+    cache: CacheStore,
+    adapter: Any,
+    error: Exception,
+) -> dict[str, Any]:
+    if not plan.capture_input:
+        raise error
+    capture = CaptureInput.from_dict(plan.capture_input)
+    page_id = _page_id_for_recovery(plan, capture, cache)
+    target_id = _target_id_for_recovery(cache, plan, capture)
+    if not page_id:
+        raise error
+
+    scan_page_target(
+        adapter,
+        page_id,
+        cache,
+        target_id=target_id,
+        alias=capture.target_hint,
+    )
+    refreshed_plan = build_capture_plan(capture, cache)
+    refreshed_plan.save(plan_path)
+    if refreshed_plan.requires_confirmation:
+        raise CliInputError(
+            f"目标结构已刷新，但新计划需要确认: {refreshed_plan.confirmation_reason or '未说明原因'}"
+        )
+    refreshed_structure = cache.target_structure_for_data_source(refreshed_plan.target.data_source_id)
+    if refreshed_structure is None:
+        raise CliInputError("目标结构已刷新，但仍未找到可写 data_source，请重新选择目标")
+    result = _apply_plan_with_verification(refreshed_plan, refreshed_structure, adapter)
+    result["recovered_from_stale_cache"] = True
+    result["stale_cache_error"] = str(error)
+    return result
+
+
+
 def cmd_capture_apply(args: argparse.Namespace) -> int:
     config = ensure_config()
     cache = CacheStore(config)
@@ -375,10 +494,22 @@ def cmd_capture_apply(args: argparse.Namespace) -> int:
         )
 
     adapter = NotionAdapter.from_config(config)
-    result = apply_write_plan(plan, target_structure, adapter)
-    verification = _apply_verification_summary(result, adapter, plan, target_structure)
-    if verification is not None:
-        result["verification"] = verification
+    try:
+        result = _apply_plan_with_verification(plan, target_structure, adapter)
+    except (NotionApiError, NotionNotFoundError) as exc:
+        if _is_uncertain_create_error(plan, exc):
+            raise CliInputError(
+                f"possible_partial_write: create 请求返回不确定错误，已停止自动重试；请检查 Notion 后重新生成 update 计划再继续 ({exc})"
+            ) from exc
+        if not _is_stale_cache_error(exc) or not _can_recover_stale_cache(plan):
+            raise
+        result = _recover_stale_cache_and_apply(
+            plan_path=Path(args.plan),
+            plan=plan,
+            cache=cache,
+            adapter=adapter,
+            error=exc,
+        )
     print_json(result)
     return 0
 
@@ -414,13 +545,18 @@ def build_parser() -> argparse.ArgumentParser:
     target_search.add_argument("--query", required=True)
     target_search.set_defaults(func=cmd_target_search)
     target_scan = target_subparsers.add_parser("scan")
-    target_scan.add_argument("--page-id", required=True)
+    target_scan_group = target_scan.add_mutually_exclusive_group(required=True)
+    target_scan_group.add_argument("--page-id")
+    target_scan_group.add_argument("--data-source-id")
     target_scan.add_argument("--alias")
     target_scan.add_argument("--target-id")
     target_scan.set_defaults(func=cmd_target_scan)
 
     capture_parser = subparsers.add_parser("capture")
     capture_subparsers = capture_parser.add_subparsers(dest="capture_command", required=True)
+    capture_preflight = capture_subparsers.add_parser("preflight")
+    capture_preflight.add_argument("--input", required=True)
+    capture_preflight.set_defaults(func=cmd_capture_preflight)
     capture_plan = capture_subparsers.add_parser("plan")
     capture_plan.add_argument("--input", required=True)
     capture_plan.add_argument("--output")

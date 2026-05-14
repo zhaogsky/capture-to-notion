@@ -35,6 +35,19 @@ def test_unknown_state_defaults_to_initialized():
     assert normalize_state("收藏") == "initialized"
 
 
+def test_normalize_state_uses_configured_aliases_and_canonical_keys():
+    states_config = {
+        "states": {
+            "queued": {"aliases": ["Queue Me", "待办"]},
+            "done": {"aliases": ["Finished"]},
+        }
+    }
+
+    assert normalize_state("queue me", states_config) == "queued"
+    assert normalize_state("Finished", states_config) == "done"
+    assert normalize_state(" DONE ", states_config) == "done"
+
+
 def test_content_type_hint_prioritizes_over_conflicting_text():
     capture = CaptureInput(
         raw_input="这期播客很不错，帮我记录一下",

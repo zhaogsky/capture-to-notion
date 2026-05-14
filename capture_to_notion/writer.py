@@ -4,15 +4,21 @@ from typing import Any, Callable
 
 from capture_to_notion.assets import execute_asset_operations
 from capture_to_notion.models import AssetOperation, WritePlan
+from capture_to_notion.notion_adapter import NotionApiError, NotionNotFoundError, NotionRateLimitError
 from capture_to_notion.relations import resolve_record_relations
 from capture_to_notion.schema import build_properties
 
 
 COMPLETE_RELATION_PAGE = "complete_relation_page"
 CREATE_OR_UPDATE_PAGE = "create_or_update_page"
+EXPECTED_NOTION_WRITE_ERRORS = (NotionApiError, NotionNotFoundError, NotionRateLimitError)
 
 
 class NotionWriterError(Exception):
+    pass
+
+
+class PartialWriteError(NotionWriterError):
     pass
 
 
@@ -33,12 +39,36 @@ def _plan_schema(plan: WritePlan, target_structure: dict[str, Any]) -> dict[str,
     return _data_source_schema(target_structure, data_source_id)
 
 
+def _record_with_state_mapping(
+    record: dict[str, Any],
+    field_mapping: dict[str, str],
+    target_structure: dict[str, Any],
+) -> dict[str, Any]:
+    state_mapping = target_structure.get("state_mapping", {})
+    if not isinstance(state_mapping, dict):
+        return record
+    field = state_mapping.get("field")
+    values = state_mapping.get("values", {})
+    if not isinstance(field, str) or not isinstance(values, dict):
+        return record
+
+    mapped_record = dict(record)
+    for record_key, target_field in field_mapping.items():
+        if target_field != field:
+            continue
+        value = mapped_record.get(record_key)
+        if value in values:
+            mapped_record[record_key] = values[value]
+    return mapped_record
+
+
 def _build_record_properties(
     record: dict[str, Any],
     plan: WritePlan,
+    target_structure: dict[str, Any],
     schema: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    return build_properties(record, plan.field_mapping, schema)
+    return build_properties(_record_with_state_mapping(record, plan.field_mapping, target_structure), plan.field_mapping, schema)
 
 
 def _has_writable_asset_property(plan: WritePlan, schema: dict[str, dict[str, Any]]) -> bool:
@@ -52,7 +82,7 @@ def _has_writable_asset_property(plan: WritePlan, schema: dict[str, dict[str, An
 
 
 def build_plan_properties(plan: WritePlan, target_structure: dict[str, Any]) -> dict[str, Any]:
-    return _build_record_properties(plan.normalized_record, plan, _plan_schema(plan, target_structure))
+    return _build_record_properties(plan.normalized_record, plan, target_structure, _plan_schema(plan, target_structure))
 
 
 def _validate_write_operations(plan: WritePlan) -> None:
@@ -200,7 +230,7 @@ def apply_write_plan(
         target_structure,
         adapter,
     )
-    properties = _build_record_properties(working_record, plan, schema)
+    properties = _build_record_properties(working_record, plan, target_structure, schema)
     if not properties and not _has_writable_asset_property(plan, schema):
         raise NotionWriterError("Plan produced no properties to write")
 
@@ -210,7 +240,7 @@ def apply_write_plan(
         adapter,
         downloader=downloader,
     )
-    properties = _build_record_properties(working_record, plan, schema)
+    properties = _build_record_properties(working_record, plan, target_structure, schema)
     if not properties:
         raise NotionWriterError("Plan produced no properties to write")
 
@@ -218,12 +248,19 @@ def apply_write_plan(
     for operation in plan.operations:
         operation_type = operation.get("type")
         page_id = operation.get("page_id")
-        if page_id:
-            response = adapter.update_page(page_id, properties)
-            action = "update_page"
-        else:
-            response = adapter.create_page(plan.target.data_source_id, properties)
-            action = "create_page"
+        try:
+            if page_id:
+                response = adapter.update_page(page_id, properties)
+                action = "update_page"
+            else:
+                response = adapter.create_page(plan.target.data_source_id, properties)
+                action = "create_page"
+        except EXPECTED_NOTION_WRITE_ERRORS as exc:
+            if results:
+                raise PartialWriteError(
+                    "写入已部分完成，后续操作失败；请检查已创建页面后重新生成 update 计划再重试"
+                ) from exc
+            raise
 
         result = {
             "type": operation_type,
@@ -237,13 +274,18 @@ def apply_write_plan(
             result["url"] = response_url
         results.append(result)
 
-    completion_results, completion_warnings = _execute_completion_operations(
-        plan,
-        working_record,
-        target_structure,
-        adapter,
-        downloader=downloader,
-    )
+    try:
+        completion_results, completion_warnings = _execute_completion_operations(
+            plan,
+            working_record,
+            target_structure,
+            adapter,
+            downloader=downloader,
+        )
+    except EXPECTED_NOTION_WRITE_ERRORS as exc:
+        raise PartialWriteError(
+            "写入已部分完成，后续补全失败；请检查已创建页面后重新生成 update 计划再重试"
+        ) from exc
 
     response = {
         "plan_id": plan.plan_id,

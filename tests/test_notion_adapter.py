@@ -431,9 +431,11 @@ def test_sdk_errors_convert_to_internal_errors(code, status, expected):
     class FakeSdkError(Exception):
         pass
 
+    body = {"code": code, "message": "structured sdk failure"}
     error = FakeSdkError("sdk failed")
     error.code = code
     error.status = status
+    error.body = body
 
     class BrokenClient(FakeClient):
         def search(self, **kwargs):
@@ -441,5 +443,10 @@ def test_sdk_errors_convert_to_internal_errors(code, status, expected):
 
     adapter = NotionAdapter(BrokenClient())
 
-    with pytest.raises(expected):
+    with pytest.raises(expected) as exc_info:
         adapter.search("书单")
+
+    assert exc_info.value.code == code
+    assert exc_info.value.status == status
+    assert exc_info.value.message == "sdk failed"
+    assert exc_info.value.body == body

@@ -8,23 +8,35 @@ from typing import Any, Callable, TypeVar
 from capture_to_notion.config import AppConfig
 
 
-class NotionAuthError(Exception):
-    pass
-
-
-class NotionPermissionError(Exception):
-    pass
-
-
-class NotionNotFoundError(Exception):
-    pass
-
-
-class NotionRateLimitError(Exception):
-    pass
-
-
 class NotionApiError(Exception):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        code: str | None = None,
+        body: Any = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status = status
+        self.code = code
+        self.body = body
+
+
+class NotionAuthError(NotionApiError):
+    pass
+
+
+class NotionPermissionError(NotionApiError):
+    pass
+
+
+class NotionNotFoundError(NotionApiError):
+    pass
+
+
+class NotionRateLimitError(NotionApiError):
     pass
 
 
@@ -108,16 +120,17 @@ def _result_title(result: dict[str, Any]) -> str | None:
 def _convert_api_error(exc: Exception) -> Exception:
     code = getattr(exc, "code", None)
     status = getattr(exc, "status", None)
+    body = getattr(exc, "body", None)
     message = str(exc)
     if code == "unauthorized" or status == 401:
-        return NotionAuthError(message)
+        return NotionAuthError(message, status=status, code=code, body=body)
     if code == "restricted_resource" or status == 403:
-        return NotionPermissionError(message)
+        return NotionPermissionError(message, status=status, code=code, body=body)
     if code == "object_not_found" or status == 404:
-        return NotionNotFoundError(message)
+        return NotionNotFoundError(message, status=status, code=code, body=body)
     if code == "rate_limited" or status == 429:
-        return NotionRateLimitError(message)
-    return NotionApiError(message)
+        return NotionRateLimitError(message, status=status, code=code, body=body)
+    return NotionApiError(message, status=status, code=code, body=body)
 
 
 class NotionAdapter:

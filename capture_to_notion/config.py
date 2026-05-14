@@ -18,6 +18,20 @@ DEFAULT_CONFIG = {
         "assets": {"allow_cover_download": True, "cache_covers": True},
         "apply": {"default_dry_run": False},
     },
+    "parser_profiles": {
+        "defaults": {
+            "book": {
+                "required_schema_fields": ["cover", "author", "isbn", "page_count", "state"],
+                "required_value_fields": ["author", "isbn", "page_count"],
+                "summary_key_fields": ["cover", "author", "isbn", "page_count"],
+                "trusted_field_sources": ["explicit", "profile"],
+                "asset_trust_required_fields": ["cover"],
+                "primary_score_fields": {"title": 20, "state": 10, "cover": 10, "author": 35, "publisher": 15, "isbn": 35},
+                "record_defaults": {"author": None, "isbn": None, "publisher": None, "page_count": None},
+                "value_types": {"page_count": "integer", "current_page": "integer", "reading_count": "integer"},
+            }
+        }
+    },
 }
 
 DEFAULT_STATES = {

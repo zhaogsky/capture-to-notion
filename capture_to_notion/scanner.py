@@ -184,44 +184,140 @@ def _preserve_cached_parser_profile(scanned_data_source: dict[str, Any], cached_
         scanned_data_source["parser_profile"] = cached_data_source["parser_profile"]
 
 
-def _primary_score(data_source: dict[str, Any]) -> int:
+def _integer_mapping(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: int(weight)
+        for key, weight in value.items()
+        if isinstance(key, str) and isinstance(weight, int | float) and not isinstance(weight, bool) and weight > 0
+    }
+
+
+def _primary_score_fields_from_profile(profile: Any) -> dict[str, int]:
+    if not isinstance(profile, dict):
+        return {}
+    score_fields = _integer_mapping(profile.get("primary_score_fields"))
+    for section in profile.values():
+        if isinstance(section, dict):
+            score_fields.update(_integer_mapping(section.get("primary_score_fields")))
+    return score_fields
+
+
+def _default_primary_score_fields(config_data: dict[str, Any]) -> dict[str, int]:
+    parser_profiles = config_data.get("parser_profiles", {})
+    if not isinstance(parser_profiles, dict):
+        return {}
+    defaults = parser_profiles.get("defaults", {})
+    return _primary_score_fields_from_profile(defaults)
+
+
+def _primary_score(data_source: dict[str, Any], score_fields: dict[str, int]) -> int:
     schema = data_source.get("schema", {})
-    if not schema:
+    if not schema or not score_fields:
         return 0
     fields = data_source.get("fields", {})
     field_sources = data_source.get("field_sources", {})
-    weights = {
-        "title": 20,
-        "state": 10,
-        "cover": 10,
-        "author": 35,
-        "publisher": 15,
-        "isbn": 35,
-    }
     score = 0
-    for field_key, weight in weights.items():
+    for field_key, weight in score_fields.items():
         if field_key in fields and field_sources.get(field_key) in PRIMARY_FIELD_SOURCES:
             score += weight
     return score
 
 
-def _assign_data_source_roles(data_sources: dict[str, Any]) -> None:
+def _score_fields_for_data_source(data_source: dict[str, Any], base_score_fields: dict[str, int]) -> dict[str, int]:
+    score_fields = dict(base_score_fields)
+    score_fields.update(_primary_score_fields_from_profile(data_source.get("parser_profile")))
+    return score_fields
+
+
+def _assign_data_source_roles(data_sources: dict[str, Any], score_fields: dict[str, int]) -> None:
     if not data_sources:
         return
-    primary_id = max(data_sources, key=lambda data_source_id: _primary_score(data_sources[data_source_id]))
-    if _primary_score(data_sources[primary_id]) == 0:
+    primary_id = max(
+        data_sources,
+        key=lambda data_source_id: _primary_score(
+            data_sources[data_source_id],
+            _score_fields_for_data_source(data_sources[data_source_id], score_fields),
+        ),
+    )
+    primary_score = _primary_score(data_sources[primary_id], _score_fields_for_data_source(data_sources[primary_id], score_fields))
+    if primary_score == 0:
         return
     for data_source_id, data_source in data_sources.items():
         data_source["role"] = "primary" if data_source_id == primary_id else "secondary"
 
 
-def _save_alias(cache: CacheStore, alias: str, target_id: str, page_id: str, title: str | None) -> None:
+def _read_aliases(cache: CacheStore) -> dict[str, Any]:
     data = cache.read_json(cache.config.aliases_file, {"aliases": {}})
     aliases = data.get("aliases")
-    if not isinstance(aliases, dict):
-        aliases = {}
+    return aliases if isinstance(aliases, dict) else {}
+
+
+def _save_alias(cache: CacheStore, alias: str, target_id: str, page_id: str, title: str | None) -> None:
+    aliases = _read_aliases(cache)
     aliases[alias] = {"type": "page", "page_id": page_id, "title": title, "target_id": target_id}
     cache.write_json(cache.config.aliases_file, {"aliases": aliases})
+
+
+def _save_data_source_alias(cache: CacheStore, alias: str, target_id: str, data_source_id: str, title: str | None) -> None:
+    aliases = _read_aliases(cache)
+    aliases[alias] = {"type": "data_source", "data_source_id": data_source_id, "title": title, "target_id": target_id}
+    cache.write_json(cache.config.aliases_file, {"aliases": aliases})
+
+
+def _scan_data_source(
+    data_source_id: str,
+    data_source: dict[str, Any],
+    title: str | None,
+    cached_structure: dict[str, Any],
+) -> dict[str, Any]:
+    schema = normalize_database_schema(data_source)
+    mapping = _merge_profile_field_mapping(
+        {"fields": {}, "field_sources": {}, "warnings": [], "requires_confirmation": False},
+        _profile_field_mapping(cached_structure, data_source_id, schema),
+    )
+    scanned_data_source = {
+        "data_source_id": data_source_id,
+        "title": title,
+        "role": "secondary",
+        "content_types": [],
+        "schema_hash": schema_hash(schema),
+        "fields": mapping["fields"],
+        "field_sources": mapping["field_sources"],
+        "mapping_warnings": mapping["warnings"],
+        "schema": schema,
+    }
+    _preserve_cached_parser_profile(scanned_data_source, _cached_data_source(cached_structure, data_source_id))
+    return scanned_data_source
+
+
+def _target_confirmation(data_sources: dict[str, Any]) -> tuple[bool, str | None]:
+    has_mapping_warnings = any(
+        confirmation_blocking_warnings(data_source.get("mapping_warnings"), [])
+        for data_source in data_sources.values()
+    )
+    has_primary_data_source = any(
+        data_source.get("role") == "primary"
+        for data_source in data_sources.values()
+    )
+    has_schema = any(
+        bool(data_source.get("schema"))
+        for data_source in data_sources.values()
+    )
+    requires_confirmation = not bool(data_sources) or not has_primary_data_source or has_mapping_warnings
+    confirmation_reason = (
+        "child_database_not_found"
+        if not data_sources
+        else "data_source_schema_empty"
+        if not has_primary_data_source and not has_schema
+        else "field_mapping_missing"
+        if not has_primary_data_source
+        else "field_mapping_ambiguous"
+        if has_mapping_warnings
+        else None
+    )
+    return requires_confirmation, confirmation_reason
 
 
 def scan_page_target(
@@ -252,39 +348,18 @@ def scan_page_target(
                 continue
             data_source_id = source["id"]
             data_source = adapter.retrieve_data_source(data_source_id) if data_source_id != database_id else database
-            schema = normalize_database_schema(data_source)
-            mapping = _merge_profile_field_mapping(
-                {"fields": {}, "field_sources": {}, "warnings": [], "requires_confirmation": False},
-                _profile_field_mapping(cached_structure, data_source_id, schema),
+            data_sources[data_source_id] = _scan_data_source(
+                data_source_id,
+                data_source,
+                _data_source_title(data_source, source, database, block),
+                cached_structure,
             )
-            scanned_data_source = {
-                "data_source_id": data_source_id,
-                "title": _data_source_title(data_source, source, database, block),
-                "role": "secondary",
-                "content_types": [],
-                "schema_hash": schema_hash(schema),
-                "fields": mapping["fields"],
-                "field_sources": mapping["field_sources"],
-                "mapping_warnings": mapping["warnings"],
-                "schema": schema,
-            }
-            _preserve_cached_parser_profile(scanned_data_source, _cached_data_source(cached_structure, data_source_id))
-            data_sources[data_source_id] = scanned_data_source
 
-    _assign_data_source_roles(data_sources)
-    has_mapping_warnings = any(
-        confirmation_blocking_warnings(data_source.get("mapping_warnings"), [])
-        for data_source in data_sources.values()
-    )
-    has_primary_data_source = any(
-        data_source.get("role") == "primary"
-        for data_source in data_sources.values()
-    )
-    has_schema = any(
-        bool(data_source.get("schema"))
-        for data_source in data_sources.values()
-    )
-    requires_confirmation = not bool(data_sources) or not has_primary_data_source or has_mapping_warnings
+    config_data = cache.read_json(cache.config.config_file, {})
+    score_fields = _default_primary_score_fields(config_data)
+    score_fields.update(_primary_score_fields_from_profile(cached_structure.get("parser_profile")))
+    _assign_data_source_roles(data_sources, score_fields)
+    requires_confirmation, confirmation_reason = _target_confirmation(data_sources)
     target_structure = {
         "target": {"page_id": page_id, "title": title, "target_id": resolved_target_id},
         "data_sources": data_sources,
@@ -292,17 +367,7 @@ def scan_page_target(
         "state_mapping": _build_state_mapping(data_sources),
         "asset_mapping": _build_asset_mapping(data_sources),
         "requires_confirmation": requires_confirmation,
-        "confirmation_reason": (
-            "child_database_not_found"
-            if not data_sources
-            else "data_source_schema_empty"
-            if not has_primary_data_source and not has_schema
-            else "field_mapping_missing"
-            if not has_primary_data_source
-            else "field_mapping_ambiguous"
-            if has_mapping_warnings
-            else None
-        ),
+        "confirmation_reason": confirmation_reason,
     }
     if "parser_profile" in cached_structure:
         target_structure["parser_profile"] = cached_structure["parser_profile"]
@@ -310,5 +375,49 @@ def scan_page_target(
     cache.write_json(cache.config.targets_dir / f"{resolved_target_id}.json", target_structure)
     if alias:
         _save_alias(cache, alias, resolved_target_id, page_id, title)
+
+    return target_structure
+
+
+def scan_data_source_target(
+    adapter: Any,
+    data_source_id: str,
+    cache: CacheStore,
+    target_id: str | None = None,
+    alias: str | None = None,
+) -> dict[str, Any]:
+    resolved_target_id = target_id or _default_target_id(data_source_id)
+    cached_structure = cache.target_structure(resolved_target_id) or cache.target_structure_for_data_source(data_source_id) or {}
+    data_source = adapter.retrieve_data_source(data_source_id)
+    title = plain_title(data_source.get("title")) or data_source.get("name")
+    data_sources = {
+        data_source_id: _scan_data_source(data_source_id, data_source, title, cached_structure)
+    }
+
+    config_data = cache.read_json(cache.config.config_file, {})
+    score_fields = _default_primary_score_fields(config_data)
+    score_fields.update(_primary_score_fields_from_profile(cached_structure.get("parser_profile")))
+    _assign_data_source_roles(data_sources, score_fields)
+    requires_confirmation, confirmation_reason = _target_confirmation(data_sources)
+    target_structure = {
+        "target": {
+            "page_id": None,
+            "title": title,
+            "target_id": resolved_target_id,
+            "data_source_id": data_source_id,
+        },
+        "data_sources": data_sources,
+        "relations": _build_relations(data_sources),
+        "state_mapping": _build_state_mapping(data_sources),
+        "asset_mapping": _build_asset_mapping(data_sources),
+        "requires_confirmation": requires_confirmation,
+        "confirmation_reason": confirmation_reason,
+    }
+    if "parser_profile" in cached_structure:
+        target_structure["parser_profile"] = cached_structure["parser_profile"]
+
+    cache.write_json(cache.config.targets_dir / f"{resolved_target_id}.json", target_structure)
+    if alias:
+        _save_data_source_alias(cache, alias, resolved_target_id, data_source_id, title)
 
     return target_structure

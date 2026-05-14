@@ -46,6 +46,12 @@ def seed_cached_books_target(root):
                         "state": "Status",
                         "cover": "Cover",
                     },
+                    "field_sources": {
+                        "title": "profile",
+                        "author": "profile",
+                        "state": "profile",
+                        "cover": "profile",
+                    },
                 }
             },
             "state_mapping": {"field": "Status", "values": {"initialized": "Want to read", "completed": "Read"}},
@@ -104,6 +110,19 @@ class ScanAdapter:
                 "名称": {"id": "title", "type": "title", "title": {}},
                 "阅读状态": {"id": "status", "type": "status", "status": {"options": []}},
                 "封面": {"id": "cover", "type": "files", "files": {}},
+            },
+        }
+
+
+class DataSourceScanAdapter:
+    def retrieve_data_source(self, data_source_id):
+        return {
+            "id": data_source_id,
+            "title": [{"plain_text": "Books"}],
+            "properties": {
+                "Name": {"id": "title", "type": "title", "title": {}},
+                "Status": {"id": "status", "type": "status", "status": {"options": []}},
+                "Cover": {"id": "cover", "type": "files", "files": {}},
             },
         }
 
@@ -187,6 +206,43 @@ def test_target_scan_saves_target_cache_and_alias(tmp_path, monkeypatch, capsys)
     assert target["data_sources"]["db-books"]["fields"] == {}
     aliases = json.loads((tmp_path / "aliases.json").read_text(encoding="utf-8"))["aliases"]
     assert aliases["书单"]["target_id"] == "bookshelf"
+
+
+def test_target_scan_accepts_data_source_id(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    seed_cached_books_target(tmp_path)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: DataSourceScanAdapter()))
+
+    result = cli.main([
+        "target",
+        "scan",
+        "--data-source-id",
+        "ds-books",
+        "--alias",
+        "书单Books",
+        "--target-id",
+        "books-ds",
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data == {
+        "target_id": "books-ds",
+        "target_file": str(tmp_path / "targets" / "books-ds.json"),
+        "data_sources": ["Books"],
+        "requires_confirmation": False,
+    }
+    target = json.loads((tmp_path / "targets" / "books-ds.json").read_text(encoding="utf-8"))
+    assert target["target"] == {
+        "page_id": None,
+        "title": "Books",
+        "target_id": "books-ds",
+        "data_source_id": "ds-books",
+    }
+    assert target["data_sources"]["ds-books"]["role"] == "primary"
+    aliases = json.loads((tmp_path / "aliases.json").read_text(encoding="utf-8"))["aliases"]
+    assert aliases["书单Books"]["type"] == "data_source"
+    assert aliases["书单Books"]["data_source_id"] == "ds-books"
 
 
 def test_target_list_outputs_cached_targets_without_notion_adapter(tmp_path, monkeypatch, capsys):

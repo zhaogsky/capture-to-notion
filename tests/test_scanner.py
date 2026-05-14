@@ -2,7 +2,7 @@ import json
 
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import ensure_config
-from capture_to_notion.scanner import _build_asset_mapping, _primary_score, scan_page_target
+from capture_to_notion.scanner import _build_asset_mapping, _primary_score, scan_data_source_target, scan_page_target
 from capture_to_notion.schema import SCHEMA_PROPERTY_TYPES, normalize_database_schema
 
 
@@ -52,8 +52,100 @@ def test_primary_score_ignores_legacy_semantic_field_sources():
             "schema": {"名称": {"type": "title"}},
             "fields": {"title": "名称"},
             "field_sources": {"title": "semantic"},
-        }
+        },
+        {"title": 20},
     ) == 0
+
+
+def test_primary_score_uses_profile_weights():
+    assert _primary_score(
+        {
+            "schema": {"Headline": {"type": "title"}, "Topic": {"type": "rich_text"}},
+            "fields": {"headline": "Headline", "topic": "Topic"},
+            "field_sources": {"headline": "profile", "topic": "explicit"},
+        },
+        {"headline": 100, "topic": 15},
+    ) == 115
+
+
+def test_scan_page_uses_target_parser_profile_primary_score_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.config_file,
+        {"parser_profiles": {"defaults": {}}},
+    )
+    cache.write_json(
+        config.targets_dir / "publishing.json",
+        {
+            "target": {"page_id": "page-content", "target_id": "publishing"},
+            "parser_profile": {
+                "article": {
+                    "field_mapping": {"headline": "Headline"},
+                    "primary_score_fields": {"headline": 100},
+                }
+            },
+            "data_sources": {},
+        },
+    )
+    adapter = FakeAdapter(
+        pages={"page-content": {"id": "page-content", "title": "Publishing"}},
+        children={
+            "page-content": [
+                {"type": "child_database", "id": "db-notes", "child_database": {"title": "Notes"}},
+                {"type": "child_database", "id": "db-articles", "child_database": {"title": "Articles"}},
+            ]
+        },
+        databases={
+            "db-notes": {
+                "id": "db-notes",
+                "title": "Notes",
+                "properties": {"Title": {"id": "title", "type": "title", "title": {}}},
+            },
+            "db-articles": {
+                "id": "db-articles",
+                "title": "Articles",
+                "properties": {"Headline": {"id": "headline", "type": "title", "title": {}}},
+            },
+        },
+    )
+
+    result = scan_page_target(adapter, "page-content", cache, target_id="publishing")
+
+    assert result["data_sources"]["db-notes"]["role"] == "secondary"
+    assert result["data_sources"]["db-articles"]["role"] == "primary"
+
+
+def test_scan_page_without_primary_score_fields_does_not_use_legacy_book_weights(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.config_file,
+        {"parser_profiles": {"defaults": {}}},
+    )
+    seed_profile_mapping(config, "bookshelf", "db-books", {"title": "书名", "author": "作者", "isbn": "ISBN"})
+    adapter = FakeAdapter(
+        pages={"page-books": {"id": "page-books", "title": "书单"}},
+        children={"page-books": [{"type": "child_database", "id": "db-books", "child_database": {"title": "Books"}}]},
+        databases={
+            "db-books": {
+                "id": "db-books",
+                "title": "Books",
+                "properties": {
+                    "书名": {"id": "title", "type": "title", "title": {}},
+                    "作者": {"id": "author", "type": "relation", "relation": {"database_id": "db-authors"}},
+                    "ISBN": {"id": "isbn", "type": "rich_text", "rich_text": {}},
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-books", cache, target_id="bookshelf")
+
+    assert result["data_sources"]["db-books"]["role"] == "secondary"
+    assert result["confirmation_reason"] == "field_mapping_missing"
 
 
 def test_scan_page_discovers_child_databases_normalizes_schema_and_saves_target(tmp_path, monkeypatch):
@@ -163,6 +255,70 @@ def test_scan_page_discovers_child_databases_normalizes_schema_and_saves_target(
     aliases = json.loads(config.aliases_file.read_text(encoding="utf-8"))["aliases"]
     assert aliases["书单"]["target_id"] == "bookshelf"
     assert aliases["书单"]["page_id"] == "page-books"
+
+
+def test_scan_data_source_target_caches_selected_source_as_primary(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_profile_mapping(
+        config,
+        "books-ds",
+        "ds-books",
+        {
+            "title": "名称",
+            "state": "状态",
+            "cover": "封面",
+            "author": "作者",
+            "isbn": "ISBN",
+            "page_count": "页数",
+        },
+    )
+    adapter = FakeAdapter(
+        data_sources={
+            "ds-books": {
+                "id": "ds-books",
+                "title": [{"plain_text": "Books"}],
+                "properties": {
+                    "名称": {"id": "title", "type": "title", "title": {}},
+                    "状态": {"id": "status", "type": "status", "status": {"options": []}},
+                    "封面": {"id": "cover", "type": "files", "files": {}},
+                    "作者": {"id": "author", "type": "relation", "relation": {"database_id": "db-authors"}},
+                    "ISBN": {"id": "isbn", "type": "rich_text", "rich_text": {}},
+                    "页数": {"id": "pages", "type": "number", "number": {}},
+                },
+            }
+        }
+    )
+
+    result = scan_data_source_target(adapter, "ds-books", cache, target_id="books-ds", alias="书单Books")
+
+    assert result["requires_confirmation"] is False
+    assert result["target"] == {
+        "page_id": None,
+        "title": "Books",
+        "target_id": "books-ds",
+        "data_source_id": "ds-books",
+    }
+    data_source = result["data_sources"]["ds-books"]
+    assert data_source["role"] == "primary"
+    assert data_source["fields"] == {
+        "title": "名称",
+        "state": "状态",
+        "cover": "封面",
+        "author": "作者",
+        "isbn": "ISBN",
+        "page_count": "页数",
+    }
+    assert result["state_mapping"] == {"field": "状态", "values": {}}
+    assert result["asset_mapping"] == {"cover": {"field": "封面", "type": "files", "strategy": "download_and_attach"}}
+    aliases = json.loads(config.aliases_file.read_text(encoding="utf-8"))["aliases"]
+    assert aliases["书单Books"] == {
+        "type": "data_source",
+        "data_source_id": "ds-books",
+        "title": "Books",
+        "target_id": "books-ds",
+    }
 
 
 def test_scan_page_uses_real_data_source_schema_from_database_metadata(tmp_path, monkeypatch):

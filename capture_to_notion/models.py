@@ -21,6 +21,12 @@ class CaptureInput:
     state: str | None = "initialized"
     content_type_hint: str | None = None
     user_intent: str = "capture_to_notion"
+    intent_hint: str | None = None
+    input_shape_hint: str | None = None
+    target_context_hint: str | None = None
+    target_scope_hint: str | None = None
+    user_requested_action: str | None = None
+    existing_page_id: str | None = None
     options: CaptureOptions = field(default_factory=CaptureOptions)
 
     @classmethod
@@ -39,8 +45,17 @@ class CaptureInput:
             state=data.get("state", "initialized"),
             content_type_hint=data.get("content_type_hint"),
             user_intent=data.get("user_intent", "capture_to_notion"),
+            intent_hint=data.get("intent_hint"),
+            input_shape_hint=data.get("input_shape_hint"),
+            target_context_hint=data.get("target_context_hint"),
+            target_scope_hint=data.get("target_scope_hint"),
+            user_requested_action=data.get("user_requested_action"),
+            existing_page_id=data.get("existing_page_id"),
             options=options,
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -102,6 +117,7 @@ class WritePlan:
     requires_confirmation: bool
     confirmation_reason: str | None
     completion_operations: list[dict[str, Any]] = field(default_factory=list)
+    capture_input: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WritePlan":
@@ -122,6 +138,7 @@ class WritePlan:
             requires_confirmation=data["requires_confirmation"],
             confirmation_reason=data["confirmation_reason"],
             completion_operations=data.get("completion_operations", []),
+            capture_input=data.get("capture_input"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -145,6 +162,8 @@ class WritePlan:
         }
         if self.completion_operations:
             data["completion_operations"] = self.completion_operations
+        if self.capture_input is not None:
+            data["capture_input"] = self.capture_input
         return data
 
     def to_json(self) -> str:

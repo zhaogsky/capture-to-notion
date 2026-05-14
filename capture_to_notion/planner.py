@@ -36,10 +36,24 @@ def _parser_labels(parser_profile: dict[str, Any] | None, record_key: str) -> li
 
 def _known_parser_labels(parser_profile: dict[str, Any] | None) -> list[str]:
     known_labels: list[str] = []
-    labels = parser_profile.get("labels", {}) if isinstance(parser_profile, dict) else {}
+    if not isinstance(parser_profile, dict):
+        return known_labels
+
+    labels = parser_profile.get("labels", {})
     if isinstance(labels, dict):
         for value in labels.values():
             known_labels.extend(label for label in _string_list(value) if label not in known_labels)
+
+    completions = parser_profile.get("relation_completions", [])
+    if isinstance(completions, list):
+        for completion in completions:
+            if not isinstance(completion, dict):
+                continue
+            completion_labels = completion.get("labels", {})
+            if not isinstance(completion_labels, dict):
+                continue
+            for value in completion_labels.values():
+                known_labels.extend(label for label in _string_list(value) if label not in known_labels)
     return known_labels
 
 
@@ -92,7 +106,9 @@ def extract_title(raw_input: str, parser_profile: dict[str, Any] | None = None) 
         flags=re.IGNORECASE,
     ) if known_label_pattern else None
     if label_suffix:
-        return _clean_title_suffix(raw_input[: label_suffix.start()], parser_profile)
+        title = _clean_title_suffix(raw_input[: label_suffix.start()], parser_profile)
+        if title:
+            return title
     return _clean_title_suffix(raw_input, parser_profile)
 
 
@@ -111,18 +127,26 @@ def extract_page_count(raw_input: str, parser_profile: dict[str, Any] | None = N
     return int(match.group(0))
 
 
-NUMERIC_RECORD_KEYS = {"page_count", "current_page", "reading_count"}
+def _integer_record_keys(parser_profile: dict[str, Any] | None) -> set[str]:
+    if not isinstance(parser_profile, dict):
+        return set()
+    value_types = parser_profile.get("value_types", {})
+    integer_keys = {
+        record_key
+        for record_key, value_type in (value_types.items() if isinstance(value_types, dict) else [])
+        if isinstance(record_key, str) and value_type == "integer"
+    }
+    integer_keys.update(_string_list(parser_profile.get("numeric_fields")))
+    return integer_keys
 
 
-
-def _coerce_numeric_record_value(record_key: str, value: Any) -> Any:
-    if record_key not in NUMERIC_RECORD_KEYS or not isinstance(value, str):
+def _coerce_record_value(record_key: str, value: Any, parser_profile: dict[str, Any] | None) -> Any:
+    if record_key not in _integer_record_keys(parser_profile) or not isinstance(value, str):
         return value
     match = re.search(r"\d+", value)
     if not match:
         return value
     return int(match.group(0))
-
 
 
 def _profile_labeled_values(
@@ -143,21 +167,38 @@ def _profile_labeled_values(
         value = extract_labeled_value(raw_input, _parser_labels(parser_profile, record_key), known_labels)
         if value is None:
             continue
-        values[record_key] = _coerce_numeric_record_value(record_key, value)
+        values[record_key] = _coerce_record_value(record_key, value, parser_profile)
     return values
 
 
 def default_cover_url(content_type: str, title: str) -> str | None:
-    if content_type == "unknown":
-        return None
-    digest = hashlib.sha256(f"{content_type}:{title}".encode("utf-8")).hexdigest()[:12]
-    return f"https://example.com/capture-to-notion/covers/{digest}.jpg"
+    return None
 
 
 def plan_id_for(capture: CaptureInput) -> str:
     digest = hashlib.sha256(capture.raw_input.encode("utf-8")).hexdigest()[:8]
     today = datetime.now(timezone.utc).strftime("%Y%m%d")
     return f"{today}-{digest}"
+
+
+def _has_writable_title_schema(data_source: dict[str, Any]) -> bool:
+    schema = data_source.get("schema")
+    if not isinstance(schema, dict):
+        return False
+    return any(
+        isinstance(property_schema, dict) and property_schema.get("type") == "title"
+        for property_schema in schema.values()
+    )
+
+
+
+def _writable_data_source_candidates(structure: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    return [
+        (key, value)
+        for key, value in structure.get("data_sources", {}).items()
+        if isinstance(value, dict) and _has_writable_title_schema(value)
+    ]
+
 
 
 def primary_data_source(structure: dict[str, Any], content_type: str) -> tuple[str | None, dict[str, Any] | None]:
@@ -167,6 +208,9 @@ def primary_data_source(structure: dict[str, Any], content_type: str) -> tuple[s
     for key, value in structure.get("data_sources", {}).items():
         if value.get("role") == "primary":
             return key, value
+    writable_candidates = _writable_data_source_candidates(structure)
+    if len(writable_candidates) == 1:
+        return writable_candidates[0]
     return None, None
 
 
@@ -179,24 +223,21 @@ def _parser_profile_section(profile: Any, content_type: str) -> dict[str, Any]:
     return profile
 
 
-def _default_parser_profile(content_type: str) -> dict[str, Any]:
-    if content_type == "book":
-        return {
-            "required_schema_fields": ["cover", "author", "isbn", "page_count", "state"],
-            "required_value_fields": ["author", "isbn", "page_count"],
-            "summary_key_fields": ["cover", "author", "isbn", "page_count"],
-            "trusted_field_sources": ["explicit", "profile"],
-            "asset_trust_required_fields": ["cover"],
-        }
-    return {}
+def _parser_profile_default_from_config(config_data: dict[str, Any], content_type: str) -> dict[str, Any]:
+    parser_profiles = config_data.get("parser_profiles", {})
+    if not isinstance(parser_profiles, dict):
+        return {}
+    defaults = parser_profiles.get("defaults", {})
+    return _parser_profile_section(defaults, content_type)
 
 
 def parser_profile_for(
     structure: dict[str, Any],
     data_source: dict[str, Any],
     content_type: str,
+    default_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    profile = _default_parser_profile(content_type)
+    profile = dict(default_profile) if isinstance(default_profile, dict) else {}
     target_profile = _parser_profile_section(structure.get("parser_profile"), content_type)
     data_source_profile = _parser_profile_section(data_source.get("parser_profile"), content_type)
     for source in (target_profile, data_source_profile):
@@ -258,11 +299,13 @@ def build_asset_operations(
         target_field = mapping.get("field")
         source_url = normalized_record.get(record_key)
         if record_key == "cover":
+            if not _is_url(source_url):
+                continue
             operations.append(
                 plan_cover_asset(
                     config,
                     content_type,
-                    source_url if isinstance(source_url, str) else None,
+                    source_url,
                     target_field,
                     allow_download,
                 )
@@ -320,6 +363,57 @@ def _non_blocking_warning_prefixes(parser_profile: dict[str, Any]) -> list[str]:
 
 
 
+def _summary_fields(parser_profile: dict[str, Any]) -> list[str]:
+    return _string_list(parser_profile.get("summary_fields"))
+
+
+
+def _summary_policy_for(parser_profile: dict[str, Any], record_key: str) -> dict[str, Any]:
+    policies = parser_profile.get("summary_policy", {})
+    if not isinstance(policies, dict):
+        return {}
+    policy = policies.get(record_key, {})
+    return policy if isinstance(policy, dict) else {}
+
+
+
+def _summary_content_source_fields(policy: dict[str, Any]) -> list[str]:
+    return _string_list(policy.get("content_source_fields"))
+
+
+
+def _summary_enrichment_requirements(
+    normalized_record: dict[str, Any],
+    parser_profile: dict[str, Any],
+) -> list[dict[str, Any]]:
+    requirements: list[dict[str, Any]] = []
+    for record_key in _summary_fields(parser_profile):
+        policy = _summary_policy_for(parser_profile, record_key)
+        if not policy.get("requires_content_source"):
+            continue
+        content_source_fields = _summary_content_source_fields(policy)
+        has_content_source = any(
+            normalized_record.get(source_field) not in (None, "", [], {})
+            for source_field in content_source_fields
+        )
+        if has_content_source:
+            continue
+        normalized_record.pop(record_key, None)
+        requirement = {
+            "field": record_key,
+            "kind": "content_summary",
+            "preferred_skill": policy.get("preferred_skill", "summarize"),
+            "requires_content_source": True,
+            "status": "blocked",
+            "reason": "content_source_missing",
+        }
+        if "fallback" in policy:
+            requirement["fallback"] = policy["fallback"]
+        requirements.append(requirement)
+    return requirements
+
+
+
 def _mapping_warnings_for_structure(structure: dict[str, Any]) -> list[str]:
     return [
         warning
@@ -329,10 +423,14 @@ def _mapping_warnings_for_structure(structure: dict[str, Any]) -> list[str]:
 
 
 
-def _blocking_mapping_warnings_for_structure(structure: dict[str, Any], content_type: str) -> list[str]:
+def _blocking_mapping_warnings_for_structure(
+    structure: dict[str, Any],
+    content_type: str,
+    default_profile: dict[str, Any] | None = None,
+) -> list[str]:
     blocking_warnings: list[str] = []
     for source in structure.get("data_sources", {}).values():
-        source_profile = parser_profile_for(structure, source, content_type)
+        source_profile = parser_profile_for(structure, source, content_type, default_profile)
         source_blocking_warnings = confirmation_blocking_warnings(
             source.get("mapping_warnings") or [],
             _non_blocking_warning_prefixes(source_profile),
@@ -399,6 +497,76 @@ def _asset_summary(operation: AssetOperation) -> dict[str, str | None]:
         "target_field": operation.target_field,
         "action": operation.action,
     }
+
+
+def _primary_write_target(
+    *,
+    operation: dict[str, Any],
+    title: Any,
+    target_page: str | None,
+) -> dict[str, Any]:
+    page_id = operation.get("page_id")
+    return {
+        "type": "primary_page",
+        "action": "update_page" if page_id else "create_page",
+        "title": title,
+        "target_page": target_page,
+        "target_data_source": operation.get("target_data_source"),
+        "data_source_id": operation.get("data_source_id"),
+        "page_id": page_id,
+        "page_id_status": "known" if page_id else "pending_after_apply",
+    }
+
+
+def _completion_write_target(
+    *,
+    operation: dict[str, Any],
+    normalized_record: dict[str, Any],
+    structure: dict[str, Any],
+) -> dict[str, Any] | None:
+    source_record_key = operation.get("source_record_key")
+    target_data_source_id = operation.get("target_data_source_id")
+    if not isinstance(source_record_key, str) or not isinstance(target_data_source_id, str):
+        return None
+    target_data_source = _data_source_by_id(structure, target_data_source_id)
+    return {
+        "type": "relation_page",
+        "action": "update_page",
+        "source_record_key": source_record_key,
+        "source_value": normalized_record.get(source_record_key),
+        "target_data_source": target_data_source.get("title") if target_data_source else None,
+        "target_data_source_id": target_data_source_id,
+        "page_id": None,
+        "page_id_status": "pending_relation_resolution",
+    }
+
+
+def _write_targets(
+    *,
+    operations: list[dict[str, Any]],
+    completion_operations: list[dict[str, Any]],
+    normalized_record: dict[str, Any],
+    target_page: str | None,
+    structure: dict[str, Any],
+) -> list[dict[str, Any]]:
+    targets = [
+        _primary_write_target(
+            operation=operation,
+            title=normalized_record.get("title"),
+            target_page=target_page,
+        )
+        for operation in operations
+        if operation.get("type") == "create_or_update_page"
+    ]
+    for operation in completion_operations:
+        target = _completion_write_target(
+            operation=operation,
+            normalized_record=normalized_record,
+            structure=structure,
+        )
+        if target is not None:
+            targets.append(target)
+    return targets
 
 
 def _data_source_by_id(structure: dict[str, Any], data_source_id: str) -> dict[str, Any] | None:
@@ -471,7 +639,7 @@ def _completion_labeled_values(
         value = extract_labeled_value(raw_input, _string_list(record_labels), known_labels)
         if value is None:
             continue
-        values[record_key] = _coerce_numeric_record_value(record_key, value)
+        values[record_key] = _coerce_record_value(record_key, value, parser_profile)
     return values
 
 
@@ -582,6 +750,8 @@ def build_plan_summary(
     warnings: list[str],
     summary_key_fields: list[str] | None = None,
     relation_completion_summaries: list[dict[str, Any]] | None = None,
+    write_targets: list[dict[str, Any]] | None = None,
+    enrichment_requirements: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     key_fields: dict[str, dict[str, str | None]] = {}
     for key in summary_key_fields or []:
@@ -609,6 +779,7 @@ def build_plan_summary(
         "mapped_fields": dict(field_mapping),
         "key_fields": key_fields,
         "writable_fields": writable_fields,
+        "write_targets": list(write_targets or []),
         "asset_actions": [_asset_summary(operation) for operation in asset_operations],
         "requires_confirmation": requires_confirmation,
         "confirmation_reason": confirmation_reason,
@@ -616,6 +787,8 @@ def build_plan_summary(
     }
     if relation_completion_summaries:
         summary["relation_completions"] = relation_completion_summaries
+    if enrichment_requirements:
+        summary["enrichment_requirements"] = enrichment_requirements
     return summary
 
 
@@ -651,14 +824,41 @@ def _base_normalized_record(
     state: str | None,
     content_type: str,
     parser_profile: dict[str, Any],
+    states_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     title = extract_title(raw_input, parser_profile)
     return {
         "title": title,
-        "state": normalize_state(state),
+        "state": normalize_state(state, states_config),
         "cover": default_cover_url(content_type, title),
     }
 
+
+def _record_defaults(parser_profile: dict[str, Any] | None) -> dict[str, Any]:
+    defaults = parser_profile.get("record_defaults", {}) if isinstance(parser_profile, dict) else {}
+    if not isinstance(defaults, dict):
+        return {}
+    return {key: value for key, value in defaults.items() if isinstance(key, str)}
+
+
+def _profile_normalized_record(
+    *,
+    raw_input: str,
+    state: str | None,
+    content_type: str,
+    parser_profile: dict[str, Any],
+    states_config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    record = _base_normalized_record(
+        raw_input=raw_input,
+        state=state,
+        content_type=content_type,
+        parser_profile=parser_profile,
+        states_config=states_config,
+    )
+    record.update(_record_defaults(parser_profile))
+    record.update(_profile_labeled_values(raw_input, parser_profile))
+    return record
 
 
 def _book_normalized_record(
@@ -666,31 +866,15 @@ def _book_normalized_record(
     raw_input: str,
     state: str | None,
     parser_profile: dict[str, Any],
+    states_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    record = _base_normalized_record(
+    return _profile_normalized_record(
         raw_input=raw_input,
         state=state,
         content_type="book",
         parser_profile=parser_profile,
+        states_config=states_config,
     )
-    known_labels = _known_parser_labels(parser_profile)
-    record.update(
-        {
-            "author": extract_labeled_value(raw_input, _parser_labels(parser_profile, "author"), known_labels),
-            "isbn": extract_labeled_value(raw_input, _parser_labels(parser_profile, "isbn"), known_labels),
-            "publisher": extract_labeled_value(raw_input, _parser_labels(parser_profile, "publisher"), known_labels),
-            "page_count": extract_page_count(raw_input, parser_profile),
-        }
-    )
-    record.update(
-        _profile_labeled_values(
-            raw_input,
-            parser_profile,
-            exclude_keys={"author", "isbn", "publisher", "page_count"},
-        )
-    )
-    return record
-
 
 
 def _podcast_normalized_record(
@@ -698,23 +882,15 @@ def _podcast_normalized_record(
     raw_input: str,
     state: str | None,
     parser_profile: dict[str, Any],
+    states_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    record = _base_normalized_record(
+    return _profile_normalized_record(
         raw_input=raw_input,
         state=state,
         content_type="podcast_episode",
         parser_profile=parser_profile,
+        states_config=states_config,
     )
-    known_labels = _known_parser_labels(parser_profile)
-    record.update(
-        {
-            "podcast": extract_labeled_value(raw_input, _parser_labels(parser_profile, "podcast"), known_labels),
-            "episode_url": None,
-            "published_at": None,
-        }
-    )
-    return record
-
 
 
 def _capture_title_cleanup_terms(capture: CaptureInput, structure: dict[str, Any]) -> list[str]:
@@ -741,24 +917,14 @@ def _normalized_record_for_capture(
     capture: CaptureInput,
     content_type: str,
     parser_profile: dict[str, Any],
+    states_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if content_type == "book":
-        return _book_normalized_record(
-            raw_input=capture.raw_input,
-            state=capture.state,
-            parser_profile=parser_profile,
-        )
-    if content_type == "podcast_episode":
-        return _podcast_normalized_record(
-            raw_input=capture.raw_input,
-            state=capture.state,
-            parser_profile=parser_profile,
-        )
-    return _base_normalized_record(
+    return _profile_normalized_record(
         raw_input=capture.raw_input,
         state=capture.state,
         content_type=content_type,
         parser_profile=parser_profile,
+        states_config=states_config,
     )
 
 
@@ -773,9 +939,10 @@ def unresolved_plan(
     content_type: str,
     reason: str,
     warnings: list[str] | None = None,
+    states_config: dict[str, Any] | None = None,
 ) -> WritePlan:
     title = extract_title(capture.raw_input)
-    normalized_record = {"title": title, "state": normalize_state(capture.state)}
+    normalized_record = {"title": title, "state": normalize_state(capture.state, states_config)}
     warnings = warnings or ["目标页面未解析，需要先选择或确认存储页面。"]
     return WritePlan(
         plan_id=plan_id_for(capture),
@@ -806,9 +973,12 @@ def unresolved_plan(
 
 def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     content_type = classify_content_type(capture)
+    states_config = cache.read_json(cache.config.states_file, {"states": {}})
+    config_data = cache.read_json(cache.config.config_file, {})
+    default_parser_profile = _parser_profile_default_from_config(config_data, content_type)
     alias = cache.find_alias(capture.target_hint)
     if not alias:
-        return unresolved_plan(capture, content_type, "target_not_resolved")
+        return unresolved_plan(capture, content_type, "target_not_resolved", states_config=states_config)
 
     structure = cache.target_structure(alias.get("target_id"))
     if not structure:
@@ -818,16 +988,21 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
             warnings.append(
                 f"capture-to-notion target scan --page-id {_shell_arg(page_id)} --alias {_shell_arg(capture.target_hint)}"
             )
-        return unresolved_plan(capture, content_type, "target_structure_missing", warnings)
+        return unresolved_plan(capture, content_type, "target_structure_missing", warnings, states_config=states_config)
 
     _, data_source = primary_data_source(structure, content_type)
     if not data_source:
-        return unresolved_plan(capture, content_type, "primary_data_source_missing")
+        reason = (
+            "data_source_ambiguous"
+            if len(_writable_data_source_candidates(structure)) > 1
+            else "primary_data_source_missing"
+        )
+        return unresolved_plan(capture, content_type, reason, states_config=states_config)
 
     fields = data_source.get("fields", {})
     field_sources = data_source.get("field_sources", {})
     parser_profile = _parser_profile_with_title_cleanup_terms(
-        parser_profile_for(structure, data_source, content_type),
+        parser_profile_for(structure, data_source, content_type, default_parser_profile),
         capture,
         structure,
     )
@@ -851,6 +1026,8 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         trusted_field_sources,
     )
     normalized_record = _normalized_record_for_capture(capture, content_type, parser_profile)
+    normalized_record["state"] = normalize_state(capture.state, states_config)
+    enrichment_requirements = _summary_enrichment_requirements(normalized_record, parser_profile)
     cover_url = normalized_record.get("cover")
 
     confirmation_reason = structure.get("confirmation_reason")
@@ -860,7 +1037,11 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
             warnings.append(warning)
     blocking_mapping_warnings = confirmation_blocking_warnings(warnings, non_blocking_warning_prefixes)
     structure_mapping_warnings = _mapping_warnings_for_structure(structure)
-    blocking_structure_mapping_warnings = _blocking_mapping_warnings_for_structure(structure, content_type)
+    blocking_structure_mapping_warnings = _blocking_mapping_warnings_for_structure(
+        structure,
+        content_type,
+        default_parser_profile,
+    )
     for warning in structure_mapping_warnings:
         if warning not in warnings:
             warnings.append(warning)
@@ -875,6 +1056,12 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         warnings.append(f"{content_type}_schema_incomplete:{','.join(missing_fields)}")
     if missing_values:
         warnings.append(f"{content_type}_key_values_missing:{','.join(missing_values)}")
+    for requirement in enrichment_requirements:
+        warning = f"summary_content_source_missing:{requirement['field']}"
+        if warning not in warnings:
+            warnings.append(warning)
+    if not confirmation_reason and enrichment_requirements:
+        confirmation_reason = "summary_content_source_missing"
     if not confirmation_reason and untrusted_mapping_warnings:
         confirmation_reason = "untrusted_field_mapping"
     if not confirmation_reason and blocking_structure_mapping_warnings:
@@ -889,6 +1076,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         or blocking_structure_mapping_warnings
         or missing_fields
         or missing_values
+        or enrichment_requirements
     )
     asset_mapping = _filtered_asset_mapping(
         structure.get("asset_mapping") or {},
@@ -922,18 +1110,23 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         normalized_record=normalized_record,
         allow_download=capture.options.allow_asset_download,
     )
-    operations = (
-        []
-        if requires_confirmation
-        else [
-            {
-                "type": "create_or_update_page",
-                "target_data_source": data_source.get("title"),
-                "data_source_id": data_source.get("data_source_id"),
-            }
-        ]
-    )
+    write_operation = {
+        "type": "create_or_update_page",
+        "target_data_source": data_source.get("title"),
+        "data_source_id": data_source.get("data_source_id"),
+    }
+    if capture.existing_page_id:
+        write_operation["page_id"] = capture.existing_page_id
+    operations = [] if requires_confirmation else [write_operation]
+    planned_completion_operations = [] if requires_confirmation else completion_operations
     planned_asset_operations = [] if requires_confirmation else asset_operations
+    write_targets = _write_targets(
+        operations=operations,
+        completion_operations=planned_completion_operations,
+        normalized_record=normalized_record,
+        target_page=structure.get("target", {}).get("title"),
+        structure=structure,
+    )
 
     plan = WritePlan(
         plan_id=plan_id_for(capture),
@@ -958,16 +1151,19 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
             warnings=warnings,
             summary_key_fields=summary_key_fields,
             relation_completion_summaries=completion_summaries,
+            write_targets=write_targets,
+            enrichment_requirements=enrichment_requirements,
         ),
         normalized_record=normalized_record,
         field_mapping=field_mapping,
         operations=operations,
         asset_operations=planned_asset_operations,
-        sources=[{"title": "Phase 1 placeholder enrichment source", "url": cover_url or ""}],
+        sources=[{"title": "cover", "url": cover_url}] if _is_url(cover_url) else [],
         warnings=warnings,
         requires_confirmation=requires_confirmation,
         confirmation_reason=confirmation_reason,
-        completion_operations=[] if requires_confirmation else completion_operations,
+        completion_operations=planned_completion_operations,
+        capture_input=capture.to_dict(),
     )
     if not requires_confirmation:
         cache.save_plan(plan.plan_id, plan.to_dict())

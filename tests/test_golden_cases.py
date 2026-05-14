@@ -139,6 +139,9 @@ def test_golden_initialized_book_plan_has_core_fields_and_cover_asset(tmp_path, 
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
     seed_books_target(config)
+    target = json.loads((config.targets_dir / "bookshelf.json").read_text(encoding="utf-8"))
+    target["parser_profile"]["book"]["record_defaults"] = {"cover": "https://example.com/cover.jpg"}
+    write_json(config.targets_dir / "bookshelf.json", target)
     capture = CaptureInput(
         raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
         target_hint="书单",
@@ -214,7 +217,7 @@ def test_golden_mixed_language_multi_author_book_plan(tmp_path, monkeypatch):
     assert plan.field_mapping["author"] == "作者"
     assert plan.field_mapping["isbn"] == "ISBN"
     assert plan.field_mapping["page_count"] == "页数"
-    assert plan.field_mapping["cover"] == "封面"
+    assert "cover" not in plan.field_mapping
 
 
 
@@ -298,5 +301,5 @@ def test_golden_podcast_episode_plan_maps_podcast_field(tmp_path, monkeypatch):
     assert plan.normalized_record["podcast"] == "忽左忽右"
     assert plan.normalized_record["state"] == "initialized"
     assert plan.field_mapping["podcast"] == "播客"
-    assert plan.field_mapping["cover"] == "封面"
+    assert "cover" not in plan.field_mapping
     assert plan.requires_confirmation is False

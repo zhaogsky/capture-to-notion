@@ -274,10 +274,109 @@ def test_builds_book_capture_plan_from_cached_target(tmp_path, monkeypatch):
     assert plan.target.page_title == "书单"
     assert plan.target.data_source_id == "ds-books"
     assert plan.normalized_record["state"] == "initialized"
-    assert plan.field_mapping["cover"] == "封面"
-    assert plan.asset_operations[0].action == "download_and_attach"
-    assert plan.asset_operations[0].target_field == "封面"
+    assert plan.normalized_record.get("cover") is None
+    assert "cover" not in plan.field_mapping
+    assert plan.asset_operations == []
     assert plan.requires_confirmation is False
+
+
+
+def test_book_capture_plan_uses_states_file_aliases(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_book_target(config)
+    write_json(
+        config.states_file,
+        {
+            "states": {
+                "queued": {"aliases": ["Queue Me", "待办"]},
+                "done": {"aliases": ["Finished"]},
+            }
+        },
+    )
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="Queue Me",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.normalized_record["state"] == "queued"
+
+
+
+def test_book_capture_plan_summary_lists_primary_write_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_book_target(config)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.summary["write_targets"] == [
+        {
+            "type": "primary_page",
+            "action": "create_page",
+            "title": "可能性的艺术",
+            "target_page": "书单",
+            "target_data_source": "Books",
+            "data_source_id": "ds-books",
+            "page_id": None,
+            "page_id_status": "pending_after_apply",
+        }
+    ]
+
+
+
+def test_capture_plan_uses_existing_page_id_for_primary_update(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_book_target(config)
+    existing_page_id = "page-existing-book"
+    capture = CaptureInput.from_dict(
+        {
+            "raw_input": "把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+            "target_hint": "书单",
+            "state": "初始化",
+            "content_type_hint": "book",
+            "existing_page_id": existing_page_id,
+        }
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.operations == [
+        {
+            "type": "create_or_update_page",
+            "target_data_source": "Books",
+            "data_source_id": "ds-books",
+            "page_id": existing_page_id,
+        }
+    ]
+    assert plan.summary["write_targets"] == [
+        {
+            "type": "primary_page",
+            "action": "update_page",
+            "title": "可能性的艺术",
+            "target_page": "书单",
+            "target_data_source": "Books",
+            "data_source_id": "ds-books",
+            "page_id": existing_page_id,
+            "page_id_status": "known",
+        }
+    ]
+    assert plan.capture_input["existing_page_id"] == existing_page_id
 
 
 
@@ -434,7 +533,6 @@ def test_book_capture_plan_supports_profile_labeled_extra_fields(tmp_path, monke
     assert plan.field_mapping == {
         "title": "名称",
         "state": "阅读状态",
-        "cover": "封面",
         "author": "作者",
         "isbn": "ISBN",
         "publisher": "出版社",
@@ -560,6 +658,16 @@ def test_book_capture_plan_builds_profile_relation_completion_operation(tmp_path
             },
         }
     ]
+    assert plan.summary["write_targets"][1] == {
+        "type": "relation_page",
+        "action": "update_page",
+        "source_record_key": "author",
+        "source_value": "比尔·布莱森",
+        "target_data_source": "Authors",
+        "target_data_source_id": "ds-authors",
+        "page_id": None,
+        "page_id_status": "pending_relation_resolution",
+    }
 
 
 def test_build_plan_summary_reports_writable_fields_for_missing_mapped_values():
@@ -633,8 +741,16 @@ def test_build_plan_summary_reports_writable_fields_for_missing_mapped_values():
 
 
 
-def test_default_book_parser_profile_supplies_required_fields_without_business_labels():
-    profile = parser_profile_for({}, {}, "book")
+def test_parser_profile_for_uses_supplied_default_profile_without_business_labels():
+    default_profile = {
+        "required_schema_fields": ["cover", "author", "isbn", "page_count", "state"],
+        "required_value_fields": ["author", "isbn", "page_count"],
+        "summary_key_fields": ["cover", "author", "isbn", "page_count"],
+        "trusted_field_sources": ["explicit", "profile"],
+        "asset_trust_required_fields": ["cover"],
+    }
+
+    profile = parser_profile_for({}, {}, "book", default_profile)
 
     assert profile["required_schema_fields"] == ["cover", "author", "isbn", "page_count", "state"]
     assert profile["required_value_fields"] == ["author", "isbn", "page_count"]
@@ -642,6 +758,11 @@ def test_default_book_parser_profile_supplies_required_fields_without_business_l
     assert profile["trusted_field_sources"] == ["explicit", "profile"]
     assert profile["asset_trust_required_fields"] == ["cover"]
     assert "labels" not in profile
+
+
+
+def test_parser_profile_for_has_no_book_defaults_without_supplied_profile():
+    assert parser_profile_for({}, {}, "book") == {}
 
 
 
@@ -723,15 +844,25 @@ def test_book_capture_plan_requires_confirmation_when_key_values_are_missing(tmp
     assert plan.summary["key_fields"]["page_count"] == {"target_field": "页数", "value_status": "missing_value"}
 
 
-def test_book_capture_plan_uses_parser_profile_required_value_fields(tmp_path, monkeypatch):
+def test_book_capture_plan_uses_config_default_required_value_fields(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
     cache = CacheStore(config)
+    write_json(
+        config.config_file,
+        {
+            "parser_profiles": {
+                "defaults": {
+                    "book": {
+                        "required_schema_fields": ["author", "state"],
+                        "required_value_fields": ["author"],
+                        "trusted_field_sources": ["explicit", "profile"],
+                    }
+                }
+            }
+        },
+    )
     seed_book_target(config)
-    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
-    target["parser_profile"]["book"]["required_schema_fields"] = ["author", "state"]
-    target["parser_profile"]["book"]["required_value_fields"] = ["author"]
-    cache.write_json(config.targets_dir / "bookshelf.json", target)
 
     capture = CaptureInput(
         raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜",
@@ -745,6 +876,27 @@ def test_book_capture_plan_uses_parser_profile_required_value_fields(tmp_path, m
 
     assert plan.requires_confirmation is False
     assert plan.confirmation_reason is None
+    assert not any(warning.startswith("book_key_values_missing") for warning in plan.warnings)
+
+
+
+def test_book_capture_plan_does_not_use_code_default_required_fields_when_config_default_is_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    write_json(config.config_file, {"parser_profiles": {"defaults": {"book": {}}}})
+    seed_book_target(config)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
     assert not any(warning.startswith("book_key_values_missing") for warning in plan.warnings)
 
 
@@ -780,6 +932,83 @@ def test_book_capture_plan_uses_parser_profile_required_schema_fields(tmp_path, 
 
 
 
+def test_profile_normalized_record_extracts_custom_content_type_labels():
+    capture = CaptureInput(
+        raw_input="Title: Agent Notes creator: Aaron rating: 5 stars",
+        target_hint=None,
+        state="初始化",
+        content_type_hint=None,
+        options=CaptureOptions(),
+    )
+
+    record = planner_module._normalized_record_for_capture(
+        capture,
+        "article",
+        {
+            "title_patterns": [r"Title:\s*(.+?)(?=\s+creator\s*:)"] ,
+            "labels": {"creator": ["creator"], "rating": ["rating"]},
+        },
+    )
+
+    assert record["title"] == "Agent Notes"
+    assert record["state"] == "initialized"
+    assert record["creator"] == "Aaron"
+    assert record["rating"] == "5 stars"
+
+
+def test_profile_normalized_record_uses_record_defaults_only_when_configured():
+    capture = CaptureInput(
+        raw_input="Episode: Deep Dive podcast: Acquired",
+        target_hint=None,
+        state="初始化",
+        content_type_hint=None,
+        options=CaptureOptions(),
+    )
+
+    record = planner_module._normalized_record_for_capture(
+        capture,
+        "podcast_episode",
+        {
+            "title_patterns": [r"Episode:\s*(.+?)(?=\s+podcast\s*:)"] ,
+            "labels": {"podcast": ["podcast"]},
+            "record_defaults": {"episode_url": None, "published_at": None},
+        },
+    )
+    record_without_defaults = planner_module._normalized_record_for_capture(
+        capture,
+        "podcast_episode",
+        {"title_patterns": [r"Episode:\s*(.+?)(?=\s+podcast\s*:)"] , "labels": {"podcast": ["podcast"]}},
+    )
+
+    assert record["episode_url"] is None
+    assert record["published_at"] is None
+    assert "episode_url" not in record_without_defaults
+    assert "published_at" not in record_without_defaults
+
+
+def test_profile_normalized_record_uses_value_types_for_numeric_fields():
+    capture = CaptureInput(
+        raw_input="Article: Long Read length: 400 pages",
+        target_hint=None,
+        state="初始化",
+        content_type_hint=None,
+        options=CaptureOptions(),
+    )
+
+    record = planner_module._normalized_record_for_capture(
+        capture,
+        "article",
+        {
+            "title_patterns": [r"Article:\s*(.+?)(?=\s+length\s*:)"] ,
+            "labels": {"length": ["length"]},
+            "value_types": {"length": "integer"},
+        },
+    )
+
+    assert record["length"] == 400
+    assert isinstance(record["length"], int)
+
+
 def test_book_normalized_record_helper_uses_parser_profile_labels_only():
     assert hasattr(planner_module, "_book_normalized_record")
     record = planner_module._book_normalized_record(
@@ -791,7 +1020,8 @@ def test_book_normalized_record_helper_uses_parser_profile_labels_only():
                 "isbn": ["code"],
                 "page_count": ["length"],
             },
-            "title_patterns": [r"Book:\s*(.+?)(?=\s+writer\s*:)"]
+            "title_patterns": [r"Book:\s*(.+?)(?=\s+writer\s*:)"] ,
+            "value_types": {"page_count": "integer"},
         },
     )
 
@@ -808,7 +1038,7 @@ def test_podcast_normalized_record_helper_uses_parser_profile_labels_only():
     record = planner_module._podcast_normalized_record(
         raw_input="收藏这期播客到播客库 节目名：忽左忽右",
         state="初始化",
-        parser_profile={"labels": {"podcast": ["节目名"]}},
+        parser_profile={"labels": {"podcast": ["节目名"]}, "record_defaults": {"episode_url": None, "published_at": None}},
     )
 
     assert record["title"] == "收藏这期播客到播客库"
@@ -817,6 +1047,50 @@ def test_podcast_normalized_record_helper_uses_parser_profile_labels_only():
     assert record["episode_url"] is None
     assert record["published_at"] is None
 
+
+
+def test_book_capture_plan_does_not_generate_default_cover_without_profile_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_book_target(config)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.normalized_record.get("cover") is None
+    assert "cover" not in plan.field_mapping
+    assert plan.asset_operations == []
+
+
+def test_book_capture_plan_uses_profile_default_cover_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_book_target(config)
+    target = json.loads((config.targets_dir / "bookshelf.json").read_text(encoding="utf-8"))
+    target["parser_profile"]["book"]["record_defaults"] = {"cover": "https://assets.example.invalid/placeholder.jpg"}
+    write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.normalized_record["cover"] == "https://assets.example.invalid/placeholder.jpg"
+    assert plan.field_mapping["cover"] == "封面"
+    assert len(plan.asset_operations) == 1
+    assert plan.asset_operations[0].source_url == "https://assets.example.invalid/placeholder.jpg"
 
 
 def test_book_labeled_author_populates_normalized_record_and_mapping(tmp_path, monkeypatch):
@@ -1015,10 +1289,169 @@ def test_podcast_capture_plan_summary_uses_parser_profile_key_fields(tmp_path, m
 
 
 
+def test_podcast_summary_field_requires_content_source_before_mapping(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "播客库": {
+                    "type": "page",
+                    "page_id": "page-podcasts",
+                    "target_id": "podcastshelf",
+                }
+            }
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "podcastshelf.json",
+        {
+            "target": {"page_id": "page-podcasts", "title": "播客库", "target_id": "podcastshelf"},
+            "parser_profile": {
+                "podcast_episode": {
+                    "labels": {
+                        "description": ["简介"],
+                        "transcript": ["转录稿"],
+                    },
+                    "summary_fields": ["description"],
+                    "summary_policy": {
+                        "description": {
+                            "preferred_skill": "summarize",
+                            "requires_content_source": True,
+                            "content_source_fields": ["transcript"],
+                        }
+                    },
+                }
+            },
+            "data_sources": {
+                "episodes": {
+                    "data_source_id": "ds-podcasts",
+                    "title": "Podcast Episodes",
+                    "role": "primary",
+                    "content_types": ["podcast_episode"],
+                    "fields": {
+                        "title": "标题",
+                        "state": "收听状态",
+                        "description": "内容描述",
+                    },
+                    "field_sources": {
+                        "title": "profile",
+                        "state": "profile",
+                        "description": "profile",
+                    },
+                    "schema": {
+                        "标题": {"type": "title"},
+                        "收听状态": {"type": "select"},
+                        "内容描述": {"type": "rich_text"},
+                    },
+                }
+            },
+            "state_mapping": {"field": "收听状态", "values": {"initialized": "想听"}},
+        },
+    )
+
+    capture = CaptureInput(
+        raw_input="《339-如何让成年后的孩子依然和你亲近？》 简介：母亲节闲聊播客！",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "summary_content_source_missing"
+    assert "summary_content_source_missing:description" in plan.warnings
+    assert plan.normalized_record.get("description") is None
+    assert "description" not in plan.field_mapping
+    assert plan.operations == []
+    assert plan.summary["enrichment_requirements"] == [
+        {
+            "field": "description",
+            "kind": "content_summary",
+            "preferred_skill": "summarize",
+            "requires_content_source": True,
+            "status": "blocked",
+            "reason": "content_source_missing",
+        }
+    ]
+
+
+
+def test_unmarked_podcast_description_remains_regular_labeled_field(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "播客库": {
+                    "type": "page",
+                    "page_id": "page-podcasts",
+                    "target_id": "podcastshelf",
+                }
+            }
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "podcastshelf.json",
+        {
+            "target": {"page_id": "page-podcasts", "title": "播客库", "target_id": "podcastshelf"},
+            "parser_profile": {
+                "podcast_episode": {
+                    "labels": {"description": ["简介"]},
+                }
+            },
+            "data_sources": {
+                "episodes": {
+                    "data_source_id": "ds-podcasts",
+                    "title": "Podcast Episodes",
+                    "role": "primary",
+                    "content_types": ["podcast_episode"],
+                    "fields": {
+                        "title": "标题",
+                        "state": "收听状态",
+                        "description": "内容描述",
+                    },
+                    "schema": {
+                        "标题": {"type": "title"},
+                        "收听状态": {"type": "select"},
+                        "内容描述": {"type": "rich_text"},
+                    },
+                }
+            },
+            "state_mapping": {"field": "收听状态", "values": {"initialized": "想听"}},
+        },
+    )
+
+    capture = CaptureInput(
+        raw_input="《339-如何让成年后的孩子依然和你亲近？》 简介：母亲节闲聊播客！",
+        target_hint="播客库",
+        state="初始化",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.normalized_record["description"] == "母亲节闲聊播客！"
+    assert plan.field_mapping["description"] == "内容描述"
+    assert "enrichment_requirements" not in plan.summary
+
+
+
 def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
     seed_book_target(config)
+    target = json.loads((config.targets_dir / "bookshelf.json").read_text(encoding="utf-8"))
+    target["parser_profile"]["book"]["record_defaults"] = {"cover": "https://example.com/cover.jpg"}
+    write_json(config.targets_dir / "bookshelf.json", target)
 
     capture = CaptureInput(
         raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
@@ -1059,6 +1492,18 @@ def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp
             "publisher": {"target_field": "出版社", "value_status": "missing_value", "write_status": "omitted_missing_value"},
             "page_count": {"target_field": "页数", "value_status": "present", "write_status": "planned"},
         },
+        "write_targets": [
+            {
+                "type": "primary_page",
+                "action": "create_page",
+                "title": "可能性的艺术",
+                "target_page": "书单",
+                "target_data_source": "Books",
+                "data_source_id": "ds-books",
+                "page_id": None,
+                "page_id_status": "pending_after_apply",
+            }
+        ],
         "asset_actions": [
             {"record_key": "cover", "target_field": "封面", "action": "download_and_attach"}
         ],
@@ -1327,6 +1772,7 @@ def test_book_capture_plan_accepts_profile_cover_mapping_for_custom_files_field(
     cache = CacheStore(config)
     seed_book_target(config)
     target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["parser_profile"]["book"]["record_defaults"] = {"cover": "https://example.com/cover.jpg"}
     target["data_sources"]["books"]["fields"]["cover"] = "Attachment"
     target["data_sources"]["books"]["field_sources"] = {
         "title": "profile",
@@ -1510,7 +1956,7 @@ def test_podcast_capture_plan_does_not_parse_business_labels_without_parser_prof
 
     plan = build_capture_plan(capture, CacheStore(config))
 
-    assert plan.normalized_record["podcast"] is None
+    assert plan.normalized_record.get("podcast") is None
     assert plan.normalized_record["title"] == "收藏这期播客到播客库 播客：忽左忽右"
 
 
@@ -2058,7 +2504,7 @@ def test_podcast_without_labeled_podcast_keeps_none(tmp_path, monkeypatch):
 
     plan = build_capture_plan(capture, CacheStore(config))
 
-    assert plan.normalized_record["podcast"] is None
+    assert plan.normalized_record.get("podcast") is None
 
 
 def test_unknown_target_requires_confirmation(tmp_path, monkeypatch):
@@ -2097,6 +2543,214 @@ def test_alias_target_structure_missing_requires_confirmation(tmp_path, monkeypa
 
     assert plan.requires_confirmation is True
     assert plan.confirmation_reason == "target_structure_missing"
+
+
+def test_capture_plan_uses_single_writable_non_primary_data_source_with_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "播客子页": {
+                    "type": "page",
+                    "page_id": "page-podcast-child",
+                    "target_id": "podcast-child",
+                }
+            }
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "podcast-child.json",
+        {
+            "target": {"page_id": "page-podcast-child", "title": "播客子页", "target_id": "podcast-child"},
+            "data_sources": {
+                "episodes": {
+                    "data_source_id": "ds-episodes",
+                    "title": "Episodes",
+                    "role": "secondary",
+                    "content_types": [],
+                    "fields": {},
+                    "field_sources": {},
+                    "mapping_warnings": [],
+                    "schema": {
+                        "主题": {"type": "title"},
+                        "内容描述": {"type": "rich_text"},
+                        "完成时间": {"type": "date"},
+                        "状态": {"type": "select"},
+                    },
+                }
+            },
+            "relations": [],
+            "state_mapping": {},
+            "asset_mapping": {},
+            "requires_confirmation": True,
+            "confirmation_reason": "field_mapping_missing",
+        },
+    )
+
+    capture = CaptureInput(
+        raw_input="小宇宙单集：https://example.com/episode/1；播客：后互联网时代的乱弹",
+        target_hint="播客子页",
+        state="initialized",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.target.page_title == "播客子页"
+    assert plan.target.data_source_id == "ds-episodes"
+    assert plan.summary["target_data_source"] == "Episodes"
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "field_mapping_missing"
+    assert plan.operations == []
+
+
+
+def test_podcast_plan_uses_trusted_mapping_on_single_non_primary_data_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "播客子页": {
+                    "type": "page",
+                    "page_id": "page-podcast-child",
+                    "target_id": "podcast-child",
+                }
+            }
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "podcast-child.json",
+        {
+            "target": {"page_id": "page-podcast-child", "title": "播客子页", "target_id": "podcast-child"},
+            "parser_profile": {
+                "podcast_episode": {
+                    "labels": {"episode_url": ["小宇宙单集", "url"], "podcast": ["播客"]},
+                    "field_mapping": {"title": "主题", "episode_url": "内容描述", "state": "状态"},
+                    "trusted_field_sources": ["explicit", "profile"],
+                }
+            },
+            "data_sources": {
+                "episodes": {
+                    "data_source_id": "ds-episodes",
+                    "title": "Episodes",
+                    "role": "secondary",
+                    "content_types": [],
+                    "fields": {"title": "主题", "episode_url": "内容描述", "state": "状态"},
+                    "field_sources": {"title": "profile", "episode_url": "profile", "state": "profile"},
+                    "mapping_warnings": [],
+                    "schema": {
+                        "主题": {"type": "title"},
+                        "内容描述": {"type": "rich_text"},
+                        "参与人员": {"type": "rich_text"},
+                        "完成时间": {"type": "date"},
+                        "状态": {"type": "select"},
+                    },
+                }
+            },
+            "relations": [],
+            "state_mapping": {"field": "状态", "values": {}},
+            "asset_mapping": {},
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+
+    capture = CaptureInput(
+        raw_input="小宇宙单集：https://example.com/episode/1；播客：后互联网时代的乱弹",
+        target_hint="播客子页",
+        state="initialized",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.confirmation_reason is None
+    assert plan.target.data_source_id == "ds-episodes"
+    assert plan.normalized_record["episode_url"] == "https://example.com/episode/1"
+    assert plan.field_mapping == {"title": "主题", "state": "状态", "episode_url": "内容描述"}
+    assert plan.operations == [
+        {
+            "type": "create_or_update_page",
+            "target_data_source": "Episodes",
+            "data_source_id": "ds-episodes",
+        }
+    ]
+    assert plan.summary["write_targets"] == [
+        {
+            "type": "primary_page",
+            "action": "create_page",
+            "title": "小宇宙单集：https://example.com/episode/1；播客：后互联网时代的乱弹",
+            "target_page": "播客子页",
+            "target_data_source": "Episodes",
+            "data_source_id": "ds-episodes",
+            "page_id": None,
+            "page_id_status": "pending_after_apply",
+        }
+    ]
+
+
+
+def test_capture_plan_requires_confirmation_for_multiple_writable_non_primary_data_sources(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "播客子页": {
+                    "type": "page",
+                    "page_id": "page-podcast-child",
+                    "target_id": "podcast-child",
+                }
+            }
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "podcast-child.json",
+        {
+            "target": {"page_id": "page-podcast-child", "title": "播客子页", "target_id": "podcast-child"},
+            "data_sources": {
+                "episodes": {
+                    "data_source_id": "ds-episodes",
+                    "title": "Episodes",
+                    "role": "secondary",
+                    "schema": {"主题": {"type": "title"}},
+                },
+                "queue": {
+                    "data_source_id": "ds-queue",
+                    "title": "Queue",
+                    "role": "secondary",
+                    "schema": {"名称": {"type": "title"}},
+                },
+            },
+        },
+    )
+
+    capture = CaptureInput(
+        raw_input="小宇宙单集：https://example.com/episode/1",
+        target_hint="播客子页",
+        state="initialized",
+        content_type_hint="podcast_episode",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "data_source_ambiguous"
+    assert plan.target.data_source_id is None
+    assert plan.operations == []
+
 
 
 def test_primary_data_source_missing_requires_confirmation(tmp_path, monkeypatch):
@@ -2142,6 +2796,9 @@ def test_allow_asset_download_false_uses_external_url_action(tmp_path, monkeypat
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
     seed_book_target(config)
+    target = json.loads((config.targets_dir / "bookshelf.json").read_text(encoding="utf-8"))
+    target["parser_profile"]["book"]["record_defaults"] = {"cover": "https://example.com/cover.jpg"}
+    write_json(config.targets_dir / "bookshelf.json", target)
 
     capture = CaptureInput(
         raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
@@ -2190,7 +2847,7 @@ def test_capture_plan_merges_scanned_files_asset_mapping_into_field_mapping(tmp_
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
-            "parser_profile": {"book": BOOK_PARSER_PROFILE},
+            "parser_profile": {"book": {**BOOK_PARSER_PROFILE, "record_defaults": {"cover": "https://example.com/cover.jpg"}}},
             "data_sources": {
                 "db-books": {
                     "data_source_id": "db-books",
@@ -2266,7 +2923,7 @@ def test_capture_plan_uses_cached_fields_from_scanned_target(tmp_path, monkeypat
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
-            "parser_profile": {"book": BOOK_PARSER_PROFILE},
+            "parser_profile": {"book": {**BOOK_PARSER_PROFILE, "record_defaults": {"cover": "https://example.com/cover.jpg"}}},
             "data_sources": {
                 "db-books": {
                     "data_source_id": "db-books",
@@ -2474,7 +3131,7 @@ def test_capture_plan_uses_primary_cover_field_over_stale_global_asset_mapping(t
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
-            "parser_profile": {"book": BOOK_PARSER_PROFILE},
+            "parser_profile": {"book": {**BOOK_PARSER_PROFILE, "record_defaults": {"cover": "https://example.com/cover.jpg"}}},
             "data_sources": {
                 "db-posters": {
                     "data_source_id": "db-posters",
@@ -2687,18 +3344,15 @@ def test_capture_plan_preserves_scanned_confirmation_signal(tmp_path, monkeypatc
     assert plan.normalized_record == {
         "title": "可能性的艺术",
         "state": "initialized",
-        "cover": plan.normalized_record["cover"],
+        "cover": None,
         "author": "刘瑜",
         "isbn": "9787559847357",
         "publisher": None,
         "page_count": 400,
     }
-    assert plan.normalized_record["cover"].startswith("https://example.com/capture-to-notion/covers/")
-    assert plan.normalized_record["cover"].endswith(".jpg")
     assert plan.field_mapping == {
         "title": "书名",
         "state": "阅读进度",
-        "cover": "封面图",
         "author": "作者",
         "isbn": "ISBN",
         "page_count": "页数",

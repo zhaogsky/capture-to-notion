@@ -213,7 +213,6 @@ def verify_book_page(fake_adapter: FakeAdapter, url_checker=lambda url: True) ->
         checks=BOOK_CHECKS,
     )
 
-
 def test_capture_apply_requires_confirmation_before_adapter(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
     config = ensure_config()
@@ -234,7 +233,6 @@ def test_capture_apply_requires_confirmation_before_adapter(tmp_path, monkeypatc
     assert "field_mapping_ambiguous" in stderr
     assert adapter_factory.called is False
 
-
 def test_capture_apply_rejects_empty_operations_before_adapter(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
     config = ensure_config()
@@ -251,7 +249,6 @@ def test_capture_apply_rejects_empty_operations_before_adapter(tmp_path, monkeyp
     assert "没有可执行操作" in stderr
     assert "capture plan" in stderr
     assert adapter_factory.called is False
-
 
 def test_capture_apply_successful_create_uses_fake_adapter(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
@@ -307,6 +304,596 @@ def test_capture_apply_successful_create_uses_fake_adapter(tmp_path, monkeypatch
         "warnings": [],
     }
 
+def test_capture_apply_reports_verification_not_found_without_recreating(tmp_path, monkeypatch, capsys):
+    class VerificationNotFoundAdapter(FakeAdapter):
+        def retrieve_page(self, page_id: str) -> dict[str, Any]:
+            self.retrieved_pages.append(page_id)
+            raise cli.NotionNotFoundError(f"page not found: {page_id}")
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    seed_target_cache(config)
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(plan_path)
+    fake_adapter = VerificationNotFoundAdapter()
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["applied"] is True
+    assert len(fake_adapter.created) == 1
+    assert fake_adapter.retrieved_pages == ["page-created"]
+    assert result["verification"] == {
+        "verified": False,
+        "pages": [
+            {
+                "page_id": "page-created",
+                "verified": False,
+                "checks": {
+                    "page": {"status": "missing"},
+                    "title": {"status": "missing"},
+                    "state": {"status": "missing"},
+                },
+                "warnings": ["missing:page", "missing:title", "missing:state"],
+            }
+        ],
+        "warnings": ["missing:page", "missing:title", "missing:state"],
+    }
+
+
+def test_stale_cache_detection_uses_structured_notion_error_body() -> None:
+    stale = cli.NotionApiError(
+        "request failed",
+        status=400,
+        code="validation_error",
+        body={"message": "body failed validation: data_source_id is invalid"},
+    )
+    non_stale = cli.NotionApiError(
+        "body failed validation: data_source_id is mentioned in user content",
+        status=400,
+        code="validation_error",
+        body={"message": "body failed validation: status option is invalid"},
+    )
+
+    assert cli._is_stale_cache_error(stale) is True
+    assert cli._is_stale_cache_error(non_stale) is False
+
+
+def test_capture_apply_rescans_replans_and_retries_on_stale_cache_error(tmp_path, monkeypatch, capsys):
+    class RecoveringAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(
+                pages={
+                    "page-books": {"id": "page-books", "title": "书单"},
+                    "page-created": {
+                        "id": "page-created",
+                        "object": "page",
+                        "properties": {
+                            "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                            "阅读状态": {"type": "status", "status": {"name": "initialized"}},
+                        },
+                    },
+                }
+            )
+            self.children = {
+                "page-books": [
+                    {"type": "child_database", "id": "db-new-books", "child_database": {"title": "Books"}}
+                ]
+            }
+            self.databases = {
+                "db-new-books": {
+                    "id": "db-new-books",
+                    "title": "Books",
+                    "data_sources": [{"id": "ds-new-books", "name": "Books"}],
+                    "properties": {},
+                }
+            }
+            self.data_sources = {
+                "ds-new-books": {
+                    "id": "ds-new-books",
+                    "title": "Books",
+                    "properties": {
+                        "书名": {"id": "title", "type": "title", "title": {}},
+                        "阅读状态": {"id": "state", "type": "status", "status": {"options": []}},
+                    },
+                }
+            }
+            self.create_attempts: list[tuple[str, dict[str, Any]]] = []
+            self.scanned_pages: list[str] = []
+
+        def create_page(self, data_source_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+            self.create_attempts.append((data_source_id, properties))
+            if data_source_id == "ds-old-books":
+                raise cli.NotionApiError(
+                    "body failed validation",
+                    status=400,
+                    code="validation_error",
+                    body={"message": "body failed validation: data_source_id is invalid"},
+                )
+            return {"id": "page-created", "url": "https://notion.example/page-created"}
+
+        def list_block_children(self, page_id: str) -> list[dict[str, Any]]:
+            self.scanned_pages.append(page_id)
+            return self.children.get(page_id, [])
+
+        def retrieve_database(self, database_id: str) -> dict[str, Any]:
+            return self.databases[database_id]
+
+        def retrieve_data_source(self, data_source_id: str) -> dict[str, Any]:
+            return self.data_sources[data_source_id]
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {"aliases": {"书单": {"type": "page", "page_id": "page-books", "target_id": "books"}}},
+    )
+    cache.write_json(
+        config.targets_dir / "books.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单", "target_id": "books"},
+            "parser_profile": {
+                "book": {
+                    "field_mapping": {"title": "书名", "state": "阅读状态"},
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
+            "data_sources": {
+                "old": {
+                    "data_source_id": "ds-old-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {"title": "旧书名", "state": "旧状态"},
+                    "field_sources": {"title": "profile", "state": "profile"},
+                    "schema": {
+                        "旧书名": {"name": "旧书名", "type": "title"},
+                        "旧状态": {"name": "旧状态", "type": "status"},
+                    },
+                }
+            },
+            "state_mapping": {"field": "旧状态", "values": {}},
+            "asset_mapping": {},
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "target": {
+                "page_title": "书单",
+                "page_id": "page-books",
+                "data_source_id": "ds-old-books",
+                "confidence": "high",
+                "source": "alias_cache",
+            },
+            "normalized_record": {"title": "可能性的艺术", "state": "initialized"},
+            "field_mapping": {"title": "旧书名", "state": "旧状态"},
+            "operations": [{"type": "create_or_update_page", "data_source_id": "ds-old-books"}],
+            "capture_input": {
+                "raw_input": "《可能性的艺术》",
+                "target_hint": "书单",
+                "state": "initialized",
+                "content_type_hint": "book",
+                "options": {"allow_asset_download": True},
+            },
+        },
+    )
+    fake_adapter = RecoveringAdapter()
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["applied"] is True
+    assert result["recovered_from_stale_cache"] is True
+    assert fake_adapter.create_attempts[0][0] == "ds-old-books"
+    assert fake_adapter.create_attempts[1][0] == "ds-new-books"
+    assert fake_adapter.scanned_pages == ["page-books"]
+    refreshed_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert refreshed_plan["target"]["data_source_id"] == "ds-new-books"
+    assert refreshed_plan["field_mapping"] == {"title": "书名", "state": "阅读状态"}
+    refreshed_cache = json.loads((config.targets_dir / "books.json").read_text(encoding="utf-8"))
+    assert "ds-new-books" in [source["data_source_id"] for source in refreshed_cache["data_sources"].values()]
+
+
+def test_capture_apply_reports_possible_partial_write_for_ambiguous_create_error(tmp_path, monkeypatch, capsys):
+    class AmbiguousCreateAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(pages={"page-books": {"id": "page-books", "title": "书单"}})
+            self.create_attempts = 0
+            self.scanned_pages: list[str] = []
+
+        def create_page(self, data_source_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+            self.create_attempts += 1
+            raise cli.NotionApiError(
+                "server failed after accepting create request",
+                status=500,
+                code="internal_server_error",
+                body={"message": "body failed validation: data_source_id is invalid"},
+            )
+
+        def list_block_children(self, page_id: str) -> list[dict[str, Any]]:
+            self.scanned_pages.append(page_id)
+            return []
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {"aliases": {"书单": {"type": "page", "page_id": "page-books", "target_id": "books"}}},
+    )
+    seed_target_cache(config)
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "capture_input": {
+                "raw_input": "《可能性的艺术》",
+                "target_hint": "书单",
+                "state": "initialized",
+                "content_type_hint": "book",
+                "options": {"allow_asset_download": True},
+            },
+        },
+    )
+    fake_adapter = AmbiguousCreateAdapter()
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+
+    assert exit_code == 2
+    assert "possible_partial_write" in capsys.readouterr().err
+    assert fake_adapter.create_attempts == 1
+    assert fake_adapter.scanned_pages == []
+
+
+def test_capture_apply_does_not_recover_update_page_not_found_as_create(tmp_path, monkeypatch, capsys):
+    class UpdateNotFoundAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(pages={"page-books": {"id": "page-books", "title": "书单"}})
+            self.scanned_pages: list[str] = []
+
+        def update_page(self, page_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+            raise cli.NotionNotFoundError(f"page not found: {page_id}")
+
+        def create_page(self, data_source_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+            raise AssertionError("unexpected create_page call")
+
+        def list_block_children(self, page_id: str) -> list[dict[str, Any]]:
+            self.scanned_pages.append(page_id)
+            return []
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {"aliases": {"书单": {"type": "page", "page_id": "page-books", "target_id": "books"}}},
+    )
+    cache.write_json(
+        config.targets_dir / "books.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单", "target_id": "books"},
+            "parser_profile": {
+                "book": {
+                    "field_mapping": {"title": "书名", "state": "阅读状态"},
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {"title": "书名", "state": "阅读状态"},
+                    "field_sources": {"title": "profile", "state": "profile"},
+                    "schema": {
+                        "书名": {"name": "书名", "type": "title"},
+                        "阅读状态": {"name": "阅读状态", "type": "status"},
+                    },
+                }
+            },
+            "state_mapping": {"field": "阅读状态", "values": {}},
+            "asset_mapping": {},
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "operations": [{"type": "create_or_update_page", "data_source_id": "ds-books", "page_id": "page-missing"}],
+            "capture_input": {
+                "raw_input": "《可能性的艺术》",
+                "target_hint": "书单",
+                "state": "initialized",
+                "content_type_hint": "book",
+                "options": {"allow_asset_download": True},
+            },
+        },
+    )
+    fake_adapter = UpdateNotFoundAdapter()
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+
+    assert exit_code == 2
+    assert "page not found" in capsys.readouterr().err
+    assert fake_adapter.created == []
+    assert fake_adapter.scanned_pages == []
+
+
+def test_capture_apply_does_not_recreate_when_later_main_operation_fails(tmp_path, monkeypatch, capsys):
+    class LaterOperationFailingAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(
+                pages={
+                    "page-books": {"id": "page-books", "title": "书单"},
+                    "page-created": {
+                        "id": "page-created",
+                        "object": "page",
+                        "properties": {
+                            "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                            "阅读状态": {"type": "status", "status": {"name": "initialized"}},
+                        },
+                    },
+                }
+            )
+            self.children = {
+                "page-books": [
+                    {"type": "child_database", "id": "db-books", "child_database": {"title": "Books"}}
+                ]
+            }
+            self.databases = {
+                "db-books": {
+                    "id": "db-books",
+                    "title": "Books",
+                    "data_sources": [{"id": "ds-books", "name": "Books"}],
+                    "properties": {},
+                }
+            }
+            self.data_sources = {
+                "ds-books": {
+                    "id": "ds-books",
+                    "title": "Books",
+                    "properties": {
+                        "书名": {"id": "title", "type": "title", "title": {}},
+                        "阅读状态": {"id": "state", "type": "status", "status": {"options": []}},
+                    },
+                }
+            }
+            self.scanned_pages: list[str] = []
+
+        def create_page(self, data_source_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+            self.created.append((data_source_id, properties))
+            if len(self.created) == 2:
+                raise cli.NotionApiError("body failed validation: data_source_id is invalid")
+            return {"id": "page-created", "url": "https://notion.example/page-created"}
+
+        def list_block_children(self, page_id: str) -> list[dict[str, Any]]:
+            self.scanned_pages.append(page_id)
+            return self.children.get(page_id, [])
+
+        def retrieve_database(self, database_id: str) -> dict[str, Any]:
+            return self.databases[database_id]
+
+        def retrieve_data_source(self, data_source_id: str) -> dict[str, Any]:
+            return self.data_sources[data_source_id]
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {"aliases": {"书单": {"type": "page", "page_id": "page-books", "target_id": "books"}}},
+    )
+    cache.write_json(
+        config.targets_dir / "books.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单", "target_id": "books"},
+            "parser_profile": {
+                "book": {
+                    "field_mapping": {"title": "书名", "state": "阅读状态"},
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {"title": "书名", "state": "阅读状态"},
+                    "field_sources": {"title": "profile", "state": "profile"},
+                    "schema": {
+                        "书名": {"name": "书名", "type": "title"},
+                        "阅读状态": {"name": "阅读状态", "type": "status"},
+                    },
+                }
+            },
+            "state_mapping": {"field": "阅读状态", "values": {}},
+            "asset_mapping": {},
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "operations": [
+                {"type": "create_or_update_page", "data_source_id": "ds-books"},
+                {"type": "create_or_update_page", "data_source_id": "ds-books"},
+            ],
+            "capture_input": {
+                "raw_input": "《可能性的艺术》",
+                "target_hint": "书单",
+                "state": "initialized",
+                "content_type_hint": "book",
+                "options": {"allow_asset_download": True},
+            },
+        },
+    )
+    fake_adapter = LaterOperationFailingAdapter()
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+
+    assert exit_code == 2
+    assert "部分" in capsys.readouterr().err
+    assert len(fake_adapter.created) == 2
+    assert fake_adapter.scanned_pages == []
+
+
+def test_capture_apply_does_not_recreate_when_stale_error_happens_after_create(tmp_path, monkeypatch, capsys):
+    class PartialAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(
+                pages={
+                    "page-books": {"id": "page-books", "title": "书单"},
+                    "page-created": {
+                        "id": "page-created",
+                        "object": "page",
+                        "properties": {
+                            "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                            "阅读状态": {"type": "status", "status": {"name": "initialized"}},
+                        },
+                    },
+                }
+            )
+            self.children = {
+                "page-books": [
+                    {"type": "child_database", "id": "db-books", "child_database": {"title": "Books"}}
+                ]
+            }
+            self.databases = {
+                "db-books": {
+                    "id": "db-books",
+                    "title": "Books",
+                    "data_sources": [{"id": "ds-books", "name": "Books"}],
+                    "properties": {},
+                }
+            }
+            self.data_sources = {
+                "ds-books": {
+                    "id": "ds-books",
+                    "title": "Books",
+                    "properties": {
+                        "书名": {"id": "title", "type": "title", "title": {}},
+                        "阅读状态": {"id": "state", "type": "status", "status": {"options": []}},
+                    },
+                }
+            }
+            self.scanned_pages: list[str] = []
+
+        def update_page(self, page_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+            raise cli.NotionApiError("body failed validation: property is invalid")
+
+        def list_block_children(self, page_id: str) -> list[dict[str, Any]]:
+            self.scanned_pages.append(page_id)
+            return self.children.get(page_id, [])
+
+        def retrieve_database(self, database_id: str) -> dict[str, Any]:
+            return self.databases[database_id]
+
+        def retrieve_data_source(self, data_source_id: str) -> dict[str, Any]:
+            return self.data_sources[data_source_id]
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {"aliases": {"书单": {"type": "page", "page_id": "page-books", "target_id": "books"}}},
+    )
+    cache.write_json(
+        config.targets_dir / "books.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单", "target_id": "books"},
+            "parser_profile": {
+                "book": {
+                    "field_mapping": {"title": "书名", "state": "阅读状态"},
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {"title": "书名", "state": "阅读状态"},
+                    "field_sources": {"title": "profile", "state": "profile"},
+                    "schema": {
+                        "书名": {"name": "书名", "type": "title"},
+                        "阅读状态": {"name": "阅读状态", "type": "status"},
+                    },
+                }
+            },
+            "state_mapping": {"field": "阅读状态", "values": {}},
+            "asset_mapping": {},
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "normalized_record": {"title": "可能性的艺术", "state": "initialized", "author": "author-page-1"},
+            "completion_operations": [
+                {
+                    "type": "complete_relation_page",
+                    "source_record_key": "author",
+                    "target_data_source_id": "ds-authors",
+                    "field_mapping": {"bio": "简介"},
+                    "record": {"bio": "简介"},
+                    "schema": {"简介": {"name": "简介", "type": "rich_text"}},
+                }
+            ],
+            "capture_input": {
+                "raw_input": "《可能性的艺术》",
+                "target_hint": "书单",
+                "state": "initialized",
+                "content_type_hint": "book",
+                "options": {"allow_asset_download": True},
+            },
+        },
+    )
+    fake_adapter = PartialAdapter()
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+
+    assert exit_code == 2
+    assert "部分" in capsys.readouterr().err
+    assert len(fake_adapter.created) == 1
+    assert fake_adapter.scanned_pages == []
+
 
 def test_capture_apply_includes_verification_summary_for_created_page(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
@@ -349,7 +936,6 @@ def test_capture_apply_includes_verification_summary_for_created_page(tmp_path, 
     assert result["verification"]["warnings"] == []
     assert result["verification"]["pages"][0]["page_id"] == "page-created"
     assert fake_adapter.retrieved_pages == ["page-created"]
-
 
 
 def test_capture_apply_verification_reports_inaccessible_mapped_file_url(tmp_path, monkeypatch, capsys):
@@ -417,7 +1003,6 @@ def test_capture_apply_verification_reports_inaccessible_mapped_file_url(tmp_pat
     assert "inaccessible:cover" in result["verification"]["pages"][0]["warnings"]
     assert "inaccessible:cover" in result["verification"]["warnings"]
     assert fake_adapter.created
-
 
 def test_capture_apply_verifies_relation_completion_pages(tmp_path, monkeypatch, capsys):
     class CompletionAdapter(FakeAdapter):
@@ -606,7 +1191,6 @@ def test_apply_verification_uses_plan_mapping_property_types_not_business_names(
         "property": "Metric",
     }
     assert "missing:page_count" in result["verification"]["warnings"]
-
 
 def test_capture_apply_preserves_result_when_verification_page_retrieval_fails(tmp_path, monkeypatch, capsys):
     class VerificationPermissionAdapter(FakeAdapter):
@@ -1108,7 +1692,6 @@ def test_fake_adapter_rejects_unexpected_single_page_id() -> None:
     with pytest.raises(cli.NotionNotFoundError, match="author-page-1"):
         fake_adapter.retrieve_page("author-page-1")
 
-
 def test_capture_apply_missing_plan_file_returns_readable_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
 
@@ -1118,7 +1701,6 @@ def test_capture_apply_missing_plan_file_returns_readable_error(tmp_path, monkey
     stderr = capsys.readouterr().err
     assert "计划文件不存在" in stderr
     assert "missing.json" in stderr
-
 
 def test_capture_apply_invalid_plan_json_returns_readable_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
@@ -1132,7 +1714,6 @@ def test_capture_apply_invalid_plan_json_returns_readable_error(tmp_path, monkey
     assert "计划文件 JSON 无效" in stderr
     assert "plan.json" in stderr
 
-
 def test_capture_apply_invalid_plan_shape_returns_readable_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
     plan_path = tmp_path / "plan.json"
@@ -1144,7 +1725,6 @@ def test_capture_apply_invalid_plan_shape_returns_readable_error(tmp_path, monke
     stderr = capsys.readouterr().err
     assert "计划内容无效" in stderr
     assert "plan.json" in stderr
-
 
 def test_capture_apply_missing_target_structure_before_adapter(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))

@@ -100,6 +100,20 @@ def test_build_plan_properties_uses_matching_data_source_schema():
     }
 
 
+def test_build_plan_properties_applies_state_mapping():
+    plan = make_plan()
+    plan.normalized_record["state"] = "initialized"
+    target_structure = make_target_structure()
+    target_structure["state_mapping"] = {
+        "field": "阅读状态",
+        "values": {"initialized": "Reading"},
+    }
+
+    assert build_plan_properties(plan, target_structure)["阅读状态"] == {
+        "status": {"name": "Reading"}
+    }
+
+
 def test_build_plan_properties_raises_when_target_schema_missing():
     target_structure = {"data_sources": {}}
 
