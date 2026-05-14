@@ -610,6 +610,245 @@ def test_scan_page_uses_cached_profile_field_mapping_over_ambiguous_schema_names
     }
 
 
+def test_scan_page_uses_target_parser_profile_extra_field_mapping(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.targets_dir / "bookshelf.json",
+        {
+            "target": {"page_id": "page-books", "target_id": "bookshelf"},
+            "parser_profile": {
+                "book": {
+                    "field_mapping": {
+                        "title": "名称",
+                        "state": "状态",
+                        "url": "URL",
+                        "current_page": "当前在读页数",
+                        "language": "语言",
+                        "country": "国家",
+                        "format": "版式",
+                        "edition": "版次",
+                        "sample_file": "试读文件",
+                    }
+                }
+            },
+            "data_sources": {
+                "db-books": {
+                    "data_source_id": "db-books",
+                    "fields": {"cover": "封面", "url": "旧链接"},
+                    "field_sources": {"cover": "profile", "url": "explicit"},
+                    "parser_profile": {
+                        "book": {
+                            "field_mapping": {
+                                "url": "URL",
+                                "publisher": "出版社",
+                            }
+                        }
+                    },
+                }
+            },
+        },
+    )
+    adapter = FakeAdapter(
+        pages={"page-books": {"id": "page-books", "title": "书单"}},
+        children={"page-books": [{"type": "child_database", "id": "db-books", "child_database": {"title": "Books"}}]},
+        databases={
+            "db-books": {
+                "id": "db-books",
+                "title": "Books",
+                "properties": {
+                    "名称": {"id": "title", "type": "title", "title": {}},
+                    "状态": {"id": "state", "type": "status", "status": {"options": []}},
+                    "URL": {"id": "url", "type": "url", "url": {}},
+                    "旧链接": {"id": "old-url", "type": "url", "url": {}},
+                    "当前在读页数": {"id": "current", "type": "number", "number": {}},
+                    "语言": {"id": "language", "type": "rich_text", "rich_text": {}},
+                    "国家": {"id": "country", "type": "rich_text", "rich_text": {}},
+                    "版式": {"id": "format", "type": "select", "select": {"options": []}},
+                    "版次": {"id": "edition", "type": "rich_text", "rich_text": {}},
+                    "试读文件": {"id": "sample", "type": "files", "files": {}},
+                    "封面": {"id": "cover", "type": "files", "files": {}},
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-books", cache, target_id="bookshelf")
+    data_source = result["data_sources"]["db-books"]
+
+    assert data_source["fields"] == {
+        "cover": "封面",
+        "url": "旧链接",
+        "title": "名称",
+        "state": "状态",
+        "current_page": "当前在读页数",
+        "language": "语言",
+        "country": "国家",
+        "format": "版式",
+        "edition": "版次",
+        "sample_file": "试读文件",
+    }
+    assert data_source["field_sources"] == {
+        "cover": "profile",
+        "url": "explicit",
+        "title": "profile",
+        "state": "profile",
+        "current_page": "profile",
+        "language": "profile",
+        "country": "profile",
+        "format": "profile",
+        "edition": "profile",
+        "sample_file": "profile",
+    }
+    assert "publisher" not in data_source["fields"]
+    assert result["asset_mapping"]["sample_file"] == {
+        "field": "试读文件",
+        "type": "files",
+        "strategy": "download_and_attach",
+    }
+
+
+def test_scan_page_preserves_existing_target_parser_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    parser_profile = {
+        "article": {
+            "field_mapping": {
+                "headline": "Headline",
+                "status": "Status",
+            },
+            "labels": {"status": {"draft": "Draft"}},
+        }
+    }
+    cache.write_json(
+        config.targets_dir / "publishing.json",
+        {
+            "target": {"page_id": "page-content", "target_id": "publishing"},
+            "parser_profile": parser_profile,
+            "data_sources": {},
+        },
+    )
+    adapter = FakeAdapter(
+        pages={"page-content": {"id": "page-content", "title": "Publishing"}},
+        children={"page-content": [{"type": "child_database", "id": "db-articles", "child_database": {"title": "Articles"}}]},
+        databases={
+            "db-articles": {
+                "id": "db-articles",
+                "title": "Articles",
+                "properties": {
+                    "Headline": {"id": "title", "type": "title", "title": {}},
+                    "Status": {"id": "status", "type": "select", "select": {"options": []}},
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-content", cache, target_id="publishing")
+
+    assert result["parser_profile"] == parser_profile
+    assert result["data_sources"]["db-articles"]["fields"] == {"headline": "Headline", "status": "Status"}
+    saved = json.loads((config.targets_dir / "publishing.json").read_text(encoding="utf-8"))
+    assert saved["parser_profile"] == parser_profile
+
+
+
+def test_scan_page_preserves_matching_data_source_parser_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    parser_profile = {
+        "episode": {
+            "field_mapping": {
+                "headline": "Title",
+                "host": "Host",
+            },
+            "labels": {"host": {"primary": "Main Host"}},
+        }
+    }
+    cache.write_json(
+        config.targets_dir / "media.json",
+        {
+            "target": {"page_id": "page-media", "target_id": "media"},
+            "data_sources": {
+                "cached-key": {
+                    "data_source_id": "ds-episodes",
+                    "parser_profile": parser_profile,
+                    "fields": {},
+                    "field_sources": {},
+                }
+            },
+        },
+    )
+    adapter = FakeAdapter(
+        pages={"page-media": {"id": "page-media", "title": "Media"}},
+        children={"page-media": [{"type": "child_database", "id": "db-media", "child_database": {"title": "Media"}}]},
+        databases={
+            "db-media": {
+                "id": "db-media",
+                "title": "Media",
+                "data_sources": [{"id": "ds-episodes", "name": "Episodes"}],
+                "properties": {},
+            }
+        },
+        data_sources={
+            "ds-episodes": {
+                "id": "ds-episodes",
+                "title": "Episodes",
+                "properties": {
+                    "Title": {"id": "title", "type": "title", "title": {}},
+                    "Host": {"id": "host", "type": "rich_text", "rich_text": {}},
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-media", cache, target_id="media")
+
+    data_source = result["data_sources"]["ds-episodes"]
+    assert data_source["parser_profile"] == parser_profile
+    assert data_source["fields"] == {"headline": "Title", "host": "Host"}
+    saved = json.loads((config.targets_dir / "media.json").read_text(encoding="utf-8"))
+    assert saved["data_sources"]["ds-episodes"]["parser_profile"] == parser_profile
+
+
+
+def test_scan_page_does_not_infer_extra_business_fields_from_schema_names(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    adapter = FakeAdapter(
+        pages={"page-books": {"id": "page-books", "title": "书单"}},
+        children={"page-books": [{"type": "child_database", "id": "db-books", "child_database": {"title": "Books"}}]},
+        databases={
+            "db-books": {
+                "id": "db-books",
+                "title": "Books",
+                "properties": {
+                    "名称": {"id": "title", "type": "title", "title": {}},
+                    "URL": {"id": "url", "type": "url", "url": {}},
+                    "当前在读页数": {"id": "current", "type": "number", "number": {}},
+                    "语言": {"id": "language", "type": "rich_text", "rich_text": {}},
+                    "国家": {"id": "country", "type": "rich_text", "rich_text": {}},
+                    "版式": {"id": "format", "type": "select", "select": {"options": []}},
+                    "版次": {"id": "edition", "type": "rich_text", "rich_text": {}},
+                    "试读文件": {"id": "sample", "type": "files", "files": {}},
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-books", CacheStore(config), target_id="bookshelf")
+    data_source = result["data_sources"]["db-books"]
+
+    assert result["requires_confirmation"] is True
+    assert result["confirmation_reason"] == "field_mapping_missing"
+    assert data_source["fields"] == {}
+    assert data_source["field_sources"] == {}
+    assert data_source["schema"]["语言"]["type"] == "rich_text"
+    assert data_source["schema"]["试读文件"]["type"] == "files"
+
+
 def test_scan_page_requires_confirmation_when_field_mapping_is_missing(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()

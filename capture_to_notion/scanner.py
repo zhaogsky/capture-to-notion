@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from capture_to_notion.cache import CacheStore
-from capture_to_notion.schema import confirmation_blocking_warnings, normalize_database_schema, plain_title, schema_hash
+from capture_to_notion.schema import confirmation_blocking_warnings, normalize_database_schema, plain_title, resolve_field_mapping, schema_hash
 
 PROFILE_FIELD_SOURCES = {"explicit", "profile"}
 PRIMARY_FIELD_SOURCES = PROFILE_FIELD_SOURCES
@@ -90,8 +90,7 @@ def _build_relations(data_sources: dict[str, Any]) -> list[dict[str, Any]]:
     return relations
 
 
-def _cached_data_source(cache: CacheStore, target_id: str, data_source_id: str) -> dict[str, Any]:
-    structure = cache.target_structure(target_id) or {}
+def _cached_data_source(structure: dict[str, Any], data_source_id: str) -> dict[str, Any]:
     data_sources = structure.get("data_sources", {})
     if not isinstance(data_sources, dict):
         return {}
@@ -101,30 +100,57 @@ def _cached_data_source(cache: CacheStore, target_id: str, data_source_id: str) 
     return {}
 
 
+def _profile_mapping_fields(profile: Any) -> dict[str, str]:
+    if not isinstance(profile, dict):
+        return {}
+    mappings: list[dict[str, Any]] = []
+    direct_mapping = profile.get("field_mapping")
+    if isinstance(direct_mapping, dict):
+        mappings.append(direct_mapping)
+    else:
+        mappings.extend(
+            section.get("field_mapping")
+            for section in profile.values()
+            if isinstance(section, dict) and isinstance(section.get("field_mapping"), dict)
+        )
+
+    resolved: dict[str, str] = {}
+    for mapping in mappings:
+        for record_key, field_name in mapping.items():
+            if isinstance(record_key, str) and isinstance(field_name, str):
+                resolved[record_key] = field_name
+    return resolved
+
+
 def _profile_field_mapping(
-    cache: CacheStore,
-    target_id: str,
+    structure: dict[str, Any],
     data_source_id: str,
     schema: dict[str, Any],
 ) -> dict[str, dict[str, str]]:
-    data_source = _cached_data_source(cache, target_id, data_source_id)
+    data_source = _cached_data_source(structure, data_source_id)
     fields = data_source.get("fields", {})
     field_sources = data_source.get("field_sources", {})
-    if not isinstance(fields, dict) or not isinstance(field_sources, dict):
-        return {"fields": {}, "field_sources": {}}
 
-    resolved_fields: dict[str, str] = {}
-    resolved_sources: dict[str, str] = {}
-    for record_key, field_name in fields.items():
-        source = field_sources.get(record_key)
-        if source not in PROFILE_FIELD_SOURCES:
-            continue
-        if not isinstance(record_key, str) or not isinstance(field_name, str):
-            continue
-        if field_name not in schema:
+    trusted_cached_fields = {
+        record_key: field_name
+        for record_key, field_name in (fields.items() if isinstance(fields, dict) else [])
+        if isinstance(field_sources, dict) and field_sources.get(record_key) in PROFILE_FIELD_SOURCES
+    }
+    resolved_fields = resolve_field_mapping(schema, cached_fields=trusted_cached_fields)
+    resolved_sources = {
+        record_key: field_sources[record_key]
+        for record_key in resolved_fields
+        if isinstance(field_sources, dict) and record_key in field_sources
+    }
+
+    profile_fields: dict[str, str] = {}
+    for profile in (structure.get("parser_profile"), data_source.get("parser_profile")):
+        profile_fields.update(_profile_mapping_fields(profile))
+    for record_key, field_name in resolve_field_mapping(schema, explicit_mapping=profile_fields).items():
+        if record_key in resolved_fields:
             continue
         resolved_fields[record_key] = field_name
-        resolved_sources[record_key] = source
+        resolved_sources[record_key] = "profile"
     return {"fields": resolved_fields, "field_sources": resolved_sources}
 
 
@@ -151,6 +177,11 @@ def _merge_profile_field_mapping(mapping: dict[str, Any], profile_mapping: dict[
         "warnings": warnings,
         "requires_confirmation": bool(warnings),
     }
+
+
+def _preserve_cached_parser_profile(scanned_data_source: dict[str, Any], cached_data_source: dict[str, Any]) -> None:
+    if "parser_profile" in cached_data_source:
+        scanned_data_source["parser_profile"] = cached_data_source["parser_profile"]
 
 
 def _primary_score(data_source: dict[str, Any]) -> int:
@@ -201,6 +232,7 @@ def scan_page_target(
     alias: str | None = None,
 ) -> dict[str, Any]:
     resolved_target_id = target_id or _default_target_id(page_id)
+    cached_structure = cache.target_structure(resolved_target_id) or {}
     page = adapter.retrieve_page(page_id)
     children = adapter.list_block_children(page_id)
     title = _target_title(page)
@@ -223,9 +255,9 @@ def scan_page_target(
             schema = normalize_database_schema(data_source)
             mapping = _merge_profile_field_mapping(
                 {"fields": {}, "field_sources": {}, "warnings": [], "requires_confirmation": False},
-                _profile_field_mapping(cache, resolved_target_id, data_source_id, schema),
+                _profile_field_mapping(cached_structure, data_source_id, schema),
             )
-            data_sources[data_source_id] = {
+            scanned_data_source = {
                 "data_source_id": data_source_id,
                 "title": _data_source_title(data_source, source, database, block),
                 "role": "secondary",
@@ -236,6 +268,8 @@ def scan_page_target(
                 "mapping_warnings": mapping["warnings"],
                 "schema": schema,
             }
+            _preserve_cached_parser_profile(scanned_data_source, _cached_data_source(cached_structure, data_source_id))
+            data_sources[data_source_id] = scanned_data_source
 
     _assign_data_source_roles(data_sources)
     has_mapping_warnings = any(
@@ -270,6 +304,8 @@ def scan_page_target(
             else None
         ),
     }
+    if "parser_profile" in cached_structure:
+        target_structure["parser_profile"] = cached_structure["parser_profile"]
 
     cache.write_json(cache.config.targets_dir / f"{resolved_target_id}.json", target_structure)
     if alias:

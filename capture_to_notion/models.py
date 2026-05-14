@@ -101,6 +101,7 @@ class WritePlan:
     warnings: list[str]
     requires_confirmation: bool
     confirmation_reason: str | None
+    completion_operations: list[dict[str, Any]] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WritePlan":
@@ -120,6 +121,7 @@ class WritePlan:
             warnings=data["warnings"],
             requires_confirmation=data["requires_confirmation"],
             confirmation_reason=data["confirmation_reason"],
+            completion_operations=data.get("completion_operations", []),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -127,7 +129,7 @@ class WritePlan:
         for operation in asset_operations:
             if operation.get("record_key") == "cover":
                 operation.pop("record_key")
-        return {
+        data = {
             "plan_id": self.plan_id,
             "content_type": self.content_type,
             "target": asdict(self.target),
@@ -141,6 +143,9 @@ class WritePlan:
             "requires_confirmation": self.requires_confirmation,
             "confirmation_reason": self.confirmation_reason,
         }
+        if self.completion_operations:
+            data["completion_operations"] = self.completion_operations
+        return data
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, indent=2) + "\n"

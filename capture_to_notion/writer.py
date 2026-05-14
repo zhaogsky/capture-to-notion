@@ -3,9 +3,13 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from capture_to_notion.assets import execute_asset_operations
-from capture_to_notion.models import WritePlan
+from capture_to_notion.models import AssetOperation, WritePlan
 from capture_to_notion.relations import resolve_record_relations
 from capture_to_notion.schema import build_properties
+
+
+COMPLETE_RELATION_PAGE = "complete_relation_page"
+CREATE_OR_UPDATE_PAGE = "create_or_update_page"
 
 
 class NotionWriterError(Exception):
@@ -54,7 +58,7 @@ def build_plan_properties(plan: WritePlan, target_structure: dict[str, Any]) -> 
 def _validate_write_operations(plan: WritePlan) -> None:
     for operation in plan.operations:
         operation_type = operation.get("type")
-        if operation_type != "create_or_update_page":
+        if operation_type != CREATE_OR_UPDATE_PAGE:
             raise NotionWriterError(f"Unsupported write operation type: {operation_type}")
 
         operation_data_source_id = operation.get("data_source_id")
@@ -62,6 +66,120 @@ def _validate_write_operations(plan: WritePlan) -> None:
             raise NotionWriterError(
                 "Operation data_source_id does not match plan target data_source_id"
             )
+
+
+def _resolved_page_ids(value: Any) -> tuple[list[str], bool]:
+    values = value if isinstance(value, list) else [value]
+    page_ids: list[str] = []
+    seen: set[str] = set()
+    invalid = False
+    for item in values:
+        if item in (None, ""):
+            continue
+        if not isinstance(item, str):
+            invalid = True
+            continue
+        if item in seen:
+            continue
+        page_ids.append(item)
+        seen.add(item)
+    return page_ids, invalid
+
+
+def _completion_schema(
+    operation: dict[str, Any],
+    target_structure: dict[str, Any],
+) -> dict[str, dict[str, Any]] | None:
+    schema = operation.get("schema")
+    if isinstance(schema, dict):
+        return schema
+    data_source_id = operation.get("target_data_source_id")
+    if not isinstance(data_source_id, str) or not data_source_id:
+        return None
+    try:
+        return _data_source_schema(target_structure, data_source_id)
+    except NotionWriterError:
+        return None
+
+
+def _completion_asset_operations(operation: dict[str, Any]) -> list[AssetOperation]:
+    asset_operations = operation.get("asset_operations", [])
+    if not isinstance(asset_operations, list):
+        return []
+    return [
+        item if isinstance(item, AssetOperation) else AssetOperation.from_dict(item)
+        for item in asset_operations
+        if isinstance(item, (AssetOperation, dict))
+    ]
+
+
+def _execute_completion_operations(
+    plan: WritePlan,
+    resolved_record: dict[str, Any],
+    target_structure: dict[str, Any],
+    adapter: Any,
+    downloader: Callable[[str], bytes] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    results: list[dict[str, Any]] = []
+    warnings: list[str] = []
+
+    for operation in plan.completion_operations:
+        operation_type = operation.get("type")
+        if operation_type != COMPLETE_RELATION_PAGE:
+            warnings.append(f"completion_unsupported_operation:{operation_type}")
+            continue
+
+        source_record_key = operation.get("source_record_key")
+        if not isinstance(source_record_key, str) or not source_record_key:
+            warnings.append("completion_source_record_key_missing")
+            continue
+
+        page_ids, has_invalid_page_id = _resolved_page_ids(resolved_record.get(source_record_key))
+        if has_invalid_page_id:
+            warnings.append(f"completion_invalid_page_id:{source_record_key}")
+            continue
+        if not page_ids:
+            warnings.append(f"completion_relation_unresolved:{source_record_key}")
+            continue
+
+        schema = _completion_schema(operation, target_structure)
+        if schema is None:
+            warnings.append(f"completion_schema_missing:{source_record_key}")
+            continue
+
+        field_mapping = operation.get("field_mapping", {})
+        record = operation.get("record", {})
+        if not isinstance(field_mapping, dict) or not isinstance(record, dict):
+            warnings.append(f"completion_invalid_payload:{source_record_key}")
+            continue
+
+        record, _asset_results, asset_warnings = execute_asset_operations(
+            record,
+            _completion_asset_operations(operation),
+            adapter,
+            downloader=downloader,
+        )
+        warnings.extend(asset_warnings)
+        properties = build_properties(record, field_mapping, schema)
+        if not properties:
+            warnings.append(f"completion_no_properties:{source_record_key}")
+            continue
+
+        for page_id in page_ids:
+            response = adapter.update_page(page_id, properties)
+            result = {
+                "type": operation_type,
+                "action": "update_page",
+                "source_record_key": source_record_key,
+            }
+            response_page_id = response.get("id") if isinstance(response, dict) else None
+            response_url = response.get("url") if isinstance(response, dict) else None
+            result["page_id"] = response_page_id if response_page_id is not None else page_id
+            if response_url is not None:
+                result["url"] = response_url
+            results.append(result)
+
+    return results, warnings
 
 
 def apply_write_plan(
@@ -119,10 +237,21 @@ def apply_write_plan(
             result["url"] = response_url
         results.append(result)
 
-    return {
+    completion_results, completion_warnings = _execute_completion_operations(
+        plan,
+        working_record,
+        target_structure,
+        adapter,
+        downloader=downloader,
+    )
+
+    response = {
         "plan_id": plan.plan_id,
         "applied": True,
         "results": results,
         "asset_results": asset_results,
-        "warnings": plan.warnings + relation_warnings + asset_warnings,
+        "warnings": plan.warnings + relation_warnings + asset_warnings + completion_warnings,
     }
+    if plan.completion_operations:
+        response["completion_results"] = completion_results
+    return response

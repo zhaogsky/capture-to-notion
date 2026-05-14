@@ -434,6 +434,162 @@ def test_apply_write_plan_rejects_empty_properties():
     assert adapter.calls == []
 
 
+def test_apply_write_plan_completes_resolved_relation_page_from_operation_mapping():
+    plan = make_plan()
+    plan.normalized_record["author"] = "刘瑜"
+    plan.field_mapping["author"] = "作者"
+    plan.completion_operations = [
+        {
+            "type": "complete_relation_page",
+            "source_record_key": "author",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {"author_picture": "Author Picture", "country": "国籍"},
+            "record": {
+                "author_picture": "https://example.com/author.jpg",
+                "country": "美国",
+            },
+            "schema": {
+                "Author Picture": {"type": "files"},
+                "国籍": {"type": "select"},
+            },
+            "asset_operations": [],
+        }
+    ]
+    adapter = FakeApplyAdapter(relation_responses={("ds-authors", "刘瑜"): [{"id": "author-page-1"}]})
+
+    result = apply_write_plan(plan, make_target_structure(), adapter)
+
+    assert adapter.calls[1] == (
+        "update_page",
+        "author-page-1",
+        {
+            "Author Picture": {
+                "files": [
+                    {
+                        "type": "external",
+                        "name": "author.jpg",
+                        "external": {"url": "https://example.com/author.jpg"},
+                    }
+                ]
+            },
+            "国籍": {"select": {"name": "美国"}},
+        },
+    )
+    assert result["completion_results"] == [
+        {
+            "type": "complete_relation_page",
+            "action": "update_page",
+            "source_record_key": "author",
+            "page_id": "author-page-1",
+            "url": "https://notion.so/author-page-1",
+        }
+    ]
+    assert result["warnings"] == []
+
+
+def test_apply_write_plan_skips_completion_when_relation_unresolved():
+    plan = make_plan()
+    plan.normalized_record["author"] = "不存在"
+    plan.field_mapping["author"] = "作者"
+    plan.completion_operations = [
+        {
+            "type": "complete_relation_page",
+            "source_record_key": "author",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {"country": "国籍"},
+            "record": {"country": "美国"},
+            "schema": {"国籍": {"type": "select"}},
+            "asset_operations": [],
+        }
+    ]
+    adapter = FakeApplyAdapter()
+
+    result = apply_write_plan(plan, make_target_structure(), adapter)
+
+    assert len(adapter.calls) == 1
+    assert result["completion_results"] == []
+    assert result["warnings"] == [
+        "relation_unresolved:author:不存在",
+        "completion_relation_unresolved:author",
+    ]
+
+
+def test_apply_write_plan_deduplicates_completion_relation_page_ids():
+    plan = make_plan()
+    plan.normalized_record["author"] = ["刘瑜", "刘瑜"]
+    plan.field_mapping["author"] = "作者"
+    plan.completion_operations = [
+        {
+            "type": "complete_relation_page",
+            "source_record_key": "author",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {"country": "国籍"},
+            "record": {"country": "美国"},
+            "schema": {"国籍": {"type": "select"}},
+            "asset_operations": [],
+        }
+    ]
+    adapter = FakeApplyAdapter(relation_responses={("ds-authors", "刘瑜"): [{"id": "author-page-1"}]})
+
+    result = apply_write_plan(plan, make_target_structure(), adapter)
+
+    assert adapter.calls.count(("update_page", "author-page-1", {"国籍": {"select": {"name": "美国"}}})) == 1
+    assert result["completion_results"] == [
+        {
+            "type": "complete_relation_page",
+            "action": "update_page",
+            "source_record_key": "author",
+            "page_id": "author-page-1",
+            "url": "https://notion.so/author-page-1",
+        }
+    ]
+
+
+def test_apply_write_plan_skips_completion_when_source_value_is_not_page_id():
+    plan = make_plan()
+    plan.normalized_record["author_page_id"] = 123
+    plan.completion_operations = [
+        {
+            "type": "complete_relation_page",
+            "source_record_key": "author_page_id",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {"country": "国籍"},
+            "record": {"country": "美国"},
+            "schema": {"国籍": {"type": "select"}},
+            "asset_operations": [],
+        }
+    ]
+    adapter = FakeApplyAdapter()
+
+    result = apply_write_plan(plan, make_target_structure(), adapter)
+
+    assert len(adapter.calls) == 1
+    assert result["completion_results"] == []
+    assert result["warnings"] == ["completion_invalid_page_id:author_page_id"]
+
+
+def test_apply_write_plan_skips_completion_when_schema_missing():
+    plan = make_plan()
+    plan.normalized_record["author"] = "刘瑜"
+    plan.field_mapping["author"] = "作者"
+    plan.completion_operations = [
+        {
+            "type": "complete_relation_page",
+            "source_record_key": "author",
+            "field_mapping": {"country": "国籍"},
+            "record": {"country": "美国"},
+            "asset_operations": [],
+        }
+    ]
+    adapter = FakeApplyAdapter(relation_responses={("ds-authors", "刘瑜"): [{"id": "author-page-1"}]})
+
+    result = apply_write_plan(plan, make_target_structure(), adapter)
+
+    assert len(adapter.calls) == 1
+    assert result["completion_results"] == []
+    assert result["warnings"] == ["completion_schema_missing:author"]
+
+
 def test_apply_write_plan_does_not_execute_assets_when_schema_missing():
     plan = make_plan()
     plan.asset_operations = [

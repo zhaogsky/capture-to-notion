@@ -227,6 +227,33 @@ def test_write_plan_serializes_summary_near_review_inputs():
     assert WritePlan.from_dict(data).to_dict() == data
 
 
+def test_write_plan_from_dict_defaults_completion_operations_for_old_plans():
+    data = {
+        "plan_id": "20260512-demo",
+        "content_type": "book",
+        "target": {
+            "page_title": "书单",
+            "page_id": "page-books",
+            "data_source_id": "ds-books",
+            "confidence": "high",
+            "source": "alias_cache",
+        },
+        "normalized_record": {"title": "可能性的艺术"},
+        "field_mapping": {"title": "名称"},
+        "operations": [{"type": "create_or_update_page"}],
+        "asset_operations": [],
+        "sources": [],
+        "warnings": [],
+        "requires_confirmation": False,
+        "confirmation_reason": None,
+    }
+
+    plan = WritePlan.from_dict(data)
+
+    assert plan.completion_operations == []
+    assert "completion_operations" not in plan.to_dict()
+
+
 def test_builds_book_capture_plan_from_cached_target(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
