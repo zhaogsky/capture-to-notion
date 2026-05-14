@@ -401,6 +401,172 @@ def _asset_summary(operation: AssetOperation) -> dict[str, str | None]:
     }
 
 
+def _data_source_by_id(structure: dict[str, Any], data_source_id: str) -> dict[str, Any] | None:
+    for data_source in structure.get("data_sources", {}).values():
+        if isinstance(data_source, dict) and data_source.get("data_source_id") == data_source_id:
+            return data_source
+    return None
+
+
+def _relation_completion_profiles(parser_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    completions = parser_profile.get("relation_completions", [])
+    if not isinstance(completions, list):
+        return []
+    return [completion for completion in completions if isinstance(completion, dict)]
+
+
+def _completion_asset_operations(
+    config: AppConfig,
+    content_type: str,
+    record: dict[str, Any],
+    field_mapping: dict[str, str],
+    schema: dict[str, Any],
+    allow_download: bool,
+) -> list[dict[str, Any]]:
+    operations: list[dict[str, Any]] = []
+    for record_key, target_field in field_mapping.items():
+        if schema.get(target_field, {}).get("type") != "files":
+            continue
+        source_url = record.get(record_key)
+        if not _is_url(source_url):
+            continue
+        operations.append(
+            {
+                "type": "file",
+                "source_url": source_url,
+                "local_cache_path": (
+                    _asset_cache_path(config, content_type, record_key, source_url)
+                    if allow_download
+                    else None
+                ),
+                "target_field": target_field,
+                "action": "download_and_attach" if allow_download else "attach_external_url",
+                "record_key": record_key,
+                "status": "planned",
+                "warning": None,
+            }
+        )
+    return operations
+
+
+def _completion_labeled_values(
+    raw_input: str,
+    parser_profile: dict[str, Any],
+    completion: dict[str, Any],
+) -> dict[str, Any]:
+    labels = completion.get("labels", {})
+    if not isinstance(labels, dict):
+        return {}
+
+    known_labels = _known_parser_labels(parser_profile)
+    for value in labels.values():
+        for label in _string_list(value):
+            if label not in known_labels:
+                known_labels.append(label)
+
+    values: dict[str, Any] = {}
+    for record_key, record_labels in labels.items():
+        if not isinstance(record_key, str):
+            continue
+        value = extract_labeled_value(raw_input, _string_list(record_labels), known_labels)
+        if value is None:
+            continue
+        values[record_key] = _coerce_numeric_record_value(record_key, value)
+    return values
+
+
+
+def build_relation_completion_operations(
+    *,
+    config: AppConfig,
+    content_type: str,
+    structure: dict[str, Any],
+    parser_profile: dict[str, Any],
+    raw_input: str,
+    normalized_record: dict[str, Any],
+    allow_download: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    operations: list[dict[str, Any]] = []
+    summaries: list[dict[str, Any]] = []
+    for completion in _relation_completion_profiles(parser_profile):
+        source_record_key = completion.get("source_record_key")
+        target_data_source_id = completion.get("target_data_source_id")
+        field_mapping = completion.get("field_mapping", {})
+        if (
+            not isinstance(source_record_key, str)
+            or not isinstance(target_data_source_id, str)
+            or not isinstance(field_mapping, dict)
+        ):
+            continue
+        target_data_source = _data_source_by_id(structure, target_data_source_id)
+        if not target_data_source:
+            continue
+        schema = target_data_source.get("schema", {})
+        if not isinstance(schema, dict):
+            continue
+
+        completion_values = _completion_labeled_values(raw_input, parser_profile, completion)
+        completion_record = {
+            record_key: normalized_record.get(record_key)
+            for record_key in field_mapping
+            if normalized_record.get(record_key) not in (None, "", [], {})
+        }
+        completion_record.update(
+            {
+                record_key: value
+                for record_key, value in completion_values.items()
+                if record_key in field_mapping and value not in (None, "", [], {})
+            }
+        )
+        operation_field_mapping = {
+            record_key: target_field
+            for record_key, target_field in field_mapping.items()
+            if isinstance(record_key, str)
+            and isinstance(target_field, str)
+            and record_key in completion_record
+            and target_field in schema
+        }
+        writable_fields = {
+            record_key: {
+                "target_field": target_field if isinstance(target_field, str) else None,
+                "value_status": _value_status(completion_record.get(record_key)),
+                "write_status": "planned" if record_key in operation_field_mapping else "omitted_missing_value",
+            }
+            for record_key, target_field in field_mapping.items()
+            if isinstance(record_key, str)
+        }
+        summaries.append(
+            {
+                "source_record_key": source_record_key,
+                "target_data_source": target_data_source.get("title"),
+                "writable_fields": writable_fields,
+            }
+        )
+        if not normalized_record.get(source_record_key) or not operation_field_mapping:
+            continue
+        operations.append(
+            {
+                "type": "complete_relation_page",
+                "source_record_key": source_record_key,
+                "target_data_source_id": target_data_source_id,
+                "field_mapping": operation_field_mapping,
+                "record": {
+                    record_key: completion_record[record_key]
+                    for record_key in operation_field_mapping
+                },
+                "asset_operations": _completion_asset_operations(
+                    config,
+                    content_type,
+                    completion_record,
+                    operation_field_mapping,
+                    schema,
+                    allow_download,
+                ),
+            }
+        )
+    return operations, summaries
+
+
 
 def build_plan_summary(
     *,
@@ -415,6 +581,7 @@ def build_plan_summary(
     confirmation_reason: str | None,
     warnings: list[str],
     summary_key_fields: list[str] | None = None,
+    relation_completion_summaries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     key_fields: dict[str, dict[str, str | None]] = {}
     for key in summary_key_fields or []:
@@ -433,7 +600,7 @@ def build_plan_summary(
             "write_status": write_status,
         }
 
-    return {
+    summary = {
         "target_page": target_page,
         "target_data_source": target_data_source,
         "title": normalized_record.get("title"),
@@ -447,6 +614,9 @@ def build_plan_summary(
         "confirmation_reason": confirmation_reason,
         "warnings": list(warnings),
     }
+    if relation_completion_summaries:
+        summary["relation_completions"] = relation_completion_summaries
+    return summary
 
 
 
@@ -743,6 +913,15 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         asset_mapping,
         capture.options.allow_asset_download,
     )
+    completion_operations, completion_summaries = build_relation_completion_operations(
+        config=cache.config,
+        content_type=content_type,
+        structure=structure,
+        parser_profile=parser_profile,
+        raw_input=capture.raw_input,
+        normalized_record=normalized_record,
+        allow_download=capture.options.allow_asset_download,
+    )
     operations = (
         []
         if requires_confirmation
@@ -778,6 +957,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
             confirmation_reason=confirmation_reason,
             warnings=warnings,
             summary_key_fields=summary_key_fields,
+            relation_completion_summaries=completion_summaries,
         ),
         normalized_record=normalized_record,
         field_mapping=field_mapping,
@@ -787,6 +967,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         warnings=warnings,
         requires_confirmation=requires_confirmation,
         confirmation_reason=confirmation_reason,
+        completion_operations=[] if requires_confirmation else completion_operations,
     )
     if not requires_confirmation:
         cache.save_plan(plan.plan_id, plan.to_dict())

@@ -450,6 +450,118 @@ def test_book_capture_plan_supports_profile_labeled_extra_fields(tmp_path, monke
 
 
 
+def test_book_capture_plan_builds_profile_relation_completion_operation(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["parser_profile"]["book"]["required_schema_fields"] = ["author", "state"]
+    target["parser_profile"]["book"]["required_value_fields"] = ["author"]
+    target["parser_profile"]["book"]["relation_completions"] = [
+        {
+            "source_record_key": "author",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {
+                "author_picture": "Author Picture",
+                "author_country": "国籍",
+                "author_bio": "简介",
+            },
+            "labels": {
+                "author_picture": ["作者图片"],
+                "author_country": ["作者国家"],
+                "author_bio": ["作者简介"],
+            },
+        }
+    ]
+    target["data_sources"]["books"]["schema"]["作者"] = {
+        "type": "relation",
+        "target_database_id": "db-authors",
+    }
+    target["data_sources"]["authors"] = {
+        "data_source_id": "ds-authors",
+        "title": "Authors",
+        "role": "secondary",
+        "content_types": [],
+        "schema": {
+            "Author Picture": {"type": "files"},
+            "国籍": {"type": "select"},
+            "简介": {"type": "rich_text"},
+        },
+    }
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    capture = CaptureInput(
+        raw_input=(
+            "把《失落的大陆》初始化到书单 作者：比尔·布莱森 "
+            "作者图片：https://example.com/bryson.jpg 作者国家：美国"
+        ),
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.requires_confirmation is False
+    assert plan.completion_operations == [
+        {
+            "type": "complete_relation_page",
+            "source_record_key": "author",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {
+                "author_picture": "Author Picture",
+                "author_country": "国籍",
+            },
+            "record": {
+                "author_picture": "https://example.com/bryson.jpg",
+                "author_country": "美国",
+            },
+            "asset_operations": [
+                {
+                    "type": "file",
+                    "source_url": "https://example.com/bryson.jpg",
+                    "local_cache_path": planner_module._asset_cache_path(
+                        config,
+                        "book",
+                        "author_picture",
+                        "https://example.com/bryson.jpg",
+                    ),
+                    "target_field": "Author Picture",
+                    "action": "download_and_attach",
+                    "record_key": "author_picture",
+                    "status": "planned",
+                    "warning": None,
+                }
+            ],
+        }
+    ]
+    assert plan.summary["relation_completions"] == [
+        {
+            "source_record_key": "author",
+            "target_data_source": "Authors",
+            "writable_fields": {
+                "author_picture": {
+                    "target_field": "Author Picture",
+                    "value_status": "present",
+                    "write_status": "planned",
+                },
+                "author_country": {
+                    "target_field": "国籍",
+                    "value_status": "present",
+                    "write_status": "planned",
+                },
+                "author_bio": {
+                    "target_field": "简介",
+                    "value_status": "missing_value",
+                    "write_status": "omitted_missing_value",
+                },
+            },
+        }
+    ]
+
+
 def test_build_plan_summary_reports_writable_fields_for_missing_mapped_values():
     summary = build_plan_summary(
         content_type="book",
