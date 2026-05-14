@@ -419,6 +419,121 @@ def test_capture_apply_verification_reports_inaccessible_mapped_file_url(tmp_pat
     assert fake_adapter.created
 
 
+def test_capture_apply_verifies_relation_completion_pages(tmp_path, monkeypatch, capsys):
+    class CompletionAdapter(FakeAdapter):
+        def __init__(self, pages: dict[str, dict[str, Any]]) -> None:
+            super().__init__(pages=pages)
+            self.updated: list[tuple[str, dict[str, Any]]] = []
+
+        def update_page(self, page_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+            self.updated.append((page_id, properties))
+            return {"id": page_id, "url": f"https://notion.example/{page_id}"}
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    CacheStore(config).write_json(
+        config.targets_dir / "books.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单"},
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {
+                        "书名": {"name": "书名", "type": "title"},
+                        "阅读状态": {"name": "阅读状态", "type": "status"},
+                        "作者": {
+                            "name": "作者",
+                            "type": "relation",
+                            "target_database_id": "db-authors",
+                        },
+                    },
+                },
+                "authors": {
+                    "data_source_id": "ds-authors",
+                    "title": "Authors",
+                    "schema": {
+                        "Author Picture": {"name": "Author Picture", "type": "files"},
+                        "国籍": {"name": "国籍", "type": "select"},
+                    },
+                },
+            },
+        },
+    )
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "normalized_record": {
+                "title": "失落的大陆",
+                "state": "initialized",
+                "author": "page-author-1",
+            },
+            "field_mapping": {"title": "书名", "state": "阅读状态", "author": "作者"},
+            "completion_operations": [
+                {
+                    "type": "complete_relation_page",
+                    "source_record_key": "author",
+                    "target_data_source_id": "ds-authors",
+                    "field_mapping": {
+                        "author_picture": "Author Picture",
+                        "author_country": "国籍",
+                    },
+                    "record": {
+                        "author_picture": "https://example.com/bryson.jpg",
+                        "author_country": "美国",
+                    },
+                    "asset_operations": [],
+                }
+            ],
+        },
+    )
+    fake_adapter = CompletionAdapter(
+        pages={
+            "page-created": {
+                "id": "page-created",
+                "object": "page",
+                "properties": {
+                    "书名": {"type": "title", "title": [{"plain_text": "失落的大陆"}]},
+                    "阅读状态": {"type": "status", "status": {"name": "initialized"}},
+                    "作者": {"type": "relation", "relation": [{"id": "page-author-1"}]},
+                },
+            },
+            "page-author-1": {
+                "id": "page-author-1",
+                "object": "page",
+                "properties": {
+                    "Author Picture": {"type": "files", "files": []},
+                    "国籍": {"type": "select", "select": {"name": "美国"}},
+                },
+            },
+        }
+    )
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+    allow_verify_url_checks(monkeypatch)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["verification"]["verified"] is False
+    assert [page["page_id"] for page in result["verification"]["pages"]] == [
+        "page-created",
+        "page-author-1",
+    ]
+    relation_page = result["verification"]["pages"][1]
+    assert relation_page["checks"] == {
+        "page": {"status": "present"},
+        "author_picture": {"status": "missing", "property": "Author Picture"},
+        "author_country": {"status": "present", "property": "国籍"},
+    }
+    assert relation_page["warnings"] == ["missing:author_picture"]
+    assert result["verification"]["warnings"] == ["missing:author_picture"]
+    assert fake_adapter.retrieved_pages == ["page-created", "page-author-1"]
+
+
+
 def test_apply_verification_uses_plan_mapping_property_types_not_business_names(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
     config = ensure_config()

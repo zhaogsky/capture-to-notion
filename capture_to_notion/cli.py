@@ -209,18 +209,28 @@ def _is_empty_verification_value(value: Any) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
 
-def _schema_for_plan(plan: WritePlan, target_structure: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    data_source_id = plan.target.data_source_id
+def _schema_for_data_source(
+    data_source_id: str | None,
+    target_structure: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
     for data_source in target_structure.get("data_sources", {}).values():
         if data_source.get("data_source_id") == data_source_id and isinstance(data_source.get("schema"), dict):
             return data_source["schema"]
     return {}
 
 
-def _verification_checks_for_plan(plan: WritePlan, schema: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+def _schema_for_plan(plan: WritePlan, target_structure: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return _schema_for_data_source(plan.target.data_source_id, target_structure)
+
+
+def _verification_checks_for_record(
+    record: dict[str, Any],
+    field_mapping: dict[str, str],
+    schema: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
     checks: dict[str, dict[str, Any]] = {}
-    for record_key, property_name in plan.field_mapping.items():
-        if _is_empty_verification_value(plan.normalized_record.get(record_key)):
+    for record_key, property_name in field_mapping.items():
+        if _is_empty_verification_value(record.get(record_key)):
             continue
         property_schema = schema.get(property_name)
         if not isinstance(property_schema, dict):
@@ -234,13 +244,71 @@ def _verification_checks_for_plan(plan: WritePlan, schema: dict[str, dict[str, A
     return checks
 
 
+def _verification_checks_for_plan(plan: WritePlan, schema: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    return _verification_checks_for_record(plan.normalized_record, plan.field_mapping, schema)
+
+
+def _append_verification_page(
+    pages: list[dict[str, Any]],
+    *,
+    page_id: str,
+    adapter: Any,
+    field_mapping: dict[str, str],
+    schema: dict[str, dict[str, Any]],
+    checks: dict[str, dict[str, Any]],
+) -> None:
+    try:
+        pages.append(
+            verify_capture_page(
+                page_id,
+                adapter,
+                url_checker=url_is_accessible,
+                field_mapping=field_mapping,
+                schema=schema,
+                checks=checks,
+                include_page_cover=False,
+            )
+        )
+    except (NotionApiError, NotionAuthError, NotionPermissionError, NotionRateLimitError):
+        pages.append(_inaccessible_verification_page(page_id))
+
+
+def _completion_operation_for_result(
+    plan: WritePlan,
+    operation_result: dict[str, Any],
+) -> dict[str, Any] | None:
+    operation_type = operation_result.get("type")
+    source_record_key = operation_result.get("source_record_key")
+    for operation in plan.completion_operations:
+        if (
+            operation.get("type") == operation_type
+            and operation.get("source_record_key") == source_record_key
+        ):
+            return operation
+    return None
+
+
+def _completion_verification_schema(
+    operation: dict[str, Any],
+    target_structure: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    schema = operation.get("schema")
+    if isinstance(schema, dict):
+        return schema
+    target_data_source_id = operation.get("target_data_source_id")
+    return _schema_for_data_source(
+        target_data_source_id if isinstance(target_data_source_id, str) else None,
+        target_structure,
+    )
+
+
 def _apply_verification_summary(
     result: dict[str, Any],
     adapter: Any,
     plan: WritePlan,
     target_structure: dict[str, Any],
 ) -> dict[str, Any] | None:
-    pages = []
+    pages: list[dict[str, Any]] = []
     schema = _schema_for_plan(plan, target_structure)
     checks = _verification_checks_for_plan(plan, schema)
     for operation_result in result.get("results", []):
@@ -248,20 +316,36 @@ def _apply_verification_summary(
             continue
         page_id = operation_result.get("page_id")
         if isinstance(page_id, str) and page_id:
-            try:
-                pages.append(
-                    verify_capture_page(
-                        page_id,
-                        adapter,
-                        url_checker=url_is_accessible,
-                        field_mapping=plan.field_mapping,
-                        schema=schema,
-                        checks=checks,
-                        include_page_cover=False,
-                    )
-                )
-            except (NotionApiError, NotionAuthError, NotionPermissionError, NotionRateLimitError):
-                pages.append(_inaccessible_verification_page(page_id))
+            _append_verification_page(
+                pages,
+                page_id=page_id,
+                adapter=adapter,
+                field_mapping=plan.field_mapping,
+                schema=schema,
+                checks=checks,
+            )
+
+    for operation_result in result.get("completion_results", []):
+        if not isinstance(operation_result, dict):
+            continue
+        page_id = operation_result.get("page_id")
+        operation = _completion_operation_for_result(plan, operation_result)
+        if not isinstance(page_id, str) or not page_id or operation is None:
+            continue
+        field_mapping = operation.get("field_mapping", {})
+        record = operation.get("record", {})
+        if not isinstance(field_mapping, dict) or not isinstance(record, dict):
+            continue
+        completion_schema = _completion_verification_schema(operation, target_structure)
+        _append_verification_page(
+            pages,
+            page_id=page_id,
+            adapter=adapter,
+            field_mapping=field_mapping,
+            schema=completion_schema,
+            checks=_verification_checks_for_record(record, field_mapping, completion_schema),
+        )
+
     if not pages:
         return None
     warnings = [warning for page in pages for warning in page.get("warnings", []) if isinstance(warning, str)]
