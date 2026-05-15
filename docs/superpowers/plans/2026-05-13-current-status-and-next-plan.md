@@ -28,7 +28,7 @@
 | 2 | 代码兼容性 | P0 | 已完成 | 回归维护 | `capture-to-notion` CLI、`capture_to_notion` 包导入、配置路径、环境变量、README 命令一致性已有测试覆盖。 |
 | 3 | 版本与迁移治理 | P0 | 部分完成 | 是 | rename、旧名残留扫描、CHANGELOG、legacy config warning 已完成；`capture-to-notion config migrate` 仍未实现。 |
 | 4 | 可观测性与调试能力 | P0/P1 | 大部分完成 | 是 | `doctor`、`version`、preflight 结构事实、apply verification summary 已完成；doctor 已能提示 token、旧配置、stale/partial target cache、具体 target 名称和可执行 rescan 命令；`logs inspect` 暂不实现，后续只在真实日志排障需求出现时再评估。 |
-| 5 | 评估与回归测试 | P1 | 大部分完成 | 是 | CLI、planner、golden、writer、capture apply、schema、scanner、verifier、preflight、structure analyzer 等测试网已建立；2026-05-15 已补齐 schema 过期预检关键场景；仍需继续补齐 PLAN 中其余 golden 场景。 |
+| 5 | 评估与回归测试 | P1 | 大部分完成 | 是 | CLI、planner、golden、writer、capture apply、schema、scanner、verifier、preflight、structure analyzer 等测试网已建立；2026-05-15 已补齐 schema 过期、单缺 ISBN、封面下载失败 apply 输出等关键回归，并确认目标未扫描、同名目标、URL 不可访问已有覆盖；后续只补真实样例长尾。 |
 | 6 | 快速完成用户要求 | P1 | 大部分完成 | 是 | `target list`、`target inspect`、cache 复用、preflight、plan 摘要、existing_page_id update plan 已完成；仍可继续减少重复扫描、优化确认轮次和摘要体验。 |
 | 7 | 文字正确性与输出质量 | P1 | 大部分完成 | 是 | 状态映射、content type、关键字段、summary-like field 阻塞、parser profile 驱动解析、states/config/profile-driven planning 已完成；2026-05-15 已补单缺 ISBN golden 覆盖；更多中英文标题、作者解析 golden case 仍可补。 |
 | 8 | 页面与视觉正确性 | P1/P2 | 部分完成 | 是 | `capture verify --page-id`、apply 后 verification summary、files/page cover URL 检查方向已完成；2026-05-15 已验证已有页面 update 后关键字段存在，并补充封面下载失败 apply warning 回归。真实 Notion 页面 cover、书籍封面、files 字段可显示性仍需端到端验证。 |
@@ -151,12 +151,12 @@
 - 单缺 ISBN golden：schema 与其他关键值齐全但输入缺少 ISBN 时，只提示 `book_key_values_missing:isbn`，不混入作者或页数缺失。
 - 封面下载失败 apply golden：下载失败时主写入继续，`asset_results` 回退 external URL，顶层 `warnings` 暴露 `asset_download_failed`。
 
-必须优先覆盖：
+本轮复核确认已有覆盖，继续回归维护：
 
-- 目标未扫描。
-- 同名目标。
-- 图片或文件 URL 不可访问。
-- 高频多作者、中英文标题、作者解析。
+- 目标未扫描 / target cache 缺失：preflight、planner、CLI 已覆盖。
+- 同名目标：`target search` duplicate title disambiguation 已覆盖。
+- 图片或文件 URL 不可访问：verify/apply URL accessibility warnings 已覆盖。
+- 高频多作者、中英文标题、作者、ISBN 解析：planner 与 golden 已覆盖主路径，单缺 ISBN 已补充。
 
 可后置覆盖：
 
@@ -343,7 +343,7 @@ Task A 和 Task B 已完成，下一阶段剩余 5 个任务。按必须程度�
 
 5. Task G：复用规范沉淀。
 
-如果目标是“自己日常可靠使用”，最低完成 Task C 关键场景、Task D 素材/视觉验证即可；如果目标是“可维护、可迁移、别人也能用”，再做 Task E 和 Task F。Task G 等出现第二个类似 Skill 或复用需求更明确时再做。
+如果目标是“自己日常可靠使用”，最低完成 Task C 关键场景回归维护、Task D 素材/视觉验证即可；如果目标是“可维护、可迁移、别人也能用”，再做 Task E 和 Task F。Task G 等出现第二个类似 Skill 或复用需求更明确时再做。
 
 ## 当前执行原则
 
