@@ -52,6 +52,16 @@ def _target_from_alias(hint: str, alias: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in target.items() if value is not None}
 
 
+def _has_stale_schema(structure: dict[str, Any]) -> bool:
+    data_sources = structure.get("data_sources")
+    if not isinstance(data_sources, dict):
+        return False
+    return any(
+        isinstance(data_source, dict) and data_source.get("schema_status") == "stale"
+        for data_source in data_sources.values()
+    )
+
+
 def build_capture_preflight(capture: CaptureInput, cache: CacheStore) -> dict[str, Any]:
     preflight = _base_preflight(capture)
     _append_input_shape_actions(preflight, capture)
@@ -83,10 +93,25 @@ def build_capture_preflight(capture: CaptureInput, cache: CacheStore) -> dict[st
         return preflight
 
     analysis = analyze_target_structure(structure)
-    preflight["target"]["status"] = "cache_hit"
     preflight["structure"] = analysis
 
-    if analysis.get("risk_flags"):
+    has_stale_schema = _has_stale_schema(structure)
+    has_risk_flags = bool(analysis.get("risk_flags"))
+
+    if has_stale_schema:
+        preflight["target"]["status"] = "schema_stale"
+        preflight["safe_actions"].append(_action("scan_target", "schema_stale"))
+        preflight["blocked_actions"].append(_action("plan_directly", "schema_stale"))
+        preflight["confirmation_needed"].append("schema_stale")
+        if has_risk_flags:
+            preflight["safe_actions"].append(_action("confirm_risky_target", "risky_target"))
+            preflight["blocked_actions"].append(_action("plan_directly", "risky_target_requires_confirmation"))
+            preflight["confirmation_needed"].append("risky_target")
+        return preflight
+
+    preflight["target"]["status"] = "cache_hit"
+
+    if has_risk_flags:
         preflight["target"]["status"] = "risky_target"
         preflight["safe_actions"].append(_action("confirm_risky_target", "risky_target"))
         preflight["blocked_actions"].append(_action("plan_directly", "risky_target_requires_confirmation"))

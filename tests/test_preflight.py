@@ -176,6 +176,80 @@ def test_preflight_with_cache_hit_uses_cached_structure(tmp_path):
 
 
 
+def test_preflight_with_stale_schema_requests_rescan(tmp_path):
+    (tmp_path / "targets").mkdir()
+    _write_json(
+        tmp_path / "aliases.json",
+        {
+            "aliases": {
+                "书单": {"page_id": "page-books", "target_id": "bookshelf"},
+            }
+        },
+    )
+    _write_json(
+        tmp_path / "targets" / "bookshelf.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单"},
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "schema_status": "stale",
+                    "schema": {"Name": {"type": "title"}},
+                }
+            },
+        },
+    )
+    capture = CaptureInput.from_dict({"raw_input": "记录一下《可能性的艺术》", "target_hint": "书单"})
+
+    preflight = build_capture_preflight(capture, cache=_cache(tmp_path))
+
+    assert preflight["target"]["status"] == "schema_stale"
+    assert {"action": "scan_target", "reason": "schema_stale"} in preflight["safe_actions"]
+    assert {"action": "plan_directly", "reason": "schema_stale"} in preflight["blocked_actions"]
+    assert preflight["confirmation_needed"] == ["schema_stale"]
+
+
+
+def test_preflight_with_stale_schema_preserves_risky_target_confirmation(tmp_path):
+    (tmp_path / "targets").mkdir()
+    _write_json(
+        tmp_path / "aliases.json",
+        {
+            "aliases": {
+                "入口": {"page_id": "page-index", "target_id": "index"},
+            }
+        },
+    )
+    _write_json(
+        tmp_path / "targets" / "index.json",
+        {
+            "target": {"page_id": "page-index", "title": "入口"},
+            "data_sources": {
+                "nav": {
+                    "data_source_id": "ds-nav",
+                    "title": "Navigation Index",
+                    "schema_status": "stale",
+                    "schema": {"Name": {"type": "title"}},
+                }
+            },
+        },
+    )
+    capture = CaptureInput.from_dict({"raw_input": "记录一下", "target_hint": "入口"})
+
+    preflight = build_capture_preflight(capture, cache=_cache(tmp_path))
+
+    assert preflight["target"]["status"] == "schema_stale"
+    assert "navigation_like_name" in preflight["structure"]["risk_flags"]
+    assert {"action": "scan_target", "reason": "schema_stale"} in preflight["safe_actions"]
+    assert {"action": "confirm_risky_target", "reason": "risky_target"} in preflight["safe_actions"]
+    assert {"action": "plan_directly", "reason": "schema_stale"} in preflight["blocked_actions"]
+    assert {"action": "plan_directly", "reason": "risky_target_requires_confirmation"} in preflight["blocked_actions"]
+    assert preflight["confirmation_needed"] == ["schema_stale", "risky_target"]
+
+
+
 def test_preflight_with_risky_target_blocks_direct_plan(tmp_path):
     (tmp_path / "targets").mkdir()
     _write_json(

@@ -28,7 +28,7 @@
 | 2 | 代码兼容性 | P0 | 已完成 | 回归维护 | `capture-to-notion` CLI、`capture_to_notion` 包导入、配置路径、环境变量、README 命令一致性已有测试覆盖。 |
 | 3 | 版本与迁移治理 | P0 | 部分完成 | 是 | rename、旧名残留扫描、CHANGELOG、legacy config warning 已完成；`capture-to-notion config migrate` 仍未实现。 |
 | 4 | 可观测性与调试能力 | P0/P1 | 大部分完成 | 是 | `doctor`、`version`、preflight 结构事实、apply verification summary 已完成；doctor 已能提示 token、旧配置、stale/partial target cache、具体 target 名称和可执行 rescan 命令；`logs inspect` 暂不实现，后续只在真实日志排障需求出现时再评估。 |
-| 5 | 评估与回归测试 | P1 | 大部分完成 | 是 | CLI、planner、golden、writer、capture apply、schema、scanner、verifier、preflight、structure analyzer 等测试网已建立；仍需逐项补齐 PLAN 中列出的 golden 场景。 |
+| 5 | 评估与回归测试 | P1 | 大部分完成 | 是 | CLI、planner、golden、writer、capture apply、schema、scanner、verifier、preflight、structure analyzer 等测试网已建立；2026-05-15 已补齐 schema 过期预检关键场景；仍需继续补齐 PLAN 中其余 golden 场景。 |
 | 6 | 快速完成用户要求 | P1 | 大部分完成 | 是 | `target list`、`target inspect`、cache 复用、preflight、plan 摘要、existing_page_id update plan 已完成；仍可继续减少重复扫描、优化确认轮次和摘要体验。 |
 | 7 | 文字正确性与输出质量 | P1 | 大部分完成 | 是 | 状态映射、content type、关键字段、summary-like field 阻塞、parser profile 驱动解析、states/config/profile-driven planning 已完成；更多中英文标题、作者、ISBN 解析 golden case 仍可补。 |
 | 8 | 页面与视觉正确性 | P1/P2 | 部分完成 | 是 | `capture verify --page-id`、apply 后 verification summary、files/page cover URL 检查方向已完成；2026-05-15 已验证已有页面 update 后关键字段存在。真实 Notion 页面 cover、书籍封面、files 字段可显示性仍需端到端验证。 |
@@ -145,10 +145,13 @@
 
 范围：
 
+已补充：
+
+- schema 过期预检：缓存结构中任一 data source 标记 `schema_status: stale` 时阻塞直接 plan、建议 rescan，并在同时命中 risky target 时保留 risky 确认要求。
+
 必须优先覆盖：
 
 - 目标未扫描。
-- schema 过期。
 - 同名目标。
 - 图片或文件 URL 不可访问。
 - 封面下载失败。
@@ -170,6 +173,7 @@
 
 - 继续使用本地 cache fixture，不真实写入 Notion。
 - 每个新增行为先写失败测试。
+- schema 过期预检已用本地 cache fixture 回归覆盖，后续继续保持该方式。
 - 保持业务字段来源来自 parser profile、target cache、write plan 或显式 mapping。
 
 ### Task D：真实 Notion 端到端验证（部分完成，剩素材/视觉验证）
