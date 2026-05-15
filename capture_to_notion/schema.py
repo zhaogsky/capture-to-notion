@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -209,6 +210,10 @@ def _build_url_property(value: Any) -> dict[str, Any]:
 
 
 def _build_number_property(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        stripped = value.strip()
+        if re.fullmatch(r"[-+]?\d+", stripped):
+            value = int(stripped)
     return {"number": value}
 
 

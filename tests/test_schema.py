@@ -165,6 +165,16 @@ def test_property_value_builders_cover_supported_write_types_without_business_ke
     assert properties["Tags"] == {"multi_select": [{"name": "政治"}, {"name": "历史"}]}
 
 
+def test_build_properties_coerces_integer_strings_for_number_properties():
+    properties = build_properties(
+        {"page_count": "1"},
+        {"page_count": "页数"},
+        {"页数": {"type": "number"}},
+    )
+
+    assert properties["页数"] == {"number": 1}
+
+
 def test_build_properties_ignores_official_readonly_property_types_even_when_mapped():
     schema = {f"Read Only {property_type}": {"type": property_type} for property_type in READONLY_PROPERTY_TYPES}
     field_mapping = {property_type: f"Read Only {property_type}" for property_type in READONLY_PROPERTY_TYPES}

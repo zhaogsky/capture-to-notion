@@ -26,7 +26,7 @@ def make_plan(data_source_id="ds-books"):
         operations=[{"type": "create_or_update_page", "data_source_id": data_source_id}],
         asset_operations=[
             AssetOperation(
-                type="cover",
+                type="cover_image",
                 source_url="https://example.com/cover.jpg",
                 local_cache_path=None,
                 target_field="封面",
@@ -64,13 +64,18 @@ class FakeApplyAdapter:
         self.upload_result = upload_result
         self.upload_error = upload_error
         self.upload_calls = []
+        self.cover_calls = []
 
-    def create_page(self, data_source_id, properties):
+    def create_page(self, data_source_id, properties, cover=None, cover_source_url=None):
         self.calls.append(("create_page", data_source_id, properties))
+        if cover is not None:
+            self.cover_calls.append(("create_page", cover, cover_source_url))
         return {"id": "new-page", "url": "https://notion.so/new-page"}
 
-    def update_page(self, page_id, properties):
+    def update_page(self, page_id, properties, cover=None, cover_source_url=None):
         self.calls.append(("update_page", page_id, properties))
+        if cover is not None:
+            self.cover_calls.append(("update_page", cover, cover_source_url))
         return {"id": page_id, "url": f"https://notion.so/{page_id}"}
 
     def query_database_title_exact(self, database_id, title):
@@ -186,6 +191,68 @@ def test_apply_write_plan_creates_page_with_built_properties():
     }
 
 
+def test_apply_write_plan_sets_page_cover_from_cover_asset_source_url():
+    plan = make_plan()
+    adapter = FakeApplyAdapter()
+
+    apply_write_plan(plan, make_target_structure(), adapter)
+
+    assert adapter.cover_calls == [
+        (
+            "create_page",
+            {"type": "external", "external": {"url": "https://example.com/cover.jpg"}},
+            None,
+        )
+    ]
+
+
+def test_apply_write_plan_sets_page_cover_from_cover_image_operation_type():
+    plan = make_plan()
+    plan.asset_operations[0].type = "cover_image"
+    plan.asset_operations[0].record_key = "thumbnail"
+    adapter = FakeApplyAdapter()
+
+    apply_write_plan(plan, make_target_structure(), adapter)
+
+    assert adapter.cover_calls == [
+        (
+            "create_page",
+            {"type": "external", "external": {"url": "https://example.com/cover.jpg"}},
+            None,
+        )
+    ]
+
+
+def test_apply_write_plan_does_not_set_page_cover_from_non_http_url():
+    plan = make_plan()
+    plan.asset_operations[0].source_url = "file:///tmp/cover.jpg"
+    adapter = FakeApplyAdapter()
+
+    apply_write_plan(plan, make_target_structure(), adapter)
+
+    assert adapter.cover_calls == []
+
+
+def test_apply_write_plan_does_not_set_page_cover_from_http_url_without_host():
+    plan = make_plan()
+    plan.asset_operations[0].source_url = "https://"
+    adapter = FakeApplyAdapter()
+
+    apply_write_plan(plan, make_target_structure(), adapter)
+
+    assert adapter.cover_calls == []
+
+
+def test_apply_write_plan_does_not_set_page_cover_from_http_url_without_hostname():
+    plan = make_plan()
+    plan.asset_operations[0].source_url = "https://:443/path"
+    adapter = FakeApplyAdapter()
+
+    apply_write_plan(plan, make_target_structure(), adapter)
+
+    assert adapter.cover_calls == []
+
+
 def test_apply_write_plan_resolves_author_relation_before_building_properties():
     plan = make_plan()
     plan.normalized_record["author"] = "刘瑜"
@@ -258,6 +325,13 @@ def test_apply_write_plan_uses_uploaded_cover_file_object(tmp_path):
 
     properties = adapter.calls[0][2]
     assert properties["封面"] == {"files": [uploaded]}
+    assert adapter.cover_calls == [
+        (
+            "create_page",
+            {"type": "external", "external": {"url": "https://example.com/cover.jpg"}},
+            None,
+        )
+    ]
     assert result["asset_results"][0]["status"] == "uploaded"
     assert result["warnings"] == []
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from capture_to_notion.assets import execute_asset_operations
 from capture_to_notion.models import AssetOperation, WritePlan
@@ -79,6 +80,24 @@ def _has_writable_asset_property(plan: WritePlan, schema: dict[str, dict[str, An
         if field_name and schema.get(field_name, {}).get("type") == "files":
             return True
     return False
+
+
+def _is_http_url(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    parsed = urlparse(value)
+    return (
+        parsed.scheme in {"http", "https"}
+        and bool(parsed.hostname)
+        and not any(character.isspace() for character in parsed.netloc)
+    )
+
+
+def _page_cover_for_plan(plan: WritePlan) -> dict[str, Any] | None:
+    for operation in plan.asset_operations:
+        if operation.type == "cover_image" and operation.action != "skip" and _is_http_url(operation.source_url):
+            return {"type": "external", "external": {"url": operation.source_url}}
+    return None
 
 
 def build_plan_properties(plan: WritePlan, target_structure: dict[str, Any]) -> dict[str, Any]:
@@ -244,16 +263,25 @@ def apply_write_plan(
     if not properties:
         raise NotionWriterError("Plan produced no properties to write")
 
+    page_cover = _page_cover_for_plan(plan)
     results: list[dict[str, Any]] = []
     for operation in plan.operations:
         operation_type = operation.get("type")
         page_id = operation.get("page_id")
         try:
             if page_id:
-                response = adapter.update_page(page_id, properties)
+                response = (
+                    adapter.update_page(page_id, properties, cover=page_cover)
+                    if page_cover is not None
+                    else adapter.update_page(page_id, properties)
+                )
                 action = "update_page"
             else:
-                response = adapter.create_page(plan.target.data_source_id, properties)
+                response = (
+                    adapter.create_page(plan.target.data_source_id, properties, cover=page_cover)
+                    if page_cover is not None
+                    else adapter.create_page(plan.target.data_source_id, properties)
+                )
                 action = "create_page"
         except EXPECTED_NOTION_WRITE_ERRORS as exc:
             if results:

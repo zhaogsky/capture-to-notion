@@ -188,17 +188,20 @@
 - 2026-05-15 使用已有页面 `3606a715-808c-8101-8ca5-e0a2258f1e6b` 完成真实 update E2E。
 - 输入 JSON 直接包含 `existing_page_id`，plan 自动生成 `update_page`，无需手工 patch。
 - confirmed apply 成功，verification `verified: true`，关键字段 `主题`、`状态`、`内容描述` 均存在。
+- 2026-05-15 使用 `books_selected` 目标 cache 生成素材 E2E create plan，并在用户确认后执行真实 apply。
+- 真实 apply 暴露 Notion number 字段拒绝字符串页数的问题；已在 schema 通用边界补整数字符串转换回归。
+- 同一 plan 重新 apply 成功创建页面 `3616a715-808c-8110-805a-fdbf631f1646`，数据库「封面」files 字段通过上传路径写入，apply verification 对映射字段通过。
+- 独立 `capture verify --page-id` 暴露 page cover 缺失；已在 writer 层补 `cover_image` 资产操作驱动的 page cover 写入，并补上传路径、非 HTTP URL、无 host URL 回归。
 - 全程不使用 Notion MCP。
 
 剩余目标：
 
-验证当前 Skill 是否能在真实 Notion 环境中完成素材相关 scan、plan、apply、verify，并确认 page cover、files 字段和图片 URL 实际可显示。
+完成真实 Notion page cover 更新验证，确认 page cover、files 字段和图片 URL 均实际可显示。
 
 剩余范围：
 
-- 真实 target scan（仅在 cache 缺失、用户要求或结构过期时）。
-- 带 page cover/files 字段的 capture plan。
-- capture apply。
+- 对既有真实页面 `3616a715-808c-8110-805a-fdbf631f1646` 生成 update plan，避免重复创建页面。
+- 经用户再次确认后 apply page cover 更新。
 - capture verify。
 - 验证 page cover、files 字段、关键字段实际可见。
 - 主写入成功和素材失败分开说明。

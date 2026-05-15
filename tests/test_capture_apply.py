@@ -155,11 +155,23 @@ class FakeAdapter:
         self.page = page
         self.pages = pages or {}
 
-    def create_page(self, data_source_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+    def create_page(
+        self,
+        data_source_id: str,
+        properties: dict[str, Any],
+        cover: Any = None,
+        cover_source_url: str | None = None,
+    ) -> dict[str, Any]:
         self.created.append((data_source_id, properties))
         return {"id": "page-created", "url": "https://notion.example/page-created"}
 
-    def update_page(self, page_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+    def update_page(
+        self,
+        page_id: str,
+        properties: dict[str, Any],
+        cover: Any = None,
+        cover_source_url: str | None = None,
+    ) -> dict[str, Any]:
         raise AssertionError("unexpected update_page call")
 
     def retrieve_page(self, page_id: str) -> dict[str, Any]:
