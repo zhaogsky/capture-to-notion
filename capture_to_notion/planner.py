@@ -793,6 +793,25 @@ def build_plan_summary(
 
 
 
+def build_plan_cli_summary(plan: WritePlan) -> dict[str, Any]:
+    return {
+        "plan_id": plan.plan_id,
+        "content_type": plan.content_type,
+        "target": {
+            "page_title": plan.target.page_title,
+            "page_id": plan.target.page_id,
+            "data_source_id": plan.target.data_source_id,
+            "confidence": plan.target.confidence,
+            "source": plan.target.source,
+        },
+        "summary": plan.summary,
+        "warnings": list(plan.warnings),
+        "requires_confirmation": plan.requires_confirmation,
+        "confirmation_reason": plan.confirmation_reason,
+    }
+
+
+
 def missing_required_fields(
     content_type: str,
     fields: dict[str, str],

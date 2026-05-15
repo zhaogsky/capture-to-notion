@@ -23,8 +23,8 @@ from capture_to_notion.notion_adapter import (
     NotionPermissionError,
     NotionRateLimitError,
 )
-from capture_to_notion.planner import build_capture_plan
-from capture_to_notion.preflight import build_capture_preflight
+from capture_to_notion.planner import build_capture_plan, build_plan_cli_summary
+from capture_to_notion.preflight import build_capture_preflight, build_capture_preflight_summary
 from capture_to_notion.scanner import scan_data_source_target, scan_page_target
 from capture_to_notion.verifier import url_is_accessible, verify_capture_page
 from capture_to_notion.writer import NotionWriterError, apply_write_plan
@@ -121,7 +121,11 @@ def _target_cache_error(cache: CacheStore, target_id: str) -> CliInputError:
 def cmd_target_inspect(args: argparse.Namespace) -> int:
     config = ensure_config()
     cache = CacheStore(config)
-    detail = cache.target_detail(alias_name=args.alias, target_id=args.target_id)
+    detail = (
+        cache.target_detail_summary(alias_name=args.alias, target_id=args.target_id)
+        if args.compact
+        else cache.target_detail(alias_name=args.alias, target_id=args.target_id)
+    )
     if detail is None:
         if args.alias:
             reference = cache.target_reference(alias_name=args.alias)
@@ -192,7 +196,8 @@ def cmd_capture_preflight(args: argparse.Namespace) -> int:
     config = ensure_config()
     cache = CacheStore(config)
     capture = load_capture_input(args.input)
-    print_json(build_capture_preflight(capture, cache))
+    preflight = build_capture_preflight(capture, cache)
+    print_json(build_capture_preflight_summary(preflight) if args.compact else preflight)
     return 0
 
 
@@ -204,7 +209,10 @@ def cmd_capture_plan(args: argparse.Namespace) -> int:
     plan = build_capture_plan(capture, cache)
     if args.output:
         Path(args.output).write_text(plan.to_json(), encoding="utf-8")
-    sys.stdout.write(plan.to_json())
+    if args.compact:
+        print_json(build_plan_cli_summary(plan))
+    else:
+        sys.stdout.write(plan.to_json())
     return 0
 
 
@@ -553,6 +561,7 @@ def build_parser() -> argparse.ArgumentParser:
     target_inspect_group = target_inspect.add_mutually_exclusive_group(required=True)
     target_inspect_group.add_argument("--alias")
     target_inspect_group.add_argument("--target-id")
+    target_inspect.add_argument("--compact", action="store_true")
     target_inspect.set_defaults(func=cmd_target_inspect)
     target_search = target_subparsers.add_parser("search")
     target_search.add_argument("--query", required=True)
@@ -569,10 +578,12 @@ def build_parser() -> argparse.ArgumentParser:
     capture_subparsers = capture_parser.add_subparsers(dest="capture_command", required=True)
     capture_preflight = capture_subparsers.add_parser("preflight")
     capture_preflight.add_argument("--input", required=True)
+    capture_preflight.add_argument("--compact", action="store_true")
     capture_preflight.set_defaults(func=cmd_capture_preflight)
     capture_plan = capture_subparsers.add_parser("plan")
     capture_plan.add_argument("--input", required=True)
     capture_plan.add_argument("--output")
+    capture_plan.add_argument("--compact", action="store_true")
     capture_plan.set_defaults(func=cmd_capture_plan)
     capture_apply = capture_subparsers.add_parser("apply")
     capture_apply.add_argument("--plan", required=True)

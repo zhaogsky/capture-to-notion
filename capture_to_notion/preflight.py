@@ -62,6 +62,32 @@ def _has_stale_schema(structure: dict[str, Any]) -> bool:
     )
 
 
+def build_capture_preflight_summary(preflight: dict[str, Any]) -> dict[str, Any]:
+    structure = preflight.get("structure")
+    structure_summary = None
+    if isinstance(structure, dict):
+        structure_summary = {
+            key: structure[key]
+            for key in ("risk_flags", "recommendations", "structure_complexity")
+            if key in structure
+        }
+
+    return {
+        "content_type": preflight.get("content_type"),
+        "intent_hint": preflight.get("intent_hint"),
+        "input_shape_hint": preflight.get("input_shape_hint"),
+        "target_context_hint": preflight.get("target_context_hint"),
+        "target_scope_hint": preflight.get("target_scope_hint"),
+        "user_requested_action": preflight.get("user_requested_action"),
+        "target": preflight.get("target", {}),
+        "structure": structure_summary,
+        "safe_actions": list(preflight.get("safe_actions") or []),
+        "blocked_actions": list(preflight.get("blocked_actions") or []),
+        "confirmation_needed": list(preflight.get("confirmation_needed") or []),
+    }
+
+
+
 def build_capture_preflight(capture: CaptureInput, cache: CacheStore) -> dict[str, Any]:
     preflight = _base_preflight(capture)
     _append_input_shape_actions(preflight, capture)

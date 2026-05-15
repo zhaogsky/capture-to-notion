@@ -320,6 +320,50 @@ def test_target_inspect_outputs_cached_target_details_without_notion_adapter(tmp
     }
 
 
+def test_target_inspect_compact_omits_full_fields(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    seed_cached_books_target(tmp_path)
+
+    def fail_from_config(cls, config):
+        raise AssertionError("target inspect must read local cache only")
+
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(fail_from_config))
+
+    try:
+        result = cli.main(["target", "inspect", "--alias", "books", "--compact"])
+    except SystemExit as exc:
+        result = exc.code
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data == {
+        "alias": "books",
+        "target_id": "bookshelf",
+        "target_file": str(tmp_path / "targets" / "bookshelf.json"),
+        "target": {
+            "page_id": "page-books",
+            "title": "Bookshelf",
+            "verified_at": "2026-05-11T00:00:00Z",
+        },
+        "data_sources": [
+            {
+                "key": "books",
+                "data_source_id": "ds-books",
+                "title": "Books",
+                "role": "primary",
+                "content_types": ["book"],
+                "schema_hash": "abc123",
+                "field_count": 4,
+            }
+        ],
+        "status": "cached",
+    }
+    assert "fields" not in data["data_sources"][0]
+    assert "state_mapping" not in data
+    assert "asset_mapping" not in data
+
+
+
 def test_target_inspect_outputs_cached_target_details_by_target_id_without_notion_adapter(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     seed_cached_books_target(tmp_path)

@@ -227,6 +227,70 @@ def test_write_plan_serializes_summary_near_review_inputs():
     assert WritePlan.from_dict(data).to_dict() == data
 
 
+def test_build_plan_cli_summary_omits_execution_payload():
+    plan = WritePlan(
+        plan_id="20260512-demo",
+        content_type="book",
+        target=Target(
+            page_title="书单",
+            page_id="page-books",
+            data_source_id="ds-books",
+            confidence="high",
+            source="alias_cache",
+        ),
+        summary={
+            "target_page": "书单",
+            "target_data_source": "Books",
+            "title": "可能性的艺术",
+            "state": "initialized",
+            "requires_confirmation": False,
+        },
+        normalized_record={"title": "可能性的艺术", "state": "initialized"},
+        field_mapping={"title": "名称", "state": "阅读状态"},
+        operations=[{"type": "create_or_update_page"}],
+        asset_operations=[],
+        sources=[],
+        warnings=["review_this"],
+        requires_confirmation=False,
+        confirmation_reason=None,
+        completion_operations=[{"type": "complete_relation_page"}],
+        capture_input={"raw_input": "把《可能性的艺术》初始化到书单"},
+    )
+
+    assert hasattr(planner_module, "build_plan_cli_summary")
+
+    summary = planner_module.build_plan_cli_summary(plan)
+
+    assert summary == {
+        "plan_id": "20260512-demo",
+        "content_type": "book",
+        "target": {
+            "page_title": "书单",
+            "page_id": "page-books",
+            "data_source_id": "ds-books",
+            "confidence": "high",
+            "source": "alias_cache",
+        },
+        "summary": {
+            "target_page": "书单",
+            "target_data_source": "Books",
+            "title": "可能性的艺术",
+            "state": "initialized",
+            "requires_confirmation": False,
+        },
+        "warnings": ["review_this"],
+        "requires_confirmation": False,
+        "confirmation_reason": None,
+    }
+    assert "normalized_record" not in summary
+    assert "field_mapping" not in summary
+    assert "operations" not in summary
+    assert "asset_operations" not in summary
+    assert "completion_operations" not in summary
+    assert "capture_input" not in summary
+
+
+
 def test_write_plan_from_dict_defaults_completion_operations_for_old_plans():
     data = {
         "plan_id": "20260512-demo",

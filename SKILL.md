@@ -58,7 +58,7 @@ When a summary-like field is planned:
 6. Run:
 
 ```bash
-capture-to-notion capture preflight --input /path/to/input.json
+capture-to-notion capture preflight --input /path/to/input.json --compact
 ```
 
 7. Interpret preflight facts first, then decide the next user-facing recommendation:
@@ -74,10 +74,10 @@ capture-to-notion capture preflight --input /path/to/input.json
 11. When preflight shows direct planning is allowed, run:
 
 ```bash
-capture-to-notion capture plan --input /path/to/input.json --output /path/to/plan.json
+capture-to-notion capture plan --input /path/to/input.json --output /path/to/plan.json --compact
 ```
 
-12. Present the returned preflight conclusion and plan to the user in concise Chinese.
+12. Present the compact stdout preflight conclusion and plan to the user in concise Chinese. The `--output` plan file remains the complete executable JSON for apply.
 13. If `requires_confirmation` is true, ask the user to confirm or choose a target before writing.
 14. If the user explicitly confirms the plan and target, run:
 

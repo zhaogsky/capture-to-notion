@@ -91,6 +91,12 @@ Inspect one cached target by alias:
 capture-to-notion target inspect --alias books
 ```
 
+Use compact output for chat/Skill review without expanding all cached fields:
+
+```bash
+capture-to-notion target inspect --alias books --compact
+```
+
 Search for a target page or database:
 
 ```bash
@@ -103,10 +109,22 @@ Scan a confirmed target:
 capture-to-notion target scan --page-id PAGE_ID --alias books
 ```
 
+Preview capture readiness with compact output:
+
+```bash
+capture-to-notion capture preflight --input input.json --compact
+```
+
 Create a write plan:
 
 ```bash
 capture-to-notion capture plan --input input.json --output plan.json
+```
+
+Use compact stdout for chat/Skill review while keeping the saved plan file complete for apply:
+
+```bash
+capture-to-notion capture plan --input input.json --output plan.json --compact
 ```
 
 The generated plan includes a top-level `summary` block for review before any write. Check `target_page`, `target_data_source`, `state`, `mapped_fields`, `key_fields`, `asset_actions`, `requires_confirmation`, and `warnings`. For book captures, `book_key_values_missing` means the plan is missing required metadata such as author, ISBN, or page count and must be confirmed or enriched before apply.

@@ -220,6 +220,37 @@ class CacheStore:
             "status": status,
         }
 
+    def target_detail_summary(self, alias_name: str | None = None, target_id: str | None = None) -> dict[str, Any] | None:
+        detail = self.target_detail(alias_name=alias_name, target_id=target_id)
+        if detail is None:
+            return None
+
+        data_sources = []
+        for data_source in detail.get("data_sources", []):
+            if not isinstance(data_source, dict):
+                continue
+            fields = data_source.get("fields")
+            data_sources.append(
+                {
+                    "key": data_source.get("key"),
+                    "data_source_id": data_source.get("data_source_id"),
+                    "title": data_source.get("title"),
+                    "role": data_source.get("role"),
+                    "content_types": data_source.get("content_types"),
+                    "schema_hash": data_source.get("schema_hash"),
+                    "field_count": len(fields) if isinstance(fields, dict) else 0,
+                }
+            )
+
+        return {
+            "alias": detail.get("alias"),
+            "target_id": detail.get("target_id"),
+            "target_file": detail.get("target_file"),
+            "target": detail.get("target", {}),
+            "data_sources": data_sources,
+            "status": detail.get("status"),
+        }
+
     def save_plan(self, plan_id: str, data: dict[str, Any]) -> Path:
         path = self.config.plans_dir / f"{plan_id}.json"
         self.write_json(path, data)

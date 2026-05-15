@@ -5,6 +5,7 @@ import json
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import AppConfig
 from capture_to_notion.models import CaptureInput
+import capture_to_notion.preflight as preflight_module
 from capture_to_notion.preflight import build_capture_preflight
 
 
@@ -91,6 +92,51 @@ def test_preflight_without_target_suggests_target(tmp_path):
     assert preflight["target"]["status"] == "target_missing"
     assert {"action": "suggest_target", "reason": "target_missing"} in preflight["safe_actions"]
     assert {"action": "plan_directly", "reason": "target_missing"} in preflight["blocked_actions"]
+
+
+
+def test_build_capture_preflight_summary_omits_full_structure():
+    preflight = {
+        "content_type": "book",
+        "intent_hint": "direct_write",
+        "input_shape_hint": "plain_text",
+        "target_context_hint": "books",
+        "target_scope_hint": "single_target",
+        "user_requested_action": "write",
+        "target": {"status": "risky_target", "target_id": "bookshelf"},
+        "structure": {
+            "risk_flags": ["navigation_like_name"],
+            "recommendations": [{"action": "confirm_risky_target"}],
+            "structure_complexity": {"data_source_count": 2},
+            "data_sources": {"large": {"schema": {"Name": {"type": "title"}}}},
+        },
+        "safe_actions": [{"action": "confirm_risky_target", "reason": "risky_target"}],
+        "blocked_actions": [{"action": "plan_directly", "reason": "risky_target_requires_confirmation"}],
+        "confirmation_needed": ["risky_target"],
+    }
+
+    assert hasattr(preflight_module, "build_capture_preflight_summary")
+
+    summary = preflight_module.build_capture_preflight_summary(preflight)
+
+    assert summary == {
+        "content_type": "book",
+        "intent_hint": "direct_write",
+        "input_shape_hint": "plain_text",
+        "target_context_hint": "books",
+        "target_scope_hint": "single_target",
+        "user_requested_action": "write",
+        "target": {"status": "risky_target", "target_id": "bookshelf"},
+        "structure": {
+            "risk_flags": ["navigation_like_name"],
+            "recommendations": [{"action": "confirm_risky_target"}],
+            "structure_complexity": {"data_source_count": 2},
+        },
+        "safe_actions": [{"action": "confirm_risky_target", "reason": "risky_target"}],
+        "blocked_actions": [{"action": "plan_directly", "reason": "risky_target_requires_confirmation"}],
+        "confirmation_needed": ["risky_target"],
+    }
+    assert "data_sources" not in summary["structure"]
 
 
 
