@@ -22,16 +22,16 @@
 
 ## 11 个方向完成度
 
-| # | 方向 | 优先级 | 当前状态 | 后续是否继续开发 | 当前说明 |
+| # | 方向 | 优先级 | 当前状态 | 后续处理 | 当前说明 |
 |---|---|---|---|---|---|
-| 1 | 安全与副作用控制 | P0 | 基本完成 | 是 | plan-first、apply confirmation、token 不泄露、不回退 Notion MCP、doctor/version 不初始化 adapter、possible partial write 防护、stale cache recovery、apply 后 verification 已覆盖；2026-05-15 已完成 existing_page_id 真实 update E2E 和素材/files/page cover 真实验证。 |
+| 1 | 安全与副作用控制 | P0 | 基本完成 | 回归维护 | plan-first、apply confirmation、token 不泄露、不回退 Notion MCP、doctor/version 不初始化 adapter、possible partial write 防护、stale cache recovery、apply 后 verification 已覆盖；2026-05-15 已完成 existing_page_id 真实 update E2E 和素材/files/page cover 真实验证。 |
 | 2 | 代码兼容性 | P0 | 已完成 | 回归维护 | `capture-to-notion` CLI、`capture_to_notion` 包导入、配置路径、环境变量、README 命令一致性已有测试覆盖。 |
 | 3 | 版本与迁移治理 | P0 | 已完成 | 回归维护 | rename、旧名残留扫描、CHANGELOG、legacy config warning 和安全的 `capture-to-notion config migrate` 已完成；迁移默认 dry-run，`--confirmed` 后才复制，不覆盖、不打印 token、不删除旧目录。 |
-| 4 | 可观测性与调试能力 | P0/P1 | 大部分完成 | 是 | `doctor`、`version`、preflight 结构事实、apply verification summary 已完成；doctor 已能提示 token、旧配置、stale/partial target cache、具体 target 名称和可执行 rescan 命令；`logs inspect` 暂不实现，后续只在真实日志排障需求出现时再评估。 |
-| 5 | 评估与回归测试 | P1 | 大部分完成 | 是 | CLI、planner、golden、writer、capture apply、schema、scanner、verifier、preflight、structure analyzer 等测试网已建立；2026-05-15 已补齐 schema 过期、单缺 ISBN、封面下载失败 apply 输出等关键回归，并确认目标未扫描、同名目标、URL 不可访问已有覆盖；后续只补真实样例长尾。 |
-| 6 | 快速完成用户要求 | P1 | 大部分完成 | 是 | `target list`、`target inspect`、cache 复用、preflight、plan 摘要、existing_page_id update plan 已完成；仍可继续减少重复扫描、优化确认轮次和摘要体验。 |
-| 7 | 文字正确性与输出质量 | P1 | 大部分完成 | 是 | 状态映射、content type、关键字段、summary-like field 阻塞、parser profile 驱动解析、states/config/profile-driven planning 已完成；2026-05-15 已补单缺 ISBN golden 覆盖；更多中英文标题、作者解析 golden case 仍可补。 |
-| 8 | 页面与视觉正确性 | P1/P2 | 大部分完成 | 是 | `capture verify --page-id`、apply 后 verification summary、files/page cover URL 检查方向已完成；2026-05-15 已验证已有页面 update 后关键字段存在、封面下载失败 apply warning、真实 Notion page cover 与 files 字段上传可见性。后续仅保留长尾视觉回归。 |
+| 4 | 可观测性与调试能力 | P0/P1 | 大部分完成 | 回归维护 | `doctor`、`version`、preflight 结构事实、apply verification summary 已完成；doctor 已能提示 token、旧配置、stale/partial target cache、具体 target 名称和可执行 rescan 命令；`logs inspect` 暂不实现，后续只在真实日志排障需求出现时再评估。 |
+| 5 | 评估与回归测试 | P1 | 大部分完成 | 回归维护 | CLI、planner、golden、writer、capture apply、schema、scanner、verifier、preflight、structure analyzer 等测试网已建立；2026-05-15 已补齐 schema 过期、单缺 ISBN、封面下载失败 apply 输出等关键回归，并确认目标未扫描、同名目标、URL 不可访问已有覆盖；后续只补真实样例长尾。 |
+| 6 | 快速完成用户要求 | P1 | 大部分完成 | 回归维护 | `target list`、`target inspect`、cache 复用、preflight、plan 摘要、existing_page_id update plan 已完成；后续仅按真实反馈优化确认轮次和摘要体验。 |
+| 7 | 文字正确性与输出质量 | P1 | 大部分完成 | 回归维护 | 状态映射、content type、关键字段、summary-like field 阻塞、parser profile 驱动解析、states/config/profile-driven planning 已完成；2026-05-15 已补单缺 ISBN golden 覆盖；更多中英文标题、作者解析 golden case 仅作为长尾维护。 |
+| 8 | 页面与视觉正确性 | P1/P2 | 大部分完成 | 回归维护 | `capture verify --page-id`、apply 后 verification summary、files/page cover URL 检查方向已完成；2026-05-15 已验证已有页面 update 后关键字段存在、封面下载失败 apply warning、真实 Notion page cover 与 files 字段上传可见性。后续仅保留长尾视觉回归。 |
 | 9 | 易用性 | P2 | 大部分完成 | 回归维护 | README/README.zh-CN、常用命令、doctor、target list/inspect compact、preflight safe/blocked actions 已有；中文错误信息、FAQ、下一步命令提示可作为长尾体验优化继续维护。 |
 | 10 | Token 成本与触发精准度 | P2 | 基本完成 | 回归维护 | `capture preflight --compact`、`capture plan --compact` 和 `target inspect --compact` 已完成；SKILL 默认使用 compact preflight/plan，完整 JSON 行为保留给脚本和 apply。 |
 | 11 | 通用性与复用能力 | P3 | 基本完成 | 回归维护 | planner/schema/verifier/scanner 边界已明显通用化；plan/apply、doctor/version、verify、target、parser profile、trusted field sources、asset fallback、README/SKILL 分层规范已沉淀；不提前抽公共框架。 |

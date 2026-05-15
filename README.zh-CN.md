@@ -9,6 +9,10 @@ Capture to Notion 是一个 Claude Code Skill，以及与之配套的本地 CLI 
 - `tests/` — 覆盖计划生成、目标扫描、写入、素材处理和 CLI 行为的回归测试。
 - `pyproject.toml` — 包元数据和 `capture-to-notion` 命令入口。
 
+## 开发状态
+
+截至 2026-05-15，原计划 11 个方向的当前阶段开发闭环已完成，没有必须继续推进的实现任务。核心采集链路、cache-first 计划、迁移治理、compact 输出、验证能力和复用规范均进入回归维护。后续只在出现真实使用反馈、长尾 golden case、结构变化，或第二个类似 Skill 带来复用需求时，再新增小任务。
+
 ## 安装或重装
 
 在当前目录以 editable 方式安装 CLI：

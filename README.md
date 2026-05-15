@@ -9,6 +9,10 @@ Capture to Notion is a Claude Code skill plus local CLI backend for planning and
 - `tests/` — regression tests for planning, scanning, writing, assets, and CLI behavior.
 - `pyproject.toml` — package metadata and the `capture-to-notion` console script.
 
+## Development Status
+
+As of 2026-05-15, the planned 11-direction development cycle has no required remaining implementation tasks. Core capture, cache-first planning, migration governance, compact output, verification, and reusable workflow norms are in regression maintenance. Future work should be opened as small follow-up tasks only when real usage feedback, long-tail golden cases, structure changes, or a second similar Skill creates new requirements.
+
 ## Install or Reinstall
 
 Install the editable CLI from this directory:
