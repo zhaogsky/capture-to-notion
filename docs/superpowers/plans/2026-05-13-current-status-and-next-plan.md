@@ -16,22 +16,22 @@
 
 - 已完成：1 项
 - 基本完成：1 项
-- 大部分完成：5 项
-- 部分完成：3 项
+- 大部分完成：6 项
+- 部分完成：2 项
 - 未系统完成：1 项
 
 ## 11 个方向完成度
 
 | # | 方向 | 优先级 | 当前状态 | 后续是否继续开发 | 当前说明 |
 |---|---|---|---|---|---|
-| 1 | 安全与副作用控制 | P0 | 基本完成 | 是 | plan-first、apply confirmation、token 不泄露、不回退 Notion MCP、doctor/version 不初始化 adapter、possible partial write 防护、stale cache recovery、apply 后 verification 已覆盖；2026-05-15 已完成 existing_page_id 真实 update E2E。剩余：素材/files/page cover 类真实验证。 |
+| 1 | 安全与副作用控制 | P0 | 基本完成 | 是 | plan-first、apply confirmation、token 不泄露、不回退 Notion MCP、doctor/version 不初始化 adapter、possible partial write 防护、stale cache recovery、apply 后 verification 已覆盖；2026-05-15 已完成 existing_page_id 真实 update E2E 和素材/files/page cover 真实验证。 |
 | 2 | 代码兼容性 | P0 | 已完成 | 回归维护 | `capture-to-notion` CLI、`capture_to_notion` 包导入、配置路径、环境变量、README 命令一致性已有测试覆盖。 |
 | 3 | 版本与迁移治理 | P0 | 部分完成 | 是 | rename、旧名残留扫描、CHANGELOG、legacy config warning 已完成；`capture-to-notion config migrate` 仍未实现。 |
 | 4 | 可观测性与调试能力 | P0/P1 | 大部分完成 | 是 | `doctor`、`version`、preflight 结构事实、apply verification summary 已完成；doctor 已能提示 token、旧配置、stale/partial target cache、具体 target 名称和可执行 rescan 命令；`logs inspect` 暂不实现，后续只在真实日志排障需求出现时再评估。 |
 | 5 | 评估与回归测试 | P1 | 大部分完成 | 是 | CLI、planner、golden、writer、capture apply、schema、scanner、verifier、preflight、structure analyzer 等测试网已建立；2026-05-15 已补齐 schema 过期、单缺 ISBN、封面下载失败 apply 输出等关键回归，并确认目标未扫描、同名目标、URL 不可访问已有覆盖；后续只补真实样例长尾。 |
 | 6 | 快速完成用户要求 | P1 | 大部分完成 | 是 | `target list`、`target inspect`、cache 复用、preflight、plan 摘要、existing_page_id update plan 已完成；仍可继续减少重复扫描、优化确认轮次和摘要体验。 |
 | 7 | 文字正确性与输出质量 | P1 | 大部分完成 | 是 | 状态映射、content type、关键字段、summary-like field 阻塞、parser profile 驱动解析、states/config/profile-driven planning 已完成；2026-05-15 已补单缺 ISBN golden 覆盖；更多中英文标题、作者解析 golden case 仍可补。 |
-| 8 | 页面与视觉正确性 | P1/P2 | 部分完成 | 是 | `capture verify --page-id`、apply 后 verification summary、files/page cover URL 检查方向已完成；2026-05-15 已验证已有页面 update 后关键字段存在，并补充封面下载失败 apply warning 回归。真实 Notion 页面 cover、书籍封面、files 字段可显示性仍需端到端验证。 |
+| 8 | 页面与视觉正确性 | P1/P2 | 大部分完成 | 是 | `capture verify --page-id`、apply 后 verification summary、files/page cover URL 检查方向已完成；2026-05-15 已验证已有页面 update 后关键字段存在、封面下载失败 apply warning、真实 Notion page cover 与 files 字段上传可见性。后续仅保留长尾视觉回归。 |
 | 9 | 易用性 | P2 | 部分完成 | 是 | README/README.zh-CN、常用命令、doctor、target list/inspect、preflight safe/blocked actions 已有；中文错误信息、FAQ、下一步命令提示仍可继续优化。 |
 | 10 | Token 成本与触发精准度 | P2 | 未系统完成 | 是 | `SKILL.md` 已因 preflight/summary 变长；瘦身、description 精准化、重型资料外移还没有作为独立任务系统执行。 |
 | 11 | 通用性与复用能力 | P3 | 大部分完成 | 是 | planner/schema/verifier/scanner 边界已明显通用化，状态、primary score、normalized record、summary policy、preflight/structure analyzer 均已配置/cache/profile 驱动；仍需总结规范，不提前抽公共框架。 |
@@ -177,7 +177,7 @@
 - schema 过期预检已用本地 cache fixture 回归覆盖，后续继续保持该方式。
 - 保持业务字段来源来自 parser profile、target cache、write plan 或显式 mapping。
 
-### Task D：真实 Notion 端到端验证（部分完成，剩素材/视觉验证）
+### Task D：真实 Notion 端到端验证（已完成，回归维护）
 
 必须程度：如果继续可靠写书籍封面、page cover、files 字段则必须；只写文字条目可暂时后置
 优先级：P1  
@@ -192,19 +192,19 @@
 - 真实 apply 暴露 Notion number 字段拒绝字符串页数的问题；已在 schema 通用边界补整数字符串转换回归。
 - 同一 plan 重新 apply 成功创建页面 `3616a715-808c-8110-805a-fdbf631f1646`，数据库「封面」files 字段通过上传路径写入，apply verification 对映射字段通过。
 - 独立 `capture verify --page-id` 暴露 page cover 缺失；已在 writer 层补 `cover_image` 资产操作驱动的 page cover 写入，并补上传路径、非 HTTP URL、无 host URL 回归。
+- 对既有真实页面 `3616a715-808c-8110-805a-fdbf631f1646` 重新生成 update plan，避免重复创建页面。
+- 经用户再次确认后 apply 成功，`action: update_page`，`asset_results.status: uploaded`，warnings 为空。
+- 独立 `capture verify --page-id 3616a715-808c-8110-805a-fdbf631f1646` 返回 `verified: true`，`page_cover.status: present`，warnings 为空。
 - 全程不使用 Notion MCP。
 
-剩余目标：
+后续目标：
 
-完成真实 Notion page cover 更新验证，确认 page cover、files 字段和图片 URL 均实际可显示。
+回归维护真实 Notion page cover、files 字段和图片 URL 可显示性，不再作为当前阻塞任务。
 
-剩余范围：
+后续范围：
 
-- 对既有真实页面 `3616a715-808c-8110-805a-fdbf631f1646` 生成 update plan，避免重复创建页面。
-- 经用户再次确认后 apply page cover 更新。
-- capture verify。
-- 验证 page cover、files 字段、关键字段实际可见。
-- 主写入成功和素材失败分开说明。
+- 若后续改动 writer/assets/verifier，保持 page cover、files 字段、关键字段可见性回归。
+- 主写入成功和素材失败继续分开说明。
 
 作用：
 
