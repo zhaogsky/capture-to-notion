@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from capture_to_notion import cli, verifier
+from capture_to_notion import assets, cli, verifier
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import ensure_config
 from capture_to_notion.models import WritePlan
@@ -936,6 +936,90 @@ def test_capture_apply_includes_verification_summary_for_created_page(tmp_path, 
     assert result["verification"]["warnings"] == []
     assert result["verification"]["pages"][0]["page_id"] == "page-created"
     assert fake_adapter.retrieved_pages == ["page-created"]
+
+
+def test_capture_apply_cover_download_failure_reports_asset_warning(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    CacheStore(config).write_json(
+        config.targets_dir / "books.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单"},
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {
+                        "书名": {"name": "书名", "type": "title"},
+                        "封面": {"name": "封面", "type": "files"},
+                    },
+                },
+            },
+        },
+    )
+    cover_url = "https://example.com/cover.jpg"
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "normalized_record": {"title": "可能性的艺术", "cover": cover_url},
+            "field_mapping": {"title": "书名", "cover": "封面"},
+            "operations": [{"type": "create_or_update_page", "data_source_id": "ds-books"}],
+            "asset_operations": [
+                {
+                    "type": "cover_image",
+                    "source_url": cover_url,
+                    "local_cache_path": str(tmp_path / "covers" / "cover.jpg"),
+                    "target_field": "封面",
+                    "action": "download_and_attach",
+                    "record_key": "cover",
+                    "status": "planned",
+                    "warning": None,
+                }
+            ],
+        },
+    )
+    fake_adapter = FakeAdapter(
+        pages={
+            "page-created": {
+                "id": "page-created",
+                "object": "page",
+                "properties": {
+                    "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                    "封面": {
+                        "type": "files",
+                        "files": [
+                            {"type": "external", "name": "cover.jpg", "external": {"url": cover_url}}
+                        ],
+                    },
+                },
+            },
+        }
+    )
+    adapter_factory = AdapterFactoryProbe(fake_adapter)
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+    monkeypatch.setattr(assets, "default_download", lambda url: (_ for _ in ()).throw(OSError("download failed")))
+    allow_verify_url_checks(monkeypatch)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["applied"] is True
+    assert {
+        "field": "cover",
+        "action": "download_and_attach",
+        "status": "external_url",
+        "source_url": cover_url,
+    } in result["asset_results"]
+    assert f"asset_download_failed:cover:{cover_url}" in result["warnings"]
+    assert result["verification"]["verified"] is True
+    assert result["verification"]["pages"][0]["page_id"] == "page-created"
+    assert fake_adapter.retrieved_pages == ["page-created"]
+    assert fake_adapter.created[0][1]["封面"] == {
+        "files": [{"type": "external", "name": "cover.jpg", "external": {"url": cover_url}}]
+    }
+
 
 
 def test_capture_apply_verification_reports_inaccessible_mapped_file_url(tmp_path, monkeypatch, capsys):
