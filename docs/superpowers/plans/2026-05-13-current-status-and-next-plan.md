@@ -30,7 +30,7 @@
 | 4 | 可观测性与调试能力 | P0/P1 | 大部分完成 | 是 | `doctor`、`version`、preflight 结构事实、apply verification summary 已完成；doctor 已能提示 token、旧配置、stale/partial target cache、具体 target 名称和可执行 rescan 命令；`logs inspect` 暂不实现，后续只在真实日志排障需求出现时再评估。 |
 | 5 | 评估与回归测试 | P1 | 大部分完成 | 是 | CLI、planner、golden、writer、capture apply、schema、scanner、verifier、preflight、structure analyzer 等测试网已建立；2026-05-15 已补齐 schema 过期预检关键场景；仍需继续补齐 PLAN 中其余 golden 场景。 |
 | 6 | 快速完成用户要求 | P1 | 大部分完成 | 是 | `target list`、`target inspect`、cache 复用、preflight、plan 摘要、existing_page_id update plan 已完成；仍可继续减少重复扫描、优化确认轮次和摘要体验。 |
-| 7 | 文字正确性与输出质量 | P1 | 大部分完成 | 是 | 状态映射、content type、关键字段、summary-like field 阻塞、parser profile 驱动解析、states/config/profile-driven planning 已完成；更多中英文标题、作者、ISBN 解析 golden case 仍可补。 |
+| 7 | 文字正确性与输出质量 | P1 | 大部分完成 | 是 | 状态映射、content type、关键字段、summary-like field 阻塞、parser profile 驱动解析、states/config/profile-driven planning 已完成；2026-05-15 已补单缺 ISBN golden 覆盖；更多中英文标题、作者解析 golden case 仍可补。 |
 | 8 | 页面与视觉正确性 | P1/P2 | 部分完成 | 是 | `capture verify --page-id`、apply 后 verification summary、files/page cover URL 检查方向已完成；2026-05-15 已验证已有页面 update 后关键字段存在。真实 Notion 页面 cover、书籍封面、files 字段可显示性仍需端到端验证。 |
 | 9 | 易用性 | P2 | 部分完成 | 是 | README/README.zh-CN、常用命令、doctor、target list/inspect、preflight safe/blocked actions 已有；中文错误信息、FAQ、下一步命令提示仍可继续优化。 |
 | 10 | Token 成本与触发精准度 | P2 | 未系统完成 | 是 | `SKILL.md` 已因 preflight/summary 变长；瘦身、description 精准化、重型资料外移还没有作为独立任务系统执行。 |
@@ -148,6 +148,7 @@
 已补充：
 
 - schema 过期预检：缓存结构中任一 data source 标记 `schema_status: stale` 时阻塞直接 plan、建议 rescan，并在同时命中 risky target 时保留 risky 确认要求。
+- 单缺 ISBN golden：schema 与其他关键值齐全但输入缺少 ISBN 时，只提示 `book_key_values_missing:isbn`，不混入作者或页数缺失。
 
 必须优先覆盖：
 
@@ -155,7 +156,7 @@
 - 同名目标。
 - 图片或文件 URL 不可访问。
 - 封面下载失败。
-- 高频多作者、中英文标题、作者、ISBN 解析。
+- 高频多作者、中英文标题、作者解析。
 
 可后置覆盖：
 

@@ -282,6 +282,31 @@ def test_golden_incomplete_book_schema_requires_confirmation(tmp_path, monkeypat
     assert plan.asset_operations == []
 
 
+def test_golden_book_missing_only_isbn_requires_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    seed_books_target(config)
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 页数：400",
+        target_hint="书单",
+        state="初始化",
+        content_type_hint="book",
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, CacheStore(config))
+
+    assert plan.normalized_record["author"] == "刘瑜"
+    assert plan.normalized_record.get("isbn") is None
+    assert plan.normalized_record["page_count"] == 400
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "book_key_values_missing"
+    assert plan.warnings == ["book_key_values_missing:isbn"]
+    assert plan.operations == []
+    assert plan.asset_operations == []
+
+
+
 def test_golden_podcast_episode_plan_maps_podcast_field(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
