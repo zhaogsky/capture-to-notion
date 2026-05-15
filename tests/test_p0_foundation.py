@@ -191,6 +191,18 @@ def test_doctor_warns_about_target_cache_missing_field_sources(tmp_path, monkeyp
     assert stale_check["status"] == "warning"
     assert stale_check["details"] == {
         "targets_missing_field_sources": ["a-authorshelf", "z-bookshelf"],
+        "targets_requiring_rescan": [
+            {
+                "target_id": "a-authorshelf",
+                "target_title": "作者",
+                "page_id": "page-authors",
+            },
+            {
+                "target_id": "z-bookshelf",
+                "target_title": "书单",
+                "page_id": "page-books",
+            },
+        ],
         "rescan_commands": [
             "capture-to-notion target scan --page-id page-authors --target-id a-authorshelf",
             "capture-to-notion target scan --page-id page-books --alias 'My Shelf'",
@@ -222,9 +234,144 @@ def test_doctor_warns_about_target_cache_partial_field_sources(tmp_path, monkeyp
     assert report["checks"]["target_cache_field_sources"]["status"] == "warning"
     assert report["checks"]["target_cache_field_sources"]["details"] == {
         "targets_missing_field_sources": ["bookshelf"],
+        "targets_requiring_rescan": [
+            {
+                "target_id": "bookshelf",
+                "target_title": "书单",
+                "page_id": "page-books",
+            }
+        ],
         "rescan_commands": ["capture-to-notion target scan --page-id page-books --target-id bookshelf"],
         "message": "Rescan these targets to record mapping field_sources.",
     }
+
+
+def test_doctor_does_not_include_data_source_id_for_page_target_rescan(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.targets_dir / "bookshelf.json",
+        {
+            "target": {
+                "page_id": "page-books",
+                "title": "书单",
+                "target_id": "bookshelf",
+                "data_source_id": "ds-books",
+            },
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "fields": {"title": "名称"},
+                }
+            },
+        },
+    )
+
+    report = doctor_report(config)
+
+    assert report["checks"]["target_cache_field_sources"]["details"]["targets_requiring_rescan"] == [
+        {
+            "target_id": "bookshelf",
+            "target_title": "书单",
+            "page_id": "page-books",
+        }
+    ]
+    assert report["checks"]["target_cache_field_sources"]["details"]["rescan_commands"] == [
+        "capture-to-notion target scan --page-id page-books --target-id bookshelf"
+    ]
+
+
+
+def test_doctor_suggests_data_source_rescan_for_stale_direct_data_source_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.targets_dir / "articles.json",
+        {
+            "target": {
+                "page_id": None,
+                "title": "Articles",
+                "target_id": "articles",
+                "data_source_id": "ds-articles",
+            },
+            "data_sources": {
+                "ds-articles": {
+                    "data_source_id": "ds-articles",
+                    "title": "Articles",
+                    "fields": {"title": "Name"},
+                }
+            },
+        },
+    )
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "Article DB": {
+                    "type": "data_source",
+                    "data_source_id": "ds-articles",
+                    "title": "Articles",
+                    "target_id": "articles",
+                }
+            }
+        },
+    )
+
+    report = doctor_report(config)
+
+    assert report["checks"]["target_cache_field_sources"]["details"]["targets_requiring_rescan"] == [
+        {
+            "target_id": "articles",
+            "target_title": "Articles",
+            "page_id": None,
+            "data_source_id": "ds-articles",
+        }
+    ]
+    assert report["checks"]["target_cache_field_sources"]["details"]["rescan_commands"] == [
+        "capture-to-notion target scan --data-source-id ds-articles --alias 'Article DB'"
+    ]
+
+
+
+def test_doctor_suggests_data_source_rescan_when_legacy_target_lacks_data_source_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.targets_dir / "articles.json",
+        {
+            "target": {
+                "page_id": None,
+                "title": "Articles",
+                "target_id": "articles",
+            },
+            "data_sources": {
+                "ds-articles": {
+                    "data_source_id": "ds-articles",
+                    "title": "Articles",
+                    "fields": {"title": "Name"},
+                }
+            },
+        },
+    )
+
+    report = doctor_report(config)
+
+    assert report["checks"]["target_cache_field_sources"]["details"]["targets_requiring_rescan"] == [
+        {
+            "target_id": "articles",
+            "target_title": "Articles",
+            "page_id": None,
+            "data_source_id": "ds-articles",
+        }
+    ]
+    assert report["checks"]["target_cache_field_sources"]["details"]["rescan_commands"] == [
+        "capture-to-notion target scan --data-source-id ds-articles --target-id articles"
+    ]
+
 
 
 def test_doctor_accepts_target_cache_with_complete_field_sources(tmp_path, monkeypatch):

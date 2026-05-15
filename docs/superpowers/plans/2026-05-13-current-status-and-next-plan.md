@@ -8,31 +8,33 @@
 
 ## 总体状态
 
-截至当前，11 个方向不是全部完成，而是基础能力已基本成型，剩余工作集中在迁移治理、真实验证、易用性、token 成本和复用规范。
+截至 2026-05-15，11 个方向不是全部完成，而是核心 capture 链路、cache-first 预检、profile-driven 计划、apply 验证、已有页面更新能力和 doctor/rescan 可观测性已基本成型。剩余工作集中在 golden case 补齐、素材/视觉真实验证、迁移治理、易用性/token 成本和复用规范。
+
+最近基准提交：`4786556 feat: make capture planning cache-first and profile-driven`。
 
 当前状态：
 
 - 已完成：1 项
 - 基本完成：1 项
-- 大部分完成：3 项
-- 部分完成：5 项
+- 大部分完成：5 项
+- 部分完成：3 项
 - 未系统完成：1 项
 
 ## 11 个方向完成度
 
 | # | 方向 | 优先级 | 当前状态 | 后续是否继续开发 | 当前说明 |
 |---|---|---|---|---|---|
-| 1 | 安全与副作用控制 | P0 | 基本完成 | 是 | plan-first、apply confirmation、token 不泄露、不回退 Notion MCP、doctor/version 不初始化 adapter 等已覆盖；仍需要真实 Notion apply 前后的端到端验证补强。 |
+| 1 | 安全与副作用控制 | P0 | 基本完成 | 是 | plan-first、apply confirmation、token 不泄露、不回退 Notion MCP、doctor/version 不初始化 adapter、possible partial write 防护、stale cache recovery、apply 后 verification 已覆盖；2026-05-15 已完成 existing_page_id 真实 update E2E。剩余：素材/files/page cover 类真实验证。 |
 | 2 | 代码兼容性 | P0 | 已完成 | 回归维护 | `capture-to-notion` CLI、`capture_to_notion` 包导入、配置路径、环境变量、README 命令一致性已有测试覆盖。 |
 | 3 | 版本与迁移治理 | P0 | 部分完成 | 是 | rename、旧名残留扫描、CHANGELOG、legacy config warning 已完成；`capture-to-notion config migrate` 仍未实现。 |
-| 4 | 可观测性与调试能力 | P0/P1 | 部分完成 | 是 | `doctor`、`version` 已完成；doctor 已能提示 token、旧配置、stale target cache；`logs inspect` 仍未实现，是否需要先评估。 |
-| 5 | 评估与回归测试 | P1 | 大部分完成 | 是 | CLI、planner、golden、writer、capture apply、schema、scanner、verifier 等测试网已建立；仍需逐项补齐 PLAN 中列出的 golden 场景。 |
-| 6 | 快速完成用户要求 | P1 | 大部分完成 | 是 | `target list`、`target inspect`、cache 复用、plan 摘要已完成；仍可继续减少重复扫描、优化确认轮次和摘要体验。 |
-| 7 | 文字正确性与输出质量 | P1 | 大部分完成 | 是 | 状态映射、content type、关键字段、summary、parser profile 驱动解析已完成；更多中英文标题、作者、ISBN 解析 golden case 仍可补。 |
-| 8 | 页面与视觉正确性 | P1/P2 | 部分完成 | 是 | `capture verify --page-id`、apply 后 verification summary、files/page cover URL 检查方向已完成；真实 Notion 页面 cover、书籍封面、files 字段可显示性还需要真实环境端到端验证。 |
-| 9 | 易用性 | P2 | 部分完成 | 是 | README/README.zh-CN、常用命令、doctor、target list/inspect 已有；中文错误信息、FAQ、下一步命令提示仍可继续优化。 |
-| 10 | Token 成本与触发精准度 | P2 | 未系统完成 | 是 | `SKILL.md` 瘦身、description 精准化、重型资料外移还没有作为独立任务系统执行。 |
-| 11 | 通用性与复用能力 | P3 | 部分完成 | 是 | planner/schema/verifier/scanner 边界已明显通用化；仍需总结规范，不提前抽公共框架。 |
+| 4 | 可观测性与调试能力 | P0/P1 | 大部分完成 | 是 | `doctor`、`version`、preflight 结构事实、apply verification summary 已完成；doctor 已能提示 token、旧配置、stale/partial target cache、具体 target 名称和可执行 rescan 命令；`logs inspect` 暂不实现，后续只在真实日志排障需求出现时再评估。 |
+| 5 | 评估与回归测试 | P1 | 大部分完成 | 是 | CLI、planner、golden、writer、capture apply、schema、scanner、verifier、preflight、structure analyzer 等测试网已建立；仍需逐项补齐 PLAN 中列出的 golden 场景。 |
+| 6 | 快速完成用户要求 | P1 | 大部分完成 | 是 | `target list`、`target inspect`、cache 复用、preflight、plan 摘要、existing_page_id update plan 已完成；仍可继续减少重复扫描、优化确认轮次和摘要体验。 |
+| 7 | 文字正确性与输出质量 | P1 | 大部分完成 | 是 | 状态映射、content type、关键字段、summary-like field 阻塞、parser profile 驱动解析、states/config/profile-driven planning 已完成；更多中英文标题、作者、ISBN 解析 golden case 仍可补。 |
+| 8 | 页面与视觉正确性 | P1/P2 | 部分完成 | 是 | `capture verify --page-id`、apply 后 verification summary、files/page cover URL 检查方向已完成；2026-05-15 已验证已有页面 update 后关键字段存在。真实 Notion 页面 cover、书籍封面、files 字段可显示性仍需端到端验证。 |
+| 9 | 易用性 | P2 | 部分完成 | 是 | README/README.zh-CN、常用命令、doctor、target list/inspect、preflight safe/blocked actions 已有；中文错误信息、FAQ、下一步命令提示仍可继续优化。 |
+| 10 | Token 成本与触发精准度 | P2 | 未系统完成 | 是 | `SKILL.md` 已因 preflight/summary 变长；瘦身、description 精准化、重型资料外移还没有作为独立任务系统执行。 |
+| 11 | 通用性与复用能力 | P3 | 大部分完成 | 是 | planner/schema/verifier/scanner 边界已明显通用化，状态、primary score、normalized record、summary policy、preflight/structure analyzer 均已配置/cache/profile 驱动；仍需总结规范，不提前抽公共框架。 |
 
 ## 已完成能力清单
 
@@ -52,11 +54,19 @@
 - asset trust。
 - explicit warning policy。
 - scanner official property type boundary。
-- stale target cache warning。
+- stale/partial target cache warning 输出具体 target 名称。
+- doctor 能为 page target 和 direct data source target 生成可执行 rescan 命令。
 - `capture-to-notion capture verify --page-id`。
 - apply 后 verification summary。
 - Notion official property type regression net。
 - no Notion MCP fallback 约束。
+- `capture-to-notion capture preflight`。
+- generic structure analyzer。
+- profile-driven 状态归一化、book defaults、primary data source scoring、normalized record、summary policy。
+- summary-like field 缺少主体内容源时阻塞写入，不静默使用页面简介或默认模型总结。
+- 默认不再生成 `example.com` fake cover。
+- `existing_page_id` 一等输入字段，可直接生成 `update_page` 计划。
+- 真实 Notion existing-page update E2E：plan update → confirmed apply → verification true，无需手工 patch plan。
 
 ## 不再作为后续实现方式的方向
 
@@ -70,25 +80,22 @@
 
 ## 下一阶段开发计划
 
-### Task A：同步状态文档
+### Task A：同步状态文档（已完成，回归维护）
 
 优先级：P0  
 对应方向：全部
 
-目标：
+状态：
 
-- 新建当前状态文档。
-- 保留 `PLAN.zh-CN.md` 作为 11 个方向源头。
-- 后续开发以本文档的当前状态和下一阶段计划为准。
+- 本文档已建立为当前状态与下一阶段计划的执行基准。
+- `PLAN.zh-CN.md` 继续保留为 11 个方向源头。
+- 2026-05-15 已同步最新提交 `4786556`、profile-driven/preflight/existing_page_id/E2E 进展和剩余任务。
 
-验收标准：
+后续只在方向变化、任务完成或用户纠正实现口径时更新。
 
-- 本文档存在并准确记录 11 个方向完成度。
-- 不修改 `PLAN.zh-CN.md` 的源头基准定位。
-- 旧计划文件仍作为历史执行记录保留。
+### Task B：doctor / rescan 可观测性增强（已完成，回归维护）
 
-### Task B：doctor / rescan 可观测性增强
-
+必须程度：必须 / 最应该做
 优先级：P1  
 对应方向：4. 可观测性与调试能力、9. 易用性
 
@@ -96,24 +103,39 @@
 
 让 stale cache、缺 token、目标未扫描、schema 过期等常见问题给出更明确的下一步命令。
 
-范围：
+已完成：
 
-- doctor stale target cache warning 输出具体 target 名称。
+- doctor stale/partial target cache warning 输出具体 `target_id`、target title 和 page/data source 标识。
 - 能推导时给出建议 rescan 命令。
-- 常见失败补充下一步操作。
-- 评估是否需要 `capture-to-notion logs inspect`。
-- 如果实现 `logs inspect`，必须只读、不泄露 token。
+- page target 使用 `capture-to-notion target scan --page-id ...`。
+- direct data source target 使用 `capture-to-notion target scan --data-source-id ...`。
+- alias 可用时优先输出 `--alias`，否则回退 `--target-id`。
+- 旧 direct data source cache 即使 `target.data_source_id` 缺失，也可从 data source entry 或 key 推导。
+- page target 即使缓存中带有 `data_source_id`，doctor 明细也不混入 data source 重扫语义。
+- 缺 token、旧配置目录存在、输出不泄露 token 已有回归测试覆盖。
+- `logs inspect` 暂不实现；后续只在真实日志排障需求出现时再评估，并保持只读、不泄露 token。
 
-测试建议：
+作用：
+
+- 出错时更快定位原因。
+- 减少手动判断下一步命令。
+- 降低 schema 过期、target 未扫描、alias 不存在时的误操作风险。
+
+回归测试：
 
 - stale `field_sources` cache。
 - partial `field_sources` cache。
+- page target rescan 命令。
+- direct data source target rescan 命令。
+- legacy direct data source cache fallback。
+- page target 不混入 data source rescan 语义。
 - 缺 token。
 - 旧配置目录存在。
 - 输出不包含 token。
 
 ### Task C：补齐 PLAN golden cases
 
+必须程度：关键场景必须做，长尾场景可分批后置
 优先级：P1  
 对应方向：5. 评估与回归测试、7. 文字正确性与输出质量、8. 页面与视觉正确性
 
@@ -123,13 +145,26 @@
 
 范围：
 
-- 封面下载失败。
-- 图片或文件 URL 不可访问。
+必须优先覆盖：
+
 - 目标未扫描。
 - schema 过期。
-- 多作者。
 - 同名目标。
-- 中英文标题、作者、ISBN 解析。
+- 图片或文件 URL 不可访问。
+- 封面下载失败。
+- 高频多作者、中英文标题、作者、ISBN 解析。
+
+可后置覆盖：
+
+- 低频标题格式。
+- 边缘字段组合。
+- 纯覆盖率型测试。
+
+作用：
+
+- 防止后续改 planner/scanner/writer 时回归。
+- 约束字段来源继续来自 parser profile、target cache、write plan 或显式 mapping。
+- 让真实 Notion 写入前有本地可重复验证。
 
 测试建议：
 
@@ -137,25 +172,39 @@
 - 每个新增行为先写失败测试。
 - 保持业务字段来源来自 parser profile、target cache、write plan 或显式 mapping。
 
-### Task D：真实 Notion 端到端验证
+### Task D：真实 Notion 端到端验证（部分完成，剩素材/视觉验证）
 
+必须程度：如果继续可靠写书籍封面、page cover、files 字段则必须；只写文字条目可暂时后置
 优先级：P1  
 对应方向：1. 安全与副作用控制、8. 页面与视觉正确性
 
-目标：
+已完成：
 
-验证当前 Skill 是否能在真实 Notion 环境中完成 scan、plan、apply、verify，并确认不需要 Notion MCP fallback。
+- 2026-05-15 使用已有页面 `3606a715-808c-8101-8ca5-e0a2258f1e6b` 完成真实 update E2E。
+- 输入 JSON 直接包含 `existing_page_id`，plan 自动生成 `update_page`，无需手工 patch。
+- confirmed apply 成功，verification `verified: true`，关键字段 `主题`、`状态`、`内容描述` 均存在。
+- 全程不使用 Notion MCP。
 
-范围：
+剩余目标：
 
-- 真实 target scan。
-- capture plan。
+验证当前 Skill 是否能在真实 Notion 环境中完成素材相关 scan、plan、apply、verify，并确认 page cover、files 字段和图片 URL 实际可显示。
+
+剩余范围：
+
+- 真实 target scan（仅在 cache 缺失、用户要求或结构过期时）。
+- 带 page cover/files 字段的 capture plan。
 - capture apply。
 - capture verify。
 - 验证 page cover、files 字段、关键字段实际可见。
 - 主写入成功和素材失败分开说明。
 
-验收标准：
+作用：
+
+- 确认封面/图片不是“字段里有 URL 就算成功”。
+- 避免计划显示已写入封面，但 Notion 实际不可见。
+- 满足书籍 capture 不能只验证标题/状态的要求。
+
+剩余验收标准：
 
 - 真实 Notion 页面可创建或更新。
 - page cover 可访问性被验证。
@@ -169,6 +218,7 @@
 
 ### Task E：版本与迁移治理补齐
 
+必须程度：应该做，但不是当前功能可用性的必须项
 优先级：P1  
 对应方向：3. 版本与迁移治理
 
@@ -185,6 +235,12 @@
 - 不打印 token。
 - 不自动删除旧配置。
 
+作用：
+
+- 安全迁移旧配置。
+- 避免路径/命名变更导致旧 token、旧 alias、旧配置混乱。
+- 为未来给其他人使用或跨机器迁移做准备。
+
 测试建议：
 
 - 旧配置存在，新配置不存在。
@@ -195,6 +251,7 @@
 
 ### Task F：易用性与 token 成本优化
 
+必须程度：应该做，但建议等核心行为稳定后再做
 优先级：P2  
 对应方向：9. 易用性、10. Token 成本与触发精准度
 
@@ -218,6 +275,13 @@
 - description 只保留触发条件。
 - 安装、完整命令、测试、维护说明移到 README/docs。
 
+作用：
+
+- 降低日常使用认知负担。
+- 减少 Skill 加载 token 成本。
+- 降低未来使用 Skill 时抓错重点的概率。
+- 让 README、FAQ、Skill 文档职责更清晰。
+
 测试建议：
 
 - 文档命令与 CLI 保持一致。
@@ -225,6 +289,7 @@
 
 ### Task G：复用规范沉淀
 
+必须程度：可以暂时不做，等第二个类似 Skill 出现后价值更高
 优先级：P3  
 对应方向：11. 通用性与复用能力
 
@@ -243,6 +308,12 @@
 - asset trust / fallback 模式。
 - README / SKILL.md 分层模式。
 
+作用：
+
+- 为未来类似 Skill 复用 plan/apply/doctor/verify/parser profile 等模式提供依据。
+- 避免下一个 Skill 重新踩坑。
+- 但当前不应提前抽公共框架。
+
 验收标准：
 
 - 只写规范，不抽公共库。
@@ -251,15 +322,23 @@
 
 ## 推荐执行顺序
 
-1. Task A：同步状态文档。
-2. Task B：doctor / rescan 可观测性增强。
-3. Task C：补齐 PLAN golden cases。
-4. Task D：真实 Notion 端到端验证。
-5. Task E：版本与迁移治理补齐。
-6. Task F：易用性与 token 成本优化。
-7. Task G：复用规范沉淀。
+Task A 和 Task B 已完成，下一阶段剩余 5 个任务。按必须程度排序：
 
-这个顺序优先建立当前开发基准，然后补诊断和测试，再做真实外部验证；迁移能力带文件副作用，放在诊断和测试更稳之后；Skill 瘦身和复用规范最后做，避免能力仍在变化时反复调整文档。
+### 必须 / 最应该做
+
+1. Task C：补齐 PLAN golden cases 的关键场景。
+2. Task D：真实 Notion 素材/视觉端到端验证（如果近期继续做书籍、封面或 files 字段写入）。
+
+### 应该做，但不急
+
+3. Task E：版本与迁移治理补齐。
+4. Task F：易用性与 token 成本优化。
+
+### 可以后置
+
+5. Task G：复用规范沉淀。
+
+如果目标是“自己日常可靠使用”，最低完成 Task C 关键场景、Task D 素材/视觉验证即可；如果目标是“可维护、可迁移、别人也能用”，再做 Task E 和 Task F。Task G 等出现第二个类似 Skill 或复用需求更明确时再做。
 
 ## 当前执行原则
 

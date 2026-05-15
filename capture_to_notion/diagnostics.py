@@ -97,7 +97,7 @@ def _stale_target_cache_entries(config: AppConfig) -> list[dict[str, str | None]
         data_sources = target_cache.get("data_sources")
         if not isinstance(data_sources, dict):
             continue
-        for source in data_sources.values():
+        for source_id, source in data_sources.items():
             if not isinstance(source, dict):
                 continue
             fields = source.get("fields")
@@ -107,10 +107,20 @@ def _stale_target_cache_entries(config: AppConfig) -> list[dict[str, str | None]
             if not isinstance(field_sources, dict) or any(key not in field_sources for key in fields):
                 target = target_cache.get("target")
                 page_id = target.get("page_id") if isinstance(target, dict) else None
+                data_source_id = None
+                if not isinstance(page_id, str):
+                    data_source_id = target.get("data_source_id") if isinstance(target, dict) else None
+                    if not isinstance(data_source_id, str):
+                        data_source_id = source.get("data_source_id")
+                    if not isinstance(data_source_id, str) and isinstance(source_id, str):
+                        data_source_id = source_id
+                target_title = target.get("title") if isinstance(target, dict) else None
                 stale_entries.append(
                     {
                         "target_id": target_file.stem,
+                        "target_title": target_title if isinstance(target_title, str) else None,
                         "page_id": page_id if isinstance(page_id, str) else None,
+                        "data_source_id": data_source_id if isinstance(data_source_id, str) else None,
                     }
                 )
                 break
@@ -139,11 +149,19 @@ def _rescan_commands(config: AppConfig, stale_entries: list[dict[str, str | None
     for entry in stale_entries:
         target_id = entry.get("target_id")
         page_id = entry.get("page_id")
-        if not target_id or not page_id:
+        data_source_id = entry.get("data_source_id")
+        if not target_id:
+            continue
+        scan_source_option = None
+        if page_id:
+            scan_source_option = f"--page-id {shlex.quote(page_id)}"
+        elif data_source_id:
+            scan_source_option = f"--data-source-id {shlex.quote(data_source_id)}"
+        if not scan_source_option:
             continue
         alias = aliases_by_target_id.get(target_id)
         target_option = f"--alias {shlex.quote(alias)}" if alias else f"--target-id {shlex.quote(target_id)}"
-        commands.append(f"capture-to-notion target scan --page-id {shlex.quote(page_id)} {target_option}")
+        commands.append(f"capture-to-notion target scan {scan_source_option} {target_option}")
     return commands
 
 
@@ -176,6 +194,18 @@ def doctor_report(config: AppConfig | Path) -> dict[str, Any]:
     stale_target_entries = _stale_target_cache_entries(app_config)
     missing_field_sources = [entry["target_id"] for entry in stale_target_entries if entry.get("target_id")]
     rescan_commands = _rescan_commands(app_config, stale_target_entries)
+    targets_requiring_rescan = []
+    for entry in stale_target_entries:
+        if not entry.get("target_id"):
+            continue
+        rescan_target = {
+            "target_id": entry.get("target_id"),
+            "target_title": entry.get("target_title"),
+            "page_id": entry.get("page_id"),
+        }
+        if entry.get("data_source_id"):
+            rescan_target["data_source_id"] = entry.get("data_source_id")
+        targets_requiring_rescan.append(rescan_target)
     field_sources_status = "warning" if missing_field_sources else "ok"
     field_sources_message = (
         "Rescan these targets to record mapping field_sources."
@@ -184,6 +214,14 @@ def doctor_report(config: AppConfig | Path) -> dict[str, Any]:
     )
     token_configured = _token_configured(config_data)
     legacy_config_dir_exists = legacy_config_dir.exists()
+
+    field_sources_details = {
+        "targets_missing_field_sources": missing_field_sources,
+        "rescan_commands": rescan_commands,
+        "message": field_sources_message,
+    }
+    if targets_requiring_rescan:
+        field_sources_details["targets_requiring_rescan"] = targets_requiring_rescan
 
     report = version_info(config_root_path)
     report["checks"] = {
@@ -214,11 +252,7 @@ def doctor_report(config: AppConfig | Path) -> dict[str, Any]:
         "target_cache_field_sources": {
             "name": "target_cache_field_sources",
             "status": field_sources_status,
-            "details": {
-                "targets_missing_field_sources": missing_field_sources,
-                "rescan_commands": rescan_commands,
-                "message": field_sources_message,
-            },
+            "details": field_sources_details,
         },
     }
     return report
