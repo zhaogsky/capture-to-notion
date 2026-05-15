@@ -8,17 +8,17 @@
 
 ## 总体状态
 
-截至 2026-05-15，11 个方向不是全部完成，而是核心 capture 链路、cache-first 预检、profile-driven 计划、apply 验证、已有页面更新能力和 doctor/rescan 可观测性已基本成型。剩余工作集中在 golden case 补齐、素材/视觉真实验证、迁移治理、易用性/token 成本和复用规范。
+截至 2026-05-15，核心 capture 链路、cache-first 预检、profile-driven 计划、apply 验证、已有页面更新、doctor/rescan 可观测性、迁移治理、compact 输出和复用规范已基本成型。后续工作主要进入回归维护和长尾体验优化。
 
-最近基准提交：`4786556 feat: make capture planning cache-first and profile-driven`。
+最近基准提交：`7f96759 feat: add compact capture CLI output`。
 
 当前状态：
 
-- 已完成：1 项
-- 基本完成：1 项
+- 已完成：3 项
+- 基本完成：2 项
 - 大部分完成：6 项
-- 部分完成：2 项
-- 未系统完成：1 项
+- 部分完成：0 项
+- 未系统完成：0 项
 
 ## 11 个方向完成度
 
@@ -26,15 +26,15 @@
 |---|---|---|---|---|---|
 | 1 | 安全与副作用控制 | P0 | 基本完成 | 是 | plan-first、apply confirmation、token 不泄露、不回退 Notion MCP、doctor/version 不初始化 adapter、possible partial write 防护、stale cache recovery、apply 后 verification 已覆盖；2026-05-15 已完成 existing_page_id 真实 update E2E 和素材/files/page cover 真实验证。 |
 | 2 | 代码兼容性 | P0 | 已完成 | 回归维护 | `capture-to-notion` CLI、`capture_to_notion` 包导入、配置路径、环境变量、README 命令一致性已有测试覆盖。 |
-| 3 | 版本与迁移治理 | P0 | 部分完成 | 是 | rename、旧名残留扫描、CHANGELOG、legacy config warning 已完成；`capture-to-notion config migrate` 仍未实现。 |
+| 3 | 版本与迁移治理 | P0 | 已完成 | 回归维护 | rename、旧名残留扫描、CHANGELOG、legacy config warning 和安全的 `capture-to-notion config migrate` 已完成；迁移默认 dry-run，`--confirmed` 后才复制，不覆盖、不打印 token、不删除旧目录。 |
 | 4 | 可观测性与调试能力 | P0/P1 | 大部分完成 | 是 | `doctor`、`version`、preflight 结构事实、apply verification summary 已完成；doctor 已能提示 token、旧配置、stale/partial target cache、具体 target 名称和可执行 rescan 命令；`logs inspect` 暂不实现，后续只在真实日志排障需求出现时再评估。 |
 | 5 | 评估与回归测试 | P1 | 大部分完成 | 是 | CLI、planner、golden、writer、capture apply、schema、scanner、verifier、preflight、structure analyzer 等测试网已建立；2026-05-15 已补齐 schema 过期、单缺 ISBN、封面下载失败 apply 输出等关键回归，并确认目标未扫描、同名目标、URL 不可访问已有覆盖；后续只补真实样例长尾。 |
 | 6 | 快速完成用户要求 | P1 | 大部分完成 | 是 | `target list`、`target inspect`、cache 复用、preflight、plan 摘要、existing_page_id update plan 已完成；仍可继续减少重复扫描、优化确认轮次和摘要体验。 |
 | 7 | 文字正确性与输出质量 | P1 | 大部分完成 | 是 | 状态映射、content type、关键字段、summary-like field 阻塞、parser profile 驱动解析、states/config/profile-driven planning 已完成；2026-05-15 已补单缺 ISBN golden 覆盖；更多中英文标题、作者解析 golden case 仍可补。 |
 | 8 | 页面与视觉正确性 | P1/P2 | 大部分完成 | 是 | `capture verify --page-id`、apply 后 verification summary、files/page cover URL 检查方向已完成；2026-05-15 已验证已有页面 update 后关键字段存在、封面下载失败 apply warning、真实 Notion page cover 与 files 字段上传可见性。后续仅保留长尾视觉回归。 |
-| 9 | 易用性 | P2 | 部分完成 | 是 | README/README.zh-CN、常用命令、doctor、target list/inspect、preflight safe/blocked actions 已有；中文错误信息、FAQ、下一步命令提示仍可继续优化。 |
-| 10 | Token 成本与触发精准度 | P2 | 未系统完成 | 是 | `SKILL.md` 已因 preflight/summary 变长；瘦身、description 精准化、重型资料外移还没有作为独立任务系统执行。 |
-| 11 | 通用性与复用能力 | P3 | 大部分完成 | 是 | planner/schema/verifier/scanner 边界已明显通用化，状态、primary score、normalized record、summary policy、preflight/structure analyzer 均已配置/cache/profile 驱动；仍需总结规范，不提前抽公共框架。 |
+| 9 | 易用性 | P2 | 大部分完成 | 回归维护 | README/README.zh-CN、常用命令、doctor、target list/inspect compact、preflight safe/blocked actions 已有；中文错误信息、FAQ、下一步命令提示可作为长尾体验优化继续维护。 |
+| 10 | Token 成本与触发精准度 | P2 | 基本完成 | 回归维护 | `capture preflight --compact`、`capture plan --compact` 和 `target inspect --compact` 已完成；SKILL 默认使用 compact preflight/plan，完整 JSON 行为保留给脚本和 apply。 |
+| 11 | 通用性与复用能力 | P3 | 基本完成 | 回归维护 | planner/schema/verifier/scanner 边界已明显通用化；plan/apply、doctor/version、verify、target、parser profile、trusted field sources、asset fallback、README/SKILL 分层规范已沉淀；不提前抽公共框架。 |
 
 ## 已完成能力清单
 
@@ -89,7 +89,7 @@
 
 - 本文档已建立为当前状态与下一阶段计划的执行基准。
 - `PLAN.zh-CN.md` 继续保留为 11 个方向源头。
-- 2026-05-15 已同步最新提交 `4786556`、profile-driven/preflight/existing_page_id/E2E 进展和剩余任务。
+- 2026-05-15 已同步至 `7f96759` 后的完成状态：迁移治理、compact 输出和复用规范均进入回归维护；当前没有必须继续推进的计划任务。
 
 后续只在方向变化、任务完成或用户纠正实现口径时更新。
 
@@ -212,7 +212,7 @@
 - 避免计划显示已写入封面，但 Notion 实际不可见。
 - 满足书籍 capture 不能只验证标题/状态的要求。
 
-剩余验收标准：
+回归验收标准：
 
 - 真实 Notion 页面可创建或更新。
 - page cover 可访问性被验证。
@@ -224,7 +224,7 @@
 
 - 这是带外部副作用的验证任务，执行前必须再次确认目标页面、目标数据库和写入内容。
 
-### Task E：版本与迁移治理补齐
+### Task E：版本与迁移治理补齐（已完成，回归维护）
 
 必须程度：应该做，但不是当前功能可用性的必须项
 优先级：P1  
@@ -234,14 +234,18 @@
 
 设计并实现安全的配置迁移能力。
 
-范围：
+已完成：
 
-- 设计 `capture-to-notion config migrate`。
+- 实现 `capture-to-notion config migrate`。
 - 默认 dry-run。
-- `--confirmed` 才实际迁移。
+- `--confirmed` 后才实际迁移。
+- 只迁移 allowlist 内配置资产：`config.json`、`states.json`、`aliases.json`、`targets/*.json`。
 - 不覆盖新配置。
 - 不打印 token。
 - 不自动删除旧配置。
+- 拒绝 legacy root/source/destination symlink 和 path escape。
+- 迁移错误以结构化 `copy_results` / `errors` 输出；confirmed 且有错误时 CLI 返回非 0。
+- 使用临时文件和 exclusive link 发布，避免 partial destination。
 
 作用：
 
@@ -249,15 +253,16 @@
 - 避免路径/命名变更导致旧 token、旧 alias、旧配置混乱。
 - 为未来给其他人使用或跨机器迁移做准备。
 
-测试建议：
+回归测试：
 
 - 旧配置存在，新配置不存在。
 - 旧配置和新配置同时存在。
 - token 不出现在 stdout/stderr。
 - dry-run 不写文件。
 - 未确认时不迁移。
+- symlink / path escape / copy error / partial write 防护。
 
-### Task F：易用性与 token 成本优化
+### Task F：易用性与 token 成本优化（已完成，回归维护）
 
 必须程度：应该做，但建议等核心行为稳定后再做
 优先级：P2  
@@ -267,21 +272,14 @@
 
 减少日常使用认知负担和 Skill 加载成本。
 
-范围：
+已完成：
 
-- README 常用命令前置。
-- README.zh-CN 改成日常使用导向。
-- FAQ 增加常见问题：
-  - 缺 token。
-  - 目标未扫描。
-  - alias 不存在。
-  - schema 过期。
-  - 图片不可访问。
-  - 需要确认。
-- 中文错误提示补下一步命令。
-- 精简 `SKILL.md`。
-- description 只保留触发条件。
-- 安装、完整命令、测试、维护说明移到 README/docs。
+- 新增 `capture preflight --compact`，用于对话中查看预检结论而不展开完整结构。
+- 新增 `capture plan --compact`，stdout 输出审阅摘要，同时 `--output plan.json` 仍保存完整可执行 plan。
+- 新增 `target inspect --compact`，只输出 data source 摘要和字段数量，不展开完整 fields/state/asset mapping。
+- `SKILL.md` 默认使用 compact preflight/plan。
+- README.md 和 README.zh-CN.md 补充 compact 用法。
+- 保持默认完整 JSON 行为不变，避免破坏既有脚本。
 
 作用：
 
@@ -290,12 +288,14 @@
 - 降低未来使用 Skill 时抓错重点的概率。
 - 让 README、FAQ、Skill 文档职责更清晰。
 
-测试建议：
+回归测试：
 
-- 文档命令与 CLI 保持一致。
-- `SKILL.md` 精简后仍保留 plan-first、confirmation、no MCP fallback、target scan/plan/apply 主路径。
+- `capture preflight --compact` 省略完整 structure/data_sources。
+- `capture plan --compact` 省略执行 payload。
+- `capture plan --output plan.json --compact` 保留完整 plan 文件。
+- `target inspect --compact` 只读本地 cache 且不展开完整 fields。
 
-### Task G：复用规范沉淀
+### Task G：复用规范沉淀（已完成，回归维护）
 
 必须程度：可以暂时不做，等第二个类似 Skill 出现后价值更高
 优先级：P3  
@@ -305,43 +305,35 @@
 
 总结 Capture to Notion 已验证的可复用模式，但不提前抽公共框架。
 
-范围：
+已完成：
 
-- plan / apply 模式。
-- doctor 模式。
-- verify 模式。
-- target scan / list / inspect 模式。
-- parser profile 模式。
-- trusted field sources 模式。
-- asset trust / fallback 模式。
-- README / SKILL.md 分层模式。
+- 在 `PLAN.zh-CN.md` Phase 5 沉淀已验证可复用规范。
+- 覆盖 plan / apply 模式。
+- 覆盖 doctor / version 模式。
+- 覆盖 verify / validation 模式。
+- 覆盖 target search / scan / inspect 模式。
+- 覆盖 parser profile 模式。
+- 覆盖 trusted field sources 模式。
+- 覆盖 asset trust / fallback 模式。
+- 覆盖 README / SKILL.md 分层模式。
+- 明确当前只写规范，不抽公共库；至少等第二个类似 Skill 出现后再评估复用库。
 
 作用：
 
 - 为未来类似 Skill 复用 plan/apply/doctor/verify/parser profile 等模式提供依据。
 - 避免下一个 Skill 重新踩坑。
-- 但当前不应提前抽公共框架。
-
-验收标准：
-
-- 只写规范，不抽公共库。
-- 至少等第二个 Skill 出现同类需求后再考虑复用库。
-- 不影响 `capture-to-notion` 自身稳定性。
+- 保持当前 `capture-to-notion` 稳定，不提前做跨 Skill 框架。
 
 ## 推荐执行顺序
 
-Task A、Task B、Task C 和 Task D 已完成，下一阶段剩余 3 个任务。按必须程度排序：
+Task A、Task B、Task D、Task E、Task F 和 Task G 已完成，Task C 的关键 golden cases 已补齐并进入长尾回归维护。当前没有必须继续推进的计划任务。
 
-### 应该做，但不急
+后续只在出现真实使用反馈、长尾样例、结构变化或第二个类似 Skill 复用需求时，再新增小任务：
 
-1. Task E：版本与迁移治理补齐。
-2. Task F：易用性与 token 成本优化。
-
-### 可以后置
-
-3. Task G：复用规范沉淀。
-
-如果目标是“自己日常可靠使用”，当前核心链路已经可用；如果目标是“可维护、可迁移、别人也能用”，继续做 Task E 和 Task F。Task G 等出现第二个类似 Skill 或复用需求更明确时再做。
+1. 长尾 golden case：低频标题格式、边缘字段组合、真实样例回归。
+2. 长尾易用性：中文错误提示、FAQ、更多下一步命令。
+3. 真实 Notion 回归：仅在 writer/assets/verifier 相关逻辑变化时执行，并在写入前确认目标和影响范围。
+4. 跨 Skill 复用：等第二个类似 Skill 出现后，再评估是否抽公共库。
 
 ## 当前执行原则
 

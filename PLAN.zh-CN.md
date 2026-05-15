@@ -101,7 +101,7 @@
   - `notion-capture`
   - `notion_skill`
   - `~/.config/notion-skill`
-- 增加配置迁移规划，后续可实现 `capture-to-notion config migrate`。
+- 已实现安全的 `capture-to-notion config migrate`。
 - 配置迁移默认 dry-run。
 - `--confirmed` 后才迁移。
 - 不打印 token。
@@ -426,18 +426,88 @@ apply 后展示验证摘要：
 
 ### 要做
 
-在 `capture-to-notion` 稳定后，总结可复用规范：
+在 `capture-to-notion` 稳定后，总结已验证的可复用规范：
 
 - plan / apply 模式。
-- doctor 模式。
-- validate / verify 模式。
-- config migrate 模式。
-- logs inspect 模式。
+- doctor / version 模式。
+- verify / validation 模式。
 - target search / scan / inspect 模式。
-- asset download / fallback 模式。
+- parser profile 模式。
+- trusted field sources 模式。
+- asset trust / fallback 模式。
 - README / SKILL.md 分层模式。
 
-暂时不要急着抽公共框架。
+`config migrate` 的安全迁移经验已归入版本与迁移治理回归维护；`logs inspect` 暂不实现，只有真实日志排障需求出现后再评估。暂时不要急着抽公共框架。
+
+### 已验证可复用规范
+
+以下规范来自 `capture-to-notion` 当前已验证的实现，用于未来开发类似 Skill 时复用判断，不代表当前要抽公共库。
+
+#### 1. Plan / Apply 模式
+
+- 写入类 Skill 必须保持 plan-first、apply-after-confirmation。
+- `plan` 输出应区分用户审阅摘要和机器可执行 payload。
+- 用户审阅摘要应列出目标、标题、状态、关键字段、素材动作、warning 和是否需要确认。
+- 机器可执行 plan 应保存完整输入、目标、字段映射、操作列表、素材操作和确认原因。
+- `apply` 只能消费已确认 plan，不在 apply 阶段重新推断用户意图。
+- 有外部副作用的写入、迁移、覆盖、删除都必须显式确认。
+
+#### 2. Doctor / Version 模式
+
+- `doctor` 只做本地只读诊断，不初始化外部 API adapter，不写远端系统。
+- 诊断输出应检查配置路径、token 是否配置、旧配置、缓存健康、stale/partial cache 和下一步命令。
+- 诊断不能打印 token 原文；错误和 warning 也必须保持脱敏。
+- `version` 应输出 CLI、包路径、运行路径、配置根目录等定位 editable install 和路径错配所需的信息。
+
+#### 3. Verify / Validation 模式
+
+- `verify` 应按计划、缓存或显式 mapping 验证结果，不根据业务字段名猜测语义。
+- 验证应区分主写入结果和素材/图片可访问性结果，素材失败不能掩盖主写入结果。
+- apply 后可附加 verification summary，但 verification warning 不应隐藏 apply 原始结果。
+- 无 plan 或 mapping 时，verify 只能做通用存在性和可访问性检查。
+
+#### 4. Target Search / Scan / Inspect 模式
+
+- target search 只负责发现候选，不在候选不唯一时自动绑定目标。
+- target scan 负责把外部结构转成 cache，cache 中记录官方字段类型、data source、schema hash、字段映射来源等事实。
+- target inspect 默认可输出完整 cache；对话或 Skill 审阅应提供 compact 输出，避免展开大 schema。
+- 写入流程应 cache-first：可信 cache 存在时直接计划；仅在 cache 缺失、用户要求重扫，或远端返回结构过期错误后重扫。
+- 同名目标、导航型页面、相邻数据库等歧义场景必须让用户选择精确目标。
+
+#### 5. Parser Profile 模式
+
+- 业务解析规则放在 parser profile、target cache 或显式输入中，不硬编码进通用 planner/schema/verifier。
+- profile 可定义 labels、title patterns、required schema fields、required value fields、summary key fields、summary policy 和 asset trust required fields。
+- data source 层 profile 可以覆盖 target 层 profile。
+- 默认 profile 只能提供通用默认值和审阅要求，不能偷偷根据 Notion 字段名推断业务语义。
+
+#### 6. Trusted Field Sources 模式
+
+- 字段映射应记录 `field_sources`，区分 scan、profile、explicit 等来源。
+- required mapping 只有来源在 active profile 的 `trusted_field_sources` 中时才可直接满足信任门槛。
+- 不可信映射应转成 warning 或 confirmation，而不是静默写入。
+- 缺 schema、缺 value、映射不可信应在 plan summary 中清楚呈现。
+
+#### 7. Asset Trust / Fallback 模式
+
+- 素材字段只有在映射来源可信时才规划上传或附件写入。
+- 下载、缓存、上传、外链 fallback 应与主写入操作分开记录。
+- 素材下载失败时主写入可以继续，但必须在 `asset_results` 和顶层 warning 中暴露。
+- 页面 cover、files 字段、外链可访问性应分别验证，不能只凭字段存在就宣称素材成功。
+
+#### 8. README / SKILL.md 分层模式
+
+- `SKILL.md` 只保留 Claude 执行所需的高频流程、安全边界和输出模板。
+- README 承接安装、配置、诊断、迁移、常用命令和测试说明。
+- 中文 README 面向日常使用，英文 README 面向通用维护和跨环境说明。
+- 对话场景优先使用 compact 输出；完整 JSON 保留给脚本、调试和 apply。
+- 当实现方向变化时，同步更新执行计划、长期计划和文档，避免旧计划继续驱动已否定方向。
+
+#### 9. 复用边界
+
+- 当前阶段只沉淀规范，不抽公共库、不引入跨 Skill 框架。
+- 至少等第二个类似 Skill 出现同类 plan/apply/doctor/verify/profile 需求后，再评估提取公共库。
+- 抽象前应先比较两个 Skill 的真实差异，避免把 Notion 特有约束伪装成通用框架。
 
 ### 验收标准
 
