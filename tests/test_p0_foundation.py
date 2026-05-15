@@ -8,8 +8,11 @@ import sys
 from pathlib import Path
 from typing import Mapping
 
+import pytest
+
 import capture_to_notion
 import capture_to_notion.cli
+import capture_to_notion.diagnostics
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import ensure_config
 from capture_to_notion.diagnostics import doctor_report
@@ -598,6 +601,445 @@ def test_doctor_reports_no_legacy_config_dir_next_steps_when_absent(tmp_path: Pa
 
 
 
+def test_config_migrate_dry_run_reports_pending_legacy_files_without_writing(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    legacy_dir = fake_home / ".config" / "notion-skill"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(
+        json.dumps({"notion": {"auth": {"token": "secret-token-value"}}}),
+        encoding="utf-8",
+    )
+    (legacy_dir / "aliases.json").write_text(
+        json.dumps({"aliases": {"books": {"target_id": "bookshelf"}}}),
+        encoding="utf-8",
+    )
+
+    result = run_cli(["config", "migrate"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["legacy_exists"] is True
+    assert data["confirmed"] is False
+    assert data["pending_copy"] == ["aliases.json", "config.json"]
+    assert data["migrated"] == []
+    assert data["skipped_existing"] == []
+    assert data["destination_root"] == str(tmp_path / "config")
+    assert not (tmp_path / "config").exists()
+    assert "secret-token-value" not in result.stdout
+    assert "secret-token-value" not in result.stderr
+
+
+
+def test_config_migrate_confirmed_copies_missing_files_without_overwriting_existing_ones(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    legacy_dir = fake_home / ".config" / "notion-skill"
+    legacy_dir.mkdir(parents=True)
+    legacy_secret = "secret-token-value"
+    (legacy_dir / "config.json").write_text(
+        json.dumps({"notion": {"auth": {"token": legacy_secret}}}),
+        encoding="utf-8",
+    )
+    (legacy_dir / "aliases.json").write_text(
+        json.dumps({"aliases": {"legacy": {"target_id": "legacy-target"}}}),
+        encoding="utf-8",
+    )
+    (legacy_dir / "targets" / "bookshelf.json").parent.mkdir(parents=True)
+    (legacy_dir / "targets" / "bookshelf.json").write_text(
+        json.dumps({"target": {"title": "书单"}}),
+        encoding="utf-8",
+    )
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    existing_config = json.dumps({"notion": {"auth": {"env_token_name": "NOTION_TOKEN"}}})
+    (config_dir / "config.json").write_text(existing_config, encoding="utf-8")
+
+    result = run_cli(["config", "migrate", "--confirmed"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["confirmed"] is True
+    assert data["pending_copy"] == []
+    assert data["migrated"] == ["aliases.json", "targets/bookshelf.json"]
+    assert data["skipped_existing"] == ["config.json"]
+    assert json.loads((config_dir / "aliases.json").read_text(encoding="utf-8")) == {
+        "aliases": {"legacy": {"target_id": "legacy-target"}}
+    }
+    assert json.loads((config_dir / "targets" / "bookshelf.json").read_text(encoding="utf-8")) == {
+        "target": {"title": "书单"}
+    }
+    assert (config_dir / "config.json").read_text(encoding="utf-8") == existing_config
+    assert legacy_dir.exists()
+    assert (legacy_dir / "config.json").exists()
+    assert (legacy_dir / "aliases.json").exists()
+    assert (legacy_dir / "targets" / "bookshelf.json").exists()
+    assert "Legacy config directory was not deleted." in data["warnings"]
+    assert "secret-token-value" not in result.stdout
+    assert "secret-token-value" not in result.stderr
+
+
+
+def test_config_migrate_confirmed_rechecks_destination_before_copy_and_skips_existing(tmp_path, monkeypatch):
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "aliases.json").write_text(
+        json.dumps({"aliases": {"legacy": {"target_id": "legacy-target"}}}),
+        encoding="utf-8",
+    )
+    destination_root = tmp_path / "config"
+    destination_path = destination_root / "aliases.json"
+    original_exists = Path.exists
+    exists_calls = {"count": 0}
+
+    def controlled_exists(path: Path) -> bool:
+        if path == destination_path:
+            exists_calls["count"] += 1
+            if exists_calls["count"] == 1:
+                return False
+            destination_path.parent.mkdir(parents=True, exist_ok=True)
+            destination_path.write_text(
+                json.dumps({"aliases": {"current": {"target_id": "current-target"}}}),
+                encoding="utf-8",
+            )
+            return True
+        return original_exists(path)
+
+    monkeypatch.setattr(capture_to_notion.diagnostics, "legacy_config_root", lambda: legacy_dir)
+    monkeypatch.setattr(Path, "exists", controlled_exists)
+
+    result = capture_to_notion.diagnostics.migrate_legacy_config(destination_root, confirmed=True)
+
+    assert result["pending_copy"] == []
+    assert result["migrated"] == []
+    assert result["skipped_existing"] == ["aliases.json"]
+    assert result["copy_results"] == [
+        {"path": "aliases.json", "status": "skipped_existing"}
+    ]
+    assert json.loads(destination_path.read_text(encoding="utf-8")) == {
+        "aliases": {"current": {"target_id": "current-target"}}
+    }
+
+
+
+def test_config_migrate_confirmed_uses_exclusive_copy_when_destination_appears(tmp_path, monkeypatch):
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(
+        json.dumps({"notion": {"auth": {"token": "legacy-token"}}}),
+        encoding="utf-8",
+    )
+    destination_root = tmp_path / "config"
+    destination_path = destination_root / "config.json"
+
+    def race_copy(source_path: Path, destination_path_arg: Path) -> None:
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        destination_path.write_text(
+            json.dumps({"notion": {"auth": {"env_token_name": "NOTION_TOKEN"}}}),
+            encoding="utf-8",
+        )
+        raise FileExistsError(destination_path_arg)
+
+    monkeypatch.setattr(capture_to_notion.diagnostics, "legacy_config_root", lambda: legacy_dir)
+    monkeypatch.setattr(capture_to_notion.diagnostics, "_copy_file_exclusive", race_copy)
+
+    result = capture_to_notion.diagnostics.migrate_legacy_config(destination_root, confirmed=True)
+
+    assert result["pending_copy"] == []
+    assert result["migrated"] == []
+    assert result["skipped_existing"] == ["config.json"]
+    assert result["copy_results"] == [
+        {"path": "config.json", "status": "skipped_existing"}
+    ]
+    assert json.loads(destination_path.read_text(encoding="utf-8")) == {
+        "notion": {"auth": {"env_token_name": "NOTION_TOKEN"}}
+    }
+
+
+
+def test_config_migrate_confirmed_returns_structured_error_when_copy_fails(tmp_path, monkeypatch):
+    legacy_dir = tmp_path / "legacy"
+    legacy_dir.mkdir(parents=True)
+    secret = "secret-token-value"
+    (legacy_dir / "config.json").write_text(
+        json.dumps({"notion": {"auth": {"token": secret}}}),
+        encoding="utf-8",
+    )
+    destination_root = tmp_path / "config"
+    destination_path = destination_root / "config.json"
+    concurrent_destination = {"notion": {"auth": {"env_token_name": "NOTION_TOKEN"}}}
+
+    def fail_copy(source_path: Path, destination_path_arg: Path) -> None:
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        destination_path.write_text(json.dumps(concurrent_destination), encoding="utf-8")
+        raise OSError(f"copy failed while handling {secret}")
+
+    monkeypatch.setattr(capture_to_notion.diagnostics, "legacy_config_root", lambda: legacy_dir)
+    monkeypatch.setattr(capture_to_notion.diagnostics, "_copy_file_exclusive", fail_copy)
+
+    result = capture_to_notion.diagnostics.migrate_legacy_config(destination_root, confirmed=True)
+
+    assert result["pending_copy"] == []
+    assert result["migrated"] == []
+    assert result["copy_results"] == [
+        {
+            "path": "config.json",
+            "status": "error",
+            "error_code": "copy_os_error",
+            "message": "copy failed due to OS error",
+        }
+    ]
+    assert result["errors"] == [
+        {
+            "path": "config.json",
+            "error_code": "copy_os_error",
+            "message": "copy failed due to OS error",
+        }
+    ]
+    assert json.loads(destination_path.read_text(encoding="utf-8")) == concurrent_destination
+    assert secret not in json.dumps(result, ensure_ascii=False)
+
+
+
+def test_copy_file_exclusive_does_not_publish_partial_destination(tmp_path: Path, monkeypatch) -> None:
+    source_path = tmp_path / "source.json"
+    source_path.write_text(json.dumps({"ok": True}), encoding="utf-8")
+    destination_path = tmp_path / "destination.json"
+
+    def fail_copyfileobj(source_file, destination_file) -> None:
+        destination_file.write(b"partial")
+        raise OSError("copy interrupted")
+
+    monkeypatch.setattr(capture_to_notion.diagnostics.shutil, "copyfileobj", fail_copyfileobj)
+
+    with pytest.raises(OSError):
+        capture_to_notion.diagnostics._copy_file_exclusive(source_path, destination_path)
+
+    assert not destination_path.exists()
+    assert list(tmp_path.glob(".destination.json.*.tmp")) == []
+
+
+
+def test_config_migrate_confirmed_without_legacy_dir_does_not_create_destination(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+
+    result = run_cli(["config", "migrate", "--confirmed"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["legacy_exists"] is False
+    assert data["migrated"] == []
+    assert data["pending_copy"] == []
+    assert not (tmp_path / "config").exists()
+    assert any("No legacy config directory found" in warning for warning in data["warnings"])
+
+
+
+def test_config_migrate_only_copies_allowlisted_legacy_assets(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    legacy_dir = fake_home / ".config" / "notion-skill"
+    (legacy_dir / "targets").mkdir(parents=True)
+    (legacy_dir / "cache").mkdir(parents=True)
+    (legacy_dir / "logs").mkdir(parents=True)
+    (legacy_dir / "plans").mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(json.dumps({"notion": {"auth": {"token": "secret-token-value"}}}), encoding="utf-8")
+    (legacy_dir / "aliases.json").write_text(json.dumps({"aliases": {"books": {"target_id": "bookshelf"}}}), encoding="utf-8")
+    (legacy_dir / "states.json").write_text(json.dumps({"states": {"initialized": {}}}), encoding="utf-8")
+    (legacy_dir / "routes.json").write_text(json.dumps({"routes": {"book": {}}}), encoding="utf-8")
+    (legacy_dir / "targets" / "bookshelf.json").write_text(json.dumps({"target": {"title": "书单"}}), encoding="utf-8")
+    (legacy_dir / "cache" / "searches.json").write_text(json.dumps({"q": [1]}), encoding="utf-8")
+    (legacy_dir / "logs" / "run.log").write_text("secret-token-value", encoding="utf-8")
+    (legacy_dir / "plans" / "latest.json").write_text(json.dumps({"plan_id": "p1"}), encoding="utf-8")
+    (legacy_dir / "notes.txt").write_text("do not copy", encoding="utf-8")
+
+    result = run_cli(["config", "migrate"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["pending_copy"] == [
+        "aliases.json",
+        "config.json",
+        "states.json",
+        "targets/bookshelf.json",
+    ]
+    assert data["migrated"] == []
+    assert data["skipped_existing"] == []
+    assert data["skipped_disallowed"] == [
+        "cache/searches.json",
+        "logs/run.log",
+        "notes.txt",
+        "plans/latest.json",
+        "routes.json",
+    ]
+    assert "secret-token-value" not in result.stdout
+    assert "secret-token-value" not in result.stderr
+    assert not (tmp_path / "config").exists()
+
+
+
+def test_config_migrate_confirmed_skips_source_symlinks_and_unsafe_destinations(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    legacy_dir = fake_home / ".config" / "notion-skill"
+    (legacy_dir / "targets").mkdir(parents=True)
+    external_secret = tmp_path / "external-secret.json"
+    external_secret.write_text(json.dumps({"notion": {"auth": {"token": "secret-token-value"}}}), encoding="utf-8")
+    (legacy_dir / "aliases.json").symlink_to(external_secret)
+    (legacy_dir / "config.json").write_text(json.dumps({"notion": {"auth": {"env_token_name": "NOTION_TOKEN"}}}), encoding="utf-8")
+    (legacy_dir / "targets" / "bookshelf.json").write_text(json.dumps({"target": {"title": "书单"}}), encoding="utf-8")
+
+    config_dir = tmp_path / "config"
+    unsafe_target_root = tmp_path / "unsafe-target-root"
+    unsafe_target_root.mkdir()
+    config_dir.mkdir()
+    (config_dir / "targets").symlink_to(unsafe_target_root, target_is_directory=True)
+
+    result = run_cli(["config", "migrate", "--confirmed"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["migrated"] == ["config.json"]
+    assert data["skipped_symlinks"] == ["aliases.json"]
+    assert data["skipped_unsafe"] == ["targets/bookshelf.json"]
+    assert not (config_dir / "aliases.json").exists()
+    assert not (unsafe_target_root / "bookshelf.json").exists()
+    assert json.loads((config_dir / "config.json").read_text(encoding="utf-8")) == {
+        "notion": {"auth": {"env_token_name": "NOTION_TOKEN"}}
+    }
+    assert "secret-token-value" not in result.stdout
+    assert "secret-token-value" not in result.stderr
+
+
+
+def test_config_migrate_skips_legacy_root_symlink(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    real_legacy_dir = tmp_path / "real-legacy"
+    real_legacy_dir.mkdir()
+    (real_legacy_dir / "config.json").write_text(
+        json.dumps({"notion": {"auth": {"token": "secret-token-value"}}}),
+        encoding="utf-8",
+    )
+    legacy_parent = fake_home / ".config"
+    legacy_parent.mkdir(parents=True)
+    (legacy_parent / "notion-skill").symlink_to(real_legacy_dir, target_is_directory=True)
+
+    result = run_cli(["config", "migrate", "--confirmed"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["migrated"] == []
+    assert data["pending_copy"] == []
+    assert data["skipped_symlinks"] == ["."]
+    assert not (tmp_path / "config" / "config.json").exists()
+    assert "secret-token-value" not in result.stdout
+    assert "secret-token-value" not in result.stderr
+
+
+
+def test_config_migrate_confirmed_returns_structured_error_when_parent_create_fails(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    legacy_dir = fake_home / ".config" / "notion-skill"
+    (legacy_dir / "targets").mkdir(parents=True)
+    (legacy_dir / "targets" / "bookshelf.json").write_text(json.dumps({"target": {"title": "书单"}}), encoding="utf-8")
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "targets").write_text("not a directory", encoding="utf-8")
+
+    result = run_cli(["config", "migrate", "--confirmed"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode != 0
+    data = json.loads(result.stdout)
+    assert data["pending_copy"] == []
+    assert data["migrated"] == []
+    assert data["copy_results"] == [
+        {
+            "path": "targets/bookshelf.json",
+            "status": "error",
+            "error_code": "copy_os_error",
+            "message": "copy failed due to OS error",
+        }
+    ]
+    assert data["errors"] == [
+        {
+            "path": "targets/bookshelf.json",
+            "error_code": "copy_os_error",
+            "message": "copy failed due to OS error",
+        }
+    ]
+
+
+
+def test_config_migrate_confirmed_skips_destination_root_symlink(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    legacy_dir = fake_home / ".config" / "notion-skill"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(json.dumps({"notion": {"auth": {"env_token_name": "NOTION_TOKEN"}}}), encoding="utf-8")
+
+    external_config_root = tmp_path / "external-config-root"
+    external_config_root.mkdir()
+    (tmp_path / "config").symlink_to(external_config_root, target_is_directory=True)
+
+    result = run_cli(["config", "migrate", "--confirmed"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["migrated"] == []
+    assert data["skipped_unsafe"] == ["config.json"]
+    assert not (external_config_root / "config.json").exists()
+    assert (legacy_dir / "config.json").exists()
+
+
+
+def test_config_migrate_confirmed_returns_structured_error_when_destination_root_is_file(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    legacy_dir = fake_home / ".config" / "notion-skill"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(json.dumps({"notion": {"auth": {"env_token_name": "NOTION_TOKEN"}}}), encoding="utf-8")
+    (tmp_path / "config").write_text("not a directory", encoding="utf-8")
+
+    result = run_cli(["config", "migrate", "--confirmed"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode != 0
+    data = json.loads(result.stdout)
+    assert data["pending_copy"] == []
+    assert data["migrated"] == []
+    assert data["copy_results"] == [
+        {
+            "path": "config.json",
+            "status": "error",
+            "error_code": "copy_os_error",
+            "message": "copy failed due to OS error",
+        }
+    ]
+    assert data["errors"] == [
+        {
+            "path": "config.json",
+            "error_code": "copy_os_error",
+            "message": "copy failed due to OS error",
+        }
+    ]
+    assert (legacy_dir / "config.json").exists()
+
+
+
+def test_config_migrate_confirmed_skips_broken_destination_root_symlink(tmp_path: Path) -> None:
+    fake_home = tmp_path / "home"
+    legacy_dir = fake_home / ".config" / "notion-skill"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "config.json").write_text(json.dumps({"notion": {"auth": {"env_token_name": "NOTION_TOKEN"}}}), encoding="utf-8")
+    (tmp_path / "config").symlink_to(tmp_path / "missing-config-root", target_is_directory=True)
+
+    result = run_cli(["config", "migrate", "--confirmed"], tmp_path, extra_env={"HOME": str(fake_home)})
+
+    assert result.returncode == 0
+    data = json.loads(result.stdout)
+    assert data["migrated"] == []
+    assert data["skipped_unsafe"] == ["config.json"]
+    assert data["copy_results"] == []
+    assert data["errors"] == []
+    assert (legacy_dir / "config.json").exists()
+
+
+
 def test_runtime_files_do_not_reference_old_runtime_names() -> None:
     runtime_files = [
         PROJECT_ROOT / "pyproject.toml",
@@ -645,6 +1087,7 @@ def test_readmes_document_p0_diagnostics_commands() -> None:
         text = path.read_text(encoding="utf-8")
         assert "capture-to-notion version" in text
         assert "capture-to-notion doctor" in text
+        assert "capture-to-notion config migrate" in text
         assert "capture-to-notion target list" in text
         assert "capture-to-notion target inspect" in text
         assert "capture-to-notion capture verify --page-id PAGE_ID" in text

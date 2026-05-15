@@ -55,6 +55,20 @@ capture-to-notion doctor
 
 `doctor` also warns when cached targets predate `field_sources`; rescan those targets before relying on trusted mapping gates.
 
+Preview a safe migration from the legacy `~/.config/notion-skill` directory without writing anything:
+
+```bash
+capture-to-notion config migrate
+```
+
+Apply the migration only after review:
+
+```bash
+capture-to-notion config migrate --confirmed
+```
+
+The migration command only copies allowlisted config assets (`config.json`, `states.json`, `aliases.json`, and `targets/*.json`), never prints token values, does not overwrite files already present in the new config root, and does not delete the legacy directory.
+
 For migration history and rename details, see `CHANGELOG.md`.
 
 ## Common Commands

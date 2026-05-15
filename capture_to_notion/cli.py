@@ -13,7 +13,7 @@ class CliInputError(ValueError):
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.classifier import classify_content_type
 from capture_to_notion.config import config_root, ensure_config
-from capture_to_notion.diagnostics import doctor_report, version_info
+from capture_to_notion.diagnostics import doctor_report, migrate_legacy_config, version_info
 from capture_to_notion.models import CaptureInput, WritePlan
 from capture_to_notion.notion_adapter import (
     NotionAdapter,
@@ -71,6 +71,13 @@ def cmd_version(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     print_json(doctor_report(config_root()))
     return 0
+
+
+
+def cmd_config_migrate(args: argparse.Namespace) -> int:
+    result = migrate_legacy_config(config_root(), confirmed=args.confirmed)
+    print_json(result)
+    return 1 if args.confirmed and result.get("errors") else 0
 
 
 def cmd_cache_inspect(args: argparse.Namespace) -> int:
@@ -523,6 +530,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor_parser = subparsers.add_parser("doctor")
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    config_parser = subparsers.add_parser("config")
+    config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
+    config_migrate = config_subparsers.add_parser("migrate")
+    config_migrate.add_argument("--confirmed", action="store_true")
+    config_migrate.set_defaults(func=cmd_config_migrate)
 
     cache_parser = subparsers.add_parser("cache")
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)

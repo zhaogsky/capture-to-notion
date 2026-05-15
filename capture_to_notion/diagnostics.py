@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -177,6 +179,188 @@ def _config_from_root(config_root_path: Path) -> AppConfig:
         logs_dir=config_root_path / "logs",
         covers_dir=config_root_path / "cache" / "assets" / "covers",
     )
+
+
+
+def legacy_config_root() -> Path:
+    return Path.home() / ".config" / "notion-skill"
+
+
+
+_LEGACY_CONFIG_FILE_ALLOWLIST = {"config.json", "states.json", "aliases.json"}
+
+
+
+def _legacy_config_files(source_root: Path) -> list[Path]:
+    if not source_root.exists() or not source_root.is_dir():
+        return []
+    return sorted(path for path in source_root.rglob("*") if path.is_file() or path.is_symlink())
+
+
+
+def _is_allowed_legacy_config_path(relative_path: str) -> bool:
+    if relative_path in _LEGACY_CONFIG_FILE_ALLOWLIST:
+        return True
+    path = Path(relative_path)
+    return len(path.parts) == 2 and path.parts[0] == "targets" and path.suffix == ".json"
+
+
+
+def _destination_path_is_safe(config_root_path: Path, destination_path: Path) -> bool:
+    if config_root_path.is_symlink():
+        return False
+    try:
+        destination_path.resolve(strict=False).relative_to(config_root_path.resolve(strict=False))
+    except ValueError:
+        return False
+    return True
+
+
+
+def _copy_file_exclusive(source_path: Path, destination_path: Path) -> None:
+    if source_path.is_symlink() or destination_path.parent.is_symlink():
+        raise OSError("unsafe symlink path")
+
+    temp_path: Path | None = None
+    try:
+        with source_path.open("rb") as source_file:
+            with tempfile.NamedTemporaryFile(
+                "xb",
+                dir=destination_path.parent,
+                prefix=f".{destination_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as destination_file:
+                temp_path = Path(destination_file.name)
+                shutil.copyfileobj(source_file, destination_file)
+                destination_file.flush()
+                os.fsync(destination_file.fileno())
+        shutil.copystat(source_path, temp_path)
+        os.link(temp_path, destination_path)
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+
+def migrate_legacy_config(config_root_path: Path, *, confirmed: bool) -> dict[str, Any]:
+    source_root = legacy_config_root()
+    pending_copy: list[str] = []
+    skipped_existing: list[str] = []
+    skipped_disallowed: list[str] = []
+    skipped_symlinks: list[str] = []
+    skipped_unsafe: list[str] = []
+    migrated: list[str] = []
+    copy_results: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+    source_root_is_symlink = source_root.is_symlink()
+
+    if source_root_is_symlink:
+        skipped_symlinks.append(".")
+
+    for source_path in [] if source_root_is_symlink else _legacy_config_files(source_root):
+        relative_path = source_path.relative_to(source_root).as_posix()
+        if source_path.is_symlink():
+            skipped_symlinks.append(relative_path)
+            continue
+        if not _is_allowed_legacy_config_path(relative_path):
+            skipped_disallowed.append(relative_path)
+            continue
+        destination_path = config_root_path / relative_path
+        if not _destination_path_is_safe(config_root_path, destination_path):
+            skipped_unsafe.append(relative_path)
+        elif destination_path.exists():
+            skipped_existing.append(relative_path)
+            copy_results.append({"path": relative_path, "status": "skipped_existing"})
+        else:
+            pending_copy.append(relative_path)
+
+    if confirmed and source_root.exists() and not source_root_is_symlink and pending_copy:
+        try:
+            config_root_path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            for relative_path in pending_copy:
+                error_result = {
+                    "path": relative_path,
+                    "error_code": "copy_os_error",
+                    "message": "copy failed due to OS error",
+                }
+                errors.append(error_result)
+                copy_results.append({"path": relative_path, "status": "error", **error_result})
+            pending_copy = []
+        for relative_path in pending_copy:
+            source_path = source_root / relative_path
+            destination_path = config_root_path / relative_path
+            if not _destination_path_is_safe(config_root_path, destination_path):
+                skipped_unsafe.append(relative_path)
+                continue
+            try:
+                destination_path.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                error_result = {
+                    "path": relative_path,
+                    "error_code": "copy_os_error",
+                    "message": "copy failed due to OS error",
+                }
+                errors.append(error_result)
+                copy_results.append({"path": relative_path, "status": "error", **error_result})
+                continue
+            if destination_path.exists():
+                skipped_existing.append(relative_path)
+                copy_results.append({"path": relative_path, "status": "skipped_existing"})
+                continue
+            try:
+                _copy_file_exclusive(source_path, destination_path)
+            except FileExistsError:
+                skipped_existing.append(relative_path)
+                copy_results.append({"path": relative_path, "status": "skipped_existing"})
+                continue
+            except OSError:
+                error_result = {
+                    "path": relative_path,
+                    "error_code": "copy_os_error",
+                    "message": "copy failed due to OS error",
+                }
+                errors.append(error_result)
+                copy_results.append({"path": relative_path, "status": "error", **error_result})
+                continue
+            migrated.append(relative_path)
+            copy_results.append({"path": relative_path, "status": "migrated"})
+        pending_copy = []
+
+    warnings: list[str] = []
+    if not source_root.exists():
+        warnings.append(f"No legacy config directory found at {source_root}.")
+    elif not confirmed and pending_copy:
+        warnings.append("Dry run only. Re-run with --confirmed to copy pending files.")
+    if skipped_disallowed:
+        warnings.append("Skipped non-config or runtime/transient legacy files outside the migration allowlist.")
+    if skipped_symlinks:
+        warnings.append("Skipped legacy symlink paths to avoid copying linked file contents.")
+    if skipped_unsafe:
+        warnings.append("Skipped legacy files whose destination would resolve outside the configured config root.")
+    if errors:
+        warnings.append("Some legacy files could not be copied due to OS errors.")
+    warnings.append("Legacy config directory was not deleted.")
+
+    return {
+        "source_root": str(source_root),
+        "destination_root": str(config_root_path),
+        "legacy_exists": source_root.exists(),
+        "confirmed": confirmed,
+        "pending_copy": pending_copy,
+        "migrated": migrated,
+        "skipped_existing": skipped_existing,
+        "skipped_disallowed": skipped_disallowed,
+        "skipped_symlinks": skipped_symlinks,
+        "skipped_unsafe": skipped_unsafe,
+        "copy_results": copy_results,
+        "errors": errors,
+        "warnings": warnings,
+    }
 
 
 def doctor_report(config: AppConfig | Path) -> dict[str, Any]:

@@ -55,6 +55,20 @@ capture-to-notion doctor
 
 `doctor` 也会在缓存目标早于 `field_sources` 时发出警告；在依赖可信映射门槛前，请重新扫描这些目标。
 
+先只读预览从旧的 `~/.config/notion-skill` 目录迁移，不会写入任何文件：
+
+```bash
+capture-to-notion config migrate
+```
+
+确认后再实际迁移：
+
+```bash
+capture-to-notion config migrate --confirmed
+```
+
+迁移命令只会复制白名单内的配置资产（`config.json`、`states.json`、`aliases.json` 和 `targets/*.json`），不会输出 token 原文，不会覆盖新配置目录里已存在的文件，也不会自动删除旧目录。
+
 迁移历史和重命名说明见 `CHANGELOG.md`。
 
 ## 常用命令
