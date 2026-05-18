@@ -12,7 +12,7 @@ from capture_to_notion.cache import CacheStore
 from capture_to_notion.config import AppConfig
 from capture_to_notion.classifier import classify_content_type, normalize_state
 from capture_to_notion.models import AssetOperation, CaptureInput, Target, WritePlan
-from capture_to_notion.schema import confirmation_blocking_warnings
+from capture_to_notion.schema import WRITABLE_PROPERTY_TYPES, confirmation_blocking_warnings
 
 
 METADATA_DELIMITER_PATTERN = r"[\s,，;；|｜]"
@@ -84,6 +84,24 @@ def _clean_title_suffix(title: str, parser_profile: dict[str, Any] | None = None
     return cleaned
 
 
+def _extract_chinese_quoted_title(raw_input: str) -> str | None:
+    start = raw_input.find("《")
+    if start < 0:
+        return None
+    depth = 0
+    for index in range(start, len(raw_input)):
+        char = raw_input[index]
+        if char == "《":
+            depth += 1
+        elif char == "》":
+            depth -= 1
+            if depth == 0:
+                title = raw_input[start + 1:index]
+                return title or None
+    return None
+
+
+
 def extract_title(raw_input: str, parser_profile: dict[str, Any] | None = None) -> str:
     title_patterns = parser_profile.get("title_patterns", []) if isinstance(parser_profile, dict) else []
     for pattern in _string_list(title_patterns):
@@ -95,9 +113,9 @@ def extract_title(raw_input: str, parser_profile: dict[str, Any] | None = None) 
             title = _clean_title_suffix(match.group(1 if match.groups() else 0), parser_profile)
             if title:
                 return title
-    match = re.search(r"《([^》]+)》", raw_input)
-    if match:
-        return _clean_title_suffix(match.group(1), parser_profile)
+    quoted_title = _extract_chinese_quoted_title(raw_input)
+    if quoted_title:
+        return _clean_title_suffix(quoted_title, parser_profile)
     known_labels = _known_parser_labels(parser_profile)
     known_label_pattern = "|".join(re.escape(label) for label in known_labels)
     label_suffix = re.search(
@@ -931,6 +949,117 @@ def _parser_profile_with_title_cleanup_terms(
     return {**parser_profile, "title_cleanup_terms": cleanup_terms}
 
 
+DATE_GENERIC_LABELS = ["时间", "日期", "完成时间", "完成日期"]
+
+
+def _unique_strings(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if isinstance(value, str) and value))
+
+
+def _schema_input_labels(property_name: str, property_type: str, single_unmapped_date_field: bool) -> list[str]:
+    labels = [property_name]
+    if property_type == "date" and single_unmapped_date_field:
+        labels.extend(DATE_GENERIC_LABELS)
+    return _unique_strings(labels)
+
+
+def _schema_input_field_labels(
+    raw_input: str,
+    fields: dict[str, str],
+    schema: dict[str, Any],
+    parser_profile: dict[str, Any],
+) -> dict[str, list[str]]:
+    mapped_targets = {target_field for target_field in fields.values() if isinstance(target_field, str)}
+    unmapped_date_fields = [
+        property_name
+        for property_name, property_schema in schema.items()
+        if isinstance(property_name, str)
+        and isinstance(property_schema, dict)
+        and property_schema.get("type") == "date"
+        and property_name not in mapped_targets
+    ]
+    single_unmapped_date_field = len(unmapped_date_fields) == 1
+    candidate_labels: dict[str, list[str]] = {}
+    for property_name, property_schema in schema.items():
+        if not isinstance(property_name, str) or not isinstance(property_schema, dict):
+            continue
+        property_type = property_schema.get("type")
+        if property_type not in WRITABLE_PROPERTY_TYPES or property_name in mapped_targets:
+            continue
+        labels = _schema_input_labels(property_name, str(property_type), single_unmapped_date_field)
+        candidate_labels[property_name] = labels
+
+    all_candidate_labels = [label for labels in candidate_labels.values() for label in labels]
+    known_labels = _unique_strings(_known_parser_labels(parser_profile) + all_candidate_labels)
+    return {
+        property_name: labels
+        for property_name, labels in candidate_labels.items()
+        if extract_labeled_value(raw_input, labels, known_labels) is not None
+    }
+
+
+def _parser_profile_with_schema_input_labels(
+    parser_profile: dict[str, Any],
+    schema_input_labels: dict[str, list[str]],
+) -> dict[str, Any]:
+    if not schema_input_labels:
+        return parser_profile
+    labels = dict(parser_profile.get("labels", {})) if isinstance(parser_profile.get("labels"), dict) else {}
+    for record_key, record_labels in schema_input_labels.items():
+        labels[record_key] = _unique_strings(_string_list(labels.get(record_key)) + record_labels)
+    return {**parser_profile, "labels": labels}
+
+
+def _apply_schema_input_field_mappings(
+    *,
+    raw_input: str,
+    fields: dict[str, str],
+    field_sources: dict[str, str],
+    schema: dict[str, Any],
+    parser_profile: dict[str, Any],
+) -> tuple[dict[str, str], dict[str, str], dict[str, Any], bool]:
+    schema_input_labels = _schema_input_field_labels(raw_input, fields, schema, parser_profile)
+    if not schema_input_labels:
+        return fields, field_sources, parser_profile, False
+    updated_fields = dict(fields)
+    updated_field_sources = dict(field_sources)
+    for record_key in schema_input_labels:
+        updated_fields[record_key] = record_key
+        updated_field_sources[record_key] = "profile"
+    updated_profile = _parser_profile_with_schema_input_labels(parser_profile, schema_input_labels)
+    return updated_fields, updated_field_sources, updated_profile, True
+
+
+
+def _state_option_names(property_schema: dict[str, Any] | None) -> set[str]:
+    if not isinstance(property_schema, dict) or property_schema.get("type") not in {"select", "status"}:
+        return set()
+    options = property_schema.get("options", [])
+    if not isinstance(options, list):
+        return set()
+    return {
+        option.get("name")
+        for option in options
+        if isinstance(option, dict) and isinstance(option.get("name"), str)
+    }
+
+
+def _plan_state_value(
+    value: str | None,
+    *,
+    fields: dict[str, str],
+    schema: dict[str, Any],
+    states_config: dict[str, Any] | None,
+) -> str:
+    if isinstance(value, str):
+        stripped = value.strip()
+        state_field = fields.get("state")
+        property_schema = schema.get(state_field) if isinstance(state_field, str) else None
+        if stripped in _state_option_names(property_schema):
+            return stripped
+    return normalize_state(value, states_config)
+
+
 
 def _normalized_record_for_capture(
     capture: CaptureInput,
@@ -1020,11 +1149,25 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
 
     fields = data_source.get("fields", {})
     field_sources = data_source.get("field_sources", {})
+    data_source_schema = data_source.get("schema", {})
     parser_profile = _parser_profile_with_title_cleanup_terms(
         parser_profile_for(structure, data_source, content_type, default_parser_profile),
         capture,
         structure,
     )
+    fields, field_sources, parser_profile, cache_updated = _apply_schema_input_field_mappings(
+        raw_input=capture.raw_input,
+        fields=fields if isinstance(fields, dict) else {},
+        field_sources=field_sources if isinstance(field_sources, dict) else {},
+        schema=data_source_schema if isinstance(data_source_schema, dict) else {},
+        parser_profile=parser_profile,
+    )
+    if cache_updated:
+        data_source["fields"] = fields
+        data_source["field_sources"] = field_sources
+        target_id = alias.get("target_id")
+        if isinstance(target_id, str) and target_id:
+            cache.write_json(cache.config.targets_dir / f"{target_id}.json", structure)
     required_schema_fields = _required_schema_fields(parser_profile)
     required_value_fields = _required_value_fields(parser_profile)
     summary_key_fields = _summary_key_fields(parser_profile)
@@ -1045,7 +1188,12 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         trusted_field_sources,
     )
     normalized_record = _normalized_record_for_capture(capture, content_type, parser_profile)
-    normalized_record["state"] = normalize_state(capture.state, states_config)
+    normalized_record["state"] = _plan_state_value(
+        capture.state,
+        fields=fields,
+        schema=data_source_schema if isinstance(data_source_schema, dict) else {},
+        states_config=states_config,
+    )
     enrichment_requirements = _summary_enrichment_requirements(normalized_record, parser_profile)
     cover_url = normalized_record.get("cover")
 
@@ -1136,7 +1284,8 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
     }
     if capture.existing_page_id:
         write_operation["page_id"] = capture.existing_page_id
-    operations = [] if requires_confirmation else [write_operation]
+    planned_operations = [write_operation]
+    operations = [] if requires_confirmation else planned_operations
     planned_completion_operations = [] if requires_confirmation else completion_operations
     planned_asset_operations = [] if requires_confirmation else asset_operations
     write_targets = _write_targets(
@@ -1182,6 +1331,9 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         requires_confirmation=requires_confirmation,
         confirmation_reason=confirmation_reason,
         completion_operations=planned_completion_operations,
+        planned_operations=planned_operations if requires_confirmation else [],
+        planned_asset_operations=asset_operations if requires_confirmation else [],
+        planned_completion_operations=completion_operations if requires_confirmation else [],
         capture_input=capture.to_dict(),
     )
     if not requires_confirmation:

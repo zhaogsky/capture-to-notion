@@ -262,6 +262,170 @@ def test_capture_apply_rejects_empty_operations_before_adapter(tmp_path, monkeyp
     assert "capture plan" in stderr
     assert adapter_factory.called is False
 
+
+def test_capture_apply_uses_planned_operations_after_confirmation(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    seed_target_cache(config)
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "operations": [],
+            "planned_operations": [{"type": "create_or_update_page", "data_source_id": "ds-books"}],
+            "requires_confirmation": True,
+            "confirmation_reason": "field_mapping_missing",
+        },
+    )
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-created",
+            "object": "page",
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "initialized"}},
+            },
+        }
+    )
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", AdapterFactoryProbe(fake_adapter))
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["applied"] is True
+    assert fake_adapter.created[0][0] == "ds-books"
+
+def test_capture_apply_uses_planned_asset_operations_after_confirmation(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    CacheStore(config).write_json(
+        config.targets_dir / "books.json",
+        {
+            "target": {"page_id": "page-books", "title": "书单"},
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {
+                        "书名": {"name": "书名", "type": "title"},
+                        "阅读状态": {"name": "阅读状态", "type": "status"},
+                        "封面": {"name": "封面", "type": "files"},
+                    },
+                },
+            },
+        },
+    )
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "normalized_record": {"title": "可能性的艺术", "state": "initialized", "cover": None},
+            "field_mapping": {"title": "书名", "state": "阅读状态", "cover": "封面"},
+            "operations": [],
+            "planned_operations": [{"type": "create_or_update_page", "data_source_id": "ds-books"}],
+            "asset_operations": [],
+            "planned_asset_operations": [
+                {
+                    "type": "cover_image",
+                    "source_url": "https://example.com/cover.jpg",
+                    "local_cache_path": None,
+                    "target_field": "封面",
+                    "action": "attach_external_url",
+                    "record_key": "cover",
+                    "status": "planned",
+                    "warning": None,
+                }
+            ],
+            "requires_confirmation": True,
+            "confirmation_reason": "field_mapping_missing",
+        },
+    )
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-created",
+            "object": "page",
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "initialized"}},
+                "封面": {"type": "files", "files": [{"type": "external", "external": {"url": "https://example.com/cover.jpg"}}]},
+            },
+        }
+    )
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", AdapterFactoryProbe(fake_adapter))
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 0
+    assert fake_adapter.created[0][1]["封面"]["files"][0]["external"]["url"] == "https://example.com/cover.jpg"
+
+
+
+def test_capture_apply_uses_planned_completion_operations_after_confirmation(tmp_path, monkeypatch, capsys):
+    class CompletionAdapter(FakeAdapter):
+        def __init__(self):
+            super().__init__(
+                pages={
+                    "page-created": {
+                        "id": "page-created",
+                        "object": "page",
+                        "properties": {
+                            "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                            "阅读状态": {"type": "status", "status": {"name": "initialized"}},
+                        },
+                    },
+                    "page-related": {
+                        "id": "page-related",
+                        "object": "page",
+                        "properties": {
+                            "备注": {"type": "rich_text", "rich_text": [{"plain_text": "已补全"}]},
+                        },
+                    },
+                }
+            )
+            self.updated: list[tuple[str, dict[str, Any]]] = []
+
+        def update_page(self, page_id: str, properties: dict[str, Any], cover: Any = None, cover_source_url: str | None = None) -> dict[str, Any]:
+            self.updated.append((page_id, properties))
+            return {"id": page_id, "url": f"https://notion.example/{page_id}"}
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    seed_target_cache(config)
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "normalized_record": {"title": "可能性的艺术", "state": "initialized", "related": "page-related"},
+            "operations": [],
+            "planned_operations": [{"type": "create_or_update_page", "data_source_id": "ds-books"}],
+            "completion_operations": [],
+            "planned_completion_operations": [
+                {
+                    "type": "complete_relation_page",
+                    "source_record_key": "related",
+                    "field_mapping": {"note": "备注"},
+                    "record": {"note": "已补全"},
+                    "schema": {"备注": {"name": "备注", "type": "rich_text"}},
+                    "asset_operations": [],
+                }
+            ],
+            "requires_confirmation": True,
+            "confirmation_reason": "field_mapping_missing",
+        },
+    )
+    fake_adapter = CompletionAdapter()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", AdapterFactoryProbe(fake_adapter))
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["completion_results"][0]["page_id"] == "page-related"
+    assert fake_adapter.updated == [("page-related", {"备注": {"rich_text": [{"text": {"content": "已补全"}}]}})]
+
+
+
 def test_capture_apply_successful_create_uses_fake_adapter(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
     config = ensure_config()

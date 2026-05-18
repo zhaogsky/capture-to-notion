@@ -218,6 +218,12 @@ def _build_number_property(value: Any) -> dict[str, Any]:
 
 
 def _build_checkbox_property(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"是", "对", "真", "已", "已完成", "true", "yes", "y", "1"}:
+            return {"checkbox": True}
+        if normalized in {"否", "不", "假", "未", "未完成", "false", "no", "n", "0"}:
+            return {"checkbox": False}
     return {"checkbox": bool(value)}
 
 

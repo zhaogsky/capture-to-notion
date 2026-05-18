@@ -20,9 +20,10 @@ Capture plans depend on target cache `parser_profile`, `fields`, and `field_sour
 If the user asks to summarize, extract, condense,整理, 归纳, 提炼, or save a long transcript/article/notes after summarizing, summarize before building the capture input.
 
 1. If a currently available `/summarize` skill can handle the source, use it first.
-2. If no currently available `/summarize` skill can handle the source, stop summary preprocessing and report that summary generation is unavailable; do not silently fall back to default model summarization.
-3. Use the summary as the main captured content or as a notes/summary candidate in `raw_input`.
-4. Continue with the normal capture planning flow after summarization.
+2. If `/summarize` is unavailable, cannot handle the source, or only documents a missing local CLI/backend, use the current AI session to summarize instead of blocking the workflow.
+3. If neither `/summarize` nor the current AI session can access enough source content to summarize, ask the user to provide transcript/full text or confirm saving only link/metadata.
+4. Use the summary as the main captured content or as a notes/summary candidate in `raw_input`, and include a source marker such as `summary_source: summarize_skill` or `summary_source: ai_fallback` in the input when useful for plan review.
+5. Continue with the normal capture planning flow after summarization.
 
 ## Summary-Like Target Fields
 
@@ -32,7 +33,7 @@ When a summary-like field is planned:
 
 1. Prefer a real content source: transcript, full article text, audio/video content, full show notes, or another source representing the body content.
 2. Do not use page-visible metadata such as title, SEO description, or a short platform intro as a content summary.
-3. If a content source is available, use a currently available `/summarize` skill; if no such skill can handle it, stop and report that summary generation is unavailable.
+3. If a content source is available, use a currently available `/summarize` skill first; if `/summarize` is unavailable or unusable, use the current AI session to summarize the content.
 4. If no content source is available, do not write the summary-like field. Present the plan's `enrichment_requirements` and ask the user to provide a transcript/content source or confirm accepting metadata instead.
 5. Keep this profile-driven: do not hardcode a Notion property name, page title, platform name, or content type in runtime logic.
 
@@ -76,6 +77,8 @@ capture-to-notion capture preflight --input /path/to/input.json --compact
 ```bash
 capture-to-notion capture plan --input /path/to/input.json --output /path/to/plan.json --compact
 ```
+
+If the input contains labeled fields that the cache cannot cover, the plan command should revalidate the target page/data source schema, update the local target cache when the actual schema has matching writable fields, and then build the plan from the refreshed cache. Clear matches do not require user confirmation; only ambiguous target/data-source choices or incompatible field types should block for confirmation.
 
 12. Present the compact stdout preflight conclusion and plan to the user in concise Chinese. The `--output` plan file remains the complete executable JSON for apply.
 13. If `requires_confirmation` is true, ask the user to confirm or choose a target before writing.
@@ -132,6 +135,7 @@ Summarize preflight/plan results like this:
 - Stay cache-first: when reliable target cache or schema facts already exist, use them before considering a re-scan.
 - Do not use Notion MCP as a fallback; stay within the capture-to-notion Skill backend and CLI flow.
 - External URLs are not automatically parsed or fetched by default; recommend or ask first.
+- Missing `/summarize` CLI/backend is not a blocker by itself; when the user requested summarization and enough content is available to the current AI session, use AI fallback summarization and continue to preflight/plan.
 - If preflight or plan has no target, ask the user to choose a Notion page.
 - If preflight marks the target as risky or ambiguous, explain it and wait before planning or writing.
 - If cover handling fails, preserve the main plan and report the warning.

@@ -117,6 +117,9 @@ class WritePlan:
     requires_confirmation: bool
     confirmation_reason: str | None
     completion_operations: list[dict[str, Any]] = field(default_factory=list)
+    planned_operations: list[dict[str, Any]] = field(default_factory=list)
+    planned_asset_operations: list[AssetOperation] = field(default_factory=list)
+    planned_completion_operations: list[dict[str, Any]] = field(default_factory=list)
     capture_input: dict[str, Any] | None = None
 
     @classmethod
@@ -138,6 +141,12 @@ class WritePlan:
             requires_confirmation=data["requires_confirmation"],
             confirmation_reason=data["confirmation_reason"],
             completion_operations=data.get("completion_operations", []),
+            planned_operations=data.get("planned_operations", []),
+            planned_asset_operations=[
+                AssetOperation.from_dict(operation)
+                for operation in data.get("planned_asset_operations", [])
+            ],
+            planned_completion_operations=data.get("planned_completion_operations", []),
             capture_input=data.get("capture_input"),
         )
 
@@ -162,6 +171,12 @@ class WritePlan:
         }
         if self.completion_operations:
             data["completion_operations"] = self.completion_operations
+        if self.planned_operations:
+            data["planned_operations"] = self.planned_operations
+        if self.planned_asset_operations:
+            data["planned_asset_operations"] = [asdict(operation) for operation in self.planned_asset_operations]
+        if self.planned_completion_operations:
+            data["planned_completion_operations"] = self.planned_completion_operations
         if self.capture_input is not None:
             data["capture_input"] = self.capture_input
         return data

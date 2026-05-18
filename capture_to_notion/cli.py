@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from capture_to_notion.notion_adapter import (
     NotionPermissionError,
     NotionRateLimitError,
 )
-from capture_to_notion.planner import build_capture_plan, build_plan_cli_summary
+from capture_to_notion.planner import build_capture_plan, build_plan_cli_summary, primary_data_source
 from capture_to_notion.preflight import build_capture_preflight, build_capture_preflight_summary
 from capture_to_notion.scanner import scan_data_source_target, scan_page_target
 from capture_to_notion.verifier import url_is_accessible, verify_capture_page
@@ -60,6 +61,72 @@ def load_write_plan(path: str) -> WritePlan:
 
 def print_json(data: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+
+
+LABELED_INPUT_PATTERN = re.compile(r"(?:^|[\s,，;；|｜])([^\s,，;；|｜:：]{1,32})\s*[:：]")
+
+
+def _labeled_input_keys(raw_input: str) -> set[str]:
+    return {match.group(1) for match in LABELED_INPUT_PATTERN.finditer(raw_input)}
+
+
+def _profile_labels(profile: Any) -> set[str]:
+    labels: set[str] = set()
+    if not isinstance(profile, dict):
+        return labels
+    raw_labels = profile.get("labels")
+    if isinstance(raw_labels, dict):
+        for value in raw_labels.values():
+            if isinstance(value, str):
+                labels.add(value)
+            elif isinstance(value, list):
+                labels.update(item for item in value if isinstance(item, str))
+    for section in profile.values():
+        if isinstance(section, dict):
+            labels.update(_profile_labels(section))
+    return labels
+
+
+def _known_input_labels(structure: dict[str, Any], data_source: dict[str, Any]) -> set[str]:
+    labels = _profile_labels(structure.get("parser_profile")) | _profile_labels(data_source.get("parser_profile"))
+    fields = data_source.get("fields", {})
+    if isinstance(fields, dict):
+        labels.update(key for key in fields if isinstance(key, str))
+        labels.update(value for value in fields.values() if isinstance(value, str))
+    return labels
+
+
+def _plan_needs_schema_refresh(capture: CaptureInput, cache: CacheStore) -> bool:
+    alias = cache.find_alias(capture.target_hint)
+    if not isinstance(alias, dict) or not isinstance(alias.get("page_id"), str):
+        return False
+    structure = cache.target_structure(alias.get("target_id"))
+    if not structure:
+        return False
+    content_type = classify_content_type(capture)
+    _, data_source = primary_data_source(structure, content_type)
+    if not isinstance(data_source, dict):
+        return False
+    input_keys = _labeled_input_keys(capture.raw_input)
+    if not input_keys:
+        return False
+    return bool(input_keys - _known_input_labels(structure, data_source))
+
+
+def _refresh_target_cache_for_plan(capture: CaptureInput, cache: CacheStore, adapter: Any) -> None:
+    alias = cache.find_alias(capture.target_hint)
+    if not isinstance(alias, dict):
+        return
+    page_id = alias.get("page_id")
+    if not isinstance(page_id, str) or not page_id:
+        return
+    scan_page_target(
+        adapter,
+        page_id,
+        cache,
+        target_id=alias.get("target_id") if isinstance(alias.get("target_id"), str) else None,
+        alias=capture.target_hint,
+    )
 
 
 def cmd_version(args: argparse.Namespace) -> int:
@@ -206,6 +273,8 @@ def cmd_capture_plan(args: argparse.Namespace) -> int:
     config = ensure_config()
     cache = CacheStore(config)
     capture = load_capture_input(args.input)
+    if _plan_needs_schema_refresh(capture, cache):
+        _refresh_target_cache_for_plan(capture, cache, NotionAdapter.from_config(config))
     plan = build_capture_plan(capture, cache)
     if args.output:
         Path(args.output).write_text(plan.to_json(), encoding="utf-8")
@@ -498,6 +567,14 @@ def cmd_capture_apply(args: argparse.Namespace) -> int:
     if plan.requires_confirmation and not args.confirmed:
         reason = plan.confirmation_reason or "未说明原因"
         raise CliInputError(f"计划需要确认后才能执行: {reason}. 如已确认，请传入 --confirmed")
+
+    if args.confirmed:
+        if not plan.operations and plan.planned_operations:
+            plan.operations = plan.planned_operations
+        if not plan.asset_operations and plan.planned_asset_operations:
+            plan.asset_operations = plan.planned_asset_operations
+        if not plan.completion_operations and plan.planned_completion_operations:
+            plan.completion_operations = plan.planned_completion_operations
 
     if not plan.operations:
         raise CliInputError("计划没有可执行操作，请重新运行 capture plan 生成可执行计划")

@@ -139,6 +139,147 @@ def seed_podcast_target(config, parser_profile=True):
     )
 
 
+def test_capture_plan_infers_and_caches_unmapped_date_field_from_schema(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "独树不成林": {
+                    "type": "page",
+                    "page_id": "page-podcasts",
+                    "target_id": "podcastshelf",
+                }
+            }
+        },
+    )
+    write_json(
+        config.targets_dir / "podcastshelf.json",
+        {
+            "target": {"page_id": "page-podcasts", "title": "独树不成林", "target_id": "podcastshelf"},
+            "parser_profile": {
+                "podcast_episode": {
+                    "labels": {"description": ["简介"]},
+                    "trusted_field_sources": ["explicit", "profile"],
+                }
+            },
+            "data_sources": {
+                "episodes": {
+                    "data_source_id": "ds-podcasts",
+                    "title": "Podcast Episodes",
+                    "role": "primary",
+                    "content_types": ["podcast_episode"],
+                    "fields": {
+                        "title": "主题",
+                        "state": "状态",
+                        "description": "内容描述",
+                    },
+                    "field_sources": {
+                        "title": "profile",
+                        "state": "profile",
+                        "description": "profile",
+                    },
+                    "schema": {
+                        "主题": {"type": "title"},
+                        "状态": {"type": "select"},
+                        "内容描述": {"type": "rich_text"},
+                        "完成时间": {"type": "date"},
+                    },
+                }
+            },
+            "state_mapping": {"field": "状态", "values": {"completed": "已完成"}},
+        },
+    )
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="《这就是卢梭》 时间：2026-05-18 简介：卢梭专题导论",
+            target_hint="独树不成林",
+            state="已完成",
+            content_type_hint="podcast_episode",
+            options=CaptureOptions(),
+        ),
+        cache,
+    )
+
+    assert plan.normalized_record["完成时间"] == "2026-05-18"
+    assert plan.field_mapping["完成时间"] == "完成时间"
+    assert plan.summary["writable_fields"]["完成时间"] == {
+        "target_field": "完成时间",
+        "value_status": "present",
+        "write_status": "planned",
+    }
+    cached_target = json.loads((config.targets_dir / "podcastshelf.json").read_text(encoding="utf-8"))
+    cached_data_source = cached_target["data_sources"]["episodes"]
+    assert cached_data_source["fields"]["完成时间"] == "完成时间"
+    assert cached_data_source["field_sources"]["完成时间"] == "profile"
+
+
+
+def test_capture_plan_preserves_state_value_matching_target_schema_option(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "独树不成林": {
+                    "type": "page",
+                    "page_id": "page-podcasts",
+                    "target_id": "podcastshelf",
+                }
+            }
+        },
+    )
+    write_json(
+        config.targets_dir / "podcastshelf.json",
+        {
+            "target": {"page_id": "page-podcasts", "title": "独树不成林", "target_id": "podcastshelf"},
+            "parser_profile": {"podcast_episode": {"trusted_field_sources": ["explicit", "profile"]}},
+            "data_sources": {
+                "episodes": {
+                    "data_source_id": "ds-podcasts",
+                    "title": "Podcast Episodes",
+                    "role": "primary",
+                    "content_types": ["podcast_episode"],
+                    "fields": {"title": "主题", "state": "状态"},
+                    "field_sources": {"title": "profile", "state": "profile"},
+                    "schema": {
+                        "主题": {"type": "title"},
+                        "状态": {
+                            "type": "select",
+                            "options": [
+                                {"name": "已完成", "color": "purple"},
+                                {"name": "未开始", "color": "brown"},
+                                {"name": "进行中", "color": "green"},
+                            ],
+                        },
+                    },
+                }
+            },
+            "state_mapping": {"field": "状态", "values": {}},
+        },
+    )
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="《340-思考是一种政治能力吗？》",
+            target_hint="独树不成林",
+            state="进行中",
+            content_type_hint="podcast_episode",
+            options=CaptureOptions(),
+        ),
+        cache,
+    )
+
+    assert plan.normalized_record["state"] == "进行中"
+    assert plan.summary["state"] == "进行中"
+
+
+
 def test_build_asset_operations_includes_non_cover_files_mapping(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -841,6 +982,11 @@ def test_extract_title_uses_generic_parser_profile_patterns():
 
 
 
+def test_extract_title_handles_nested_chinese_book_quotes():
+    assert planner_module.extract_title("《340-思考是一种政治能力吗？（介绍阿伦特《心智生活》）》") == "340-思考是一种政治能力吗？（介绍阿伦特《心智生活》）"
+
+
+
 def test_book_capture_plan_strips_target_alias_from_title_prefix_before_metadata(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -902,6 +1048,9 @@ def test_book_capture_plan_requires_confirmation_when_key_values_are_missing(tmp
     assert plan.confirmation_reason == "book_key_values_missing"
     assert "book_key_values_missing:author,isbn,page_count" in plan.warnings
     assert plan.operations == []
+    assert plan.planned_operations == [
+        {"type": "create_or_update_page", "target_data_source": "Books", "data_source_id": "ds-books"}
+    ]
     assert plan.asset_operations == []
     assert plan.summary["key_fields"]["author"] == {"target_field": "作者", "value_status": "missing_value"}
     assert plan.summary["key_fields"]["isbn"] == {"target_field": "ISBN", "value_status": "missing_value"}

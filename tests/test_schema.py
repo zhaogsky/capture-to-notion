@@ -165,6 +165,15 @@ def test_property_value_builders_cover_supported_write_types_without_business_ke
     assert properties["Tags"] == {"multi_select": [{"name": "政治"}, {"name": "历史"}]}
 
 
+def test_build_properties_coerces_checkbox_strings():
+    schema = {"已读": {"type": "checkbox"}}
+    field_mapping = {"read": "已读"}
+
+    assert build_properties({"read": "是"}, field_mapping, schema) == {"已读": {"checkbox": True}}
+    assert build_properties({"read": "否"}, field_mapping, schema) == {"已读": {"checkbox": False}}
+
+
+
 def test_build_properties_coerces_integer_strings_for_number_properties():
     properties = build_properties(
         {"page_count": "1"},

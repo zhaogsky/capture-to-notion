@@ -114,6 +114,26 @@ class ScanAdapter:
         }
 
 
+class PodcastCompletionDateScanAdapter:
+    def retrieve_page(self, page_id):
+        return {"id": page_id, "title": "独树不成林"}
+
+    def list_block_children(self, page_id):
+        return [{"type": "child_database", "id": "db-podcasts", "child_database": {"title": "Episodes"}}]
+
+    def retrieve_database(self, database_id):
+        return {
+            "id": database_id,
+            "title": [{"plain_text": "Episodes"}],
+            "properties": {
+                "主题": {"id": "title", "type": "title", "title": {}},
+                "状态": {"id": "state", "type": "select", "select": {"options": []}},
+                "内容描述": {"id": "description", "type": "rich_text", "rich_text": {}},
+                "完成时间": {"id": "completed", "type": "date", "date": {}},
+            },
+        }
+
+
 class DataSourceScanAdapter:
     def retrieve_data_source(self, data_source_id):
         return {
@@ -206,6 +226,85 @@ def test_target_scan_saves_target_cache_and_alias(tmp_path, monkeypatch, capsys)
     assert target["data_sources"]["db-books"]["fields"] == {}
     aliases = json.loads((tmp_path / "aliases.json").read_text(encoding="utf-8"))["aliases"]
     assert aliases["书单"]["target_id"] == "bookshelf"
+
+
+def test_capture_plan_refreshes_cache_when_input_field_needs_actual_schema(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(
+        tmp_path / "aliases.json",
+        {
+            "aliases": {
+                "独树不成林": {
+                    "type": "page",
+                    "page_id": "page-podcasts",
+                    "target_id": "podcastshelf",
+                }
+            }
+        },
+    )
+    write_json(
+        tmp_path / "targets" / "podcastshelf.json",
+        {
+            "target": {"page_id": "page-podcasts", "title": "独树不成林", "target_id": "podcastshelf"},
+            "parser_profile": {
+                "podcast_episode": {
+                    "labels": {"description": ["简介"]},
+                    "primary_score_fields": {"title": 20, "state": 10},
+                    "trusted_field_sources": ["explicit", "profile"],
+                }
+            },
+            "data_sources": {
+                "db-podcasts": {
+                    "data_source_id": "db-podcasts",
+                    "title": "Episodes",
+                    "role": "primary",
+                    "content_types": ["podcast_episode"],
+                    "fields": {
+                        "title": "主题",
+                        "state": "状态",
+                        "description": "内容描述",
+                    },
+                    "field_sources": {
+                        "title": "profile",
+                        "state": "profile",
+                        "description": "profile",
+                    },
+                    "schema": {
+                        "主题": {"type": "title"},
+                        "状态": {"type": "select"},
+                        "内容描述": {"type": "rich_text"},
+                    },
+                }
+            },
+            "state_mapping": {"field": "状态", "values": {"completed": "已完成"}},
+        },
+    )
+    input_file = tmp_path / "capture.json"
+    write_json(
+        input_file,
+        {
+            "raw_input": "《这就是卢梭》 时间：2026-05-18 简介：卢梭专题导论",
+            "target_hint": "独树不成林",
+            "state": "已完成",
+            "content_type_hint": "podcast_episode",
+        },
+    )
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: PodcastCompletionDateScanAdapter()))
+
+    result = cli.main(["capture", "plan", "--input", str(input_file), "--compact"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["summary"]["mapped_fields"]["完成时间"] == "完成时间"
+    assert data["summary"]["writable_fields"]["完成时间"] == {
+        "target_field": "完成时间",
+        "value_status": "present",
+        "write_status": "planned",
+    }
+    target = json.loads((tmp_path / "targets" / "podcastshelf.json").read_text(encoding="utf-8"))
+    assert "完成时间" in target["data_sources"]["db-podcasts"]["schema"]
+    assert target["data_sources"]["db-podcasts"]["fields"]["完成时间"] == "完成时间"
+
 
 
 def test_target_scan_accepts_data_source_id(tmp_path, monkeypatch, capsys):
