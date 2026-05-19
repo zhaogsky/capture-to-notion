@@ -1,9 +1,28 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
 [project]
 name = "capture-to-notion"
 version = "0.1.0"
 description = "Local CLI backend for the global Claude /capture-to-notion skill"
+readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Aaron" }]
+keywords = ["claude-code", "notion", "capture", "skill"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Utilities",
+]
 dependencies = ["notion-client>=2.3.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=9.0.0", "pytest-cov>=7.0.0"]
 
 [project.scripts]
 capture-to-notion = "capture_to_notion.cli:main"
@@ -11,3 +30,12 @@ capture-to-notion = "capture_to_notion.cli:main"
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["capture_to_notion"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true

@@ -13,6 +13,10 @@ Capture to Notion is a Claude Code skill plus local CLI backend for planning and
 
 As of 2026-05-15, the planned 11-direction development cycle has no required remaining implementation tasks. Core capture, cache-first planning, migration governance, compact output, verification, and reusable workflow norms are in regression maintenance. Future work should be opened as small follow-up tasks only when real usage feedback, long-tail golden cases, structure changes, or a second similar Skill creates new requirements.
 
+## Release Status
+
+`0.1.0` is an internal Beta release for personal and internal daily use. See [RELEASE.md](RELEASE.md) for installation, verification, rollback, and version policy details.
+
 ## Install or Reinstall
 
 Install the editable CLI from this directory:
