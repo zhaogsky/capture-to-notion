@@ -61,7 +61,13 @@ def seed_cached_books_target(root):
 
 
 class SearchAdapter:
-    def search(self, query):
+    def __init__(self):
+        self.search_calls = []
+
+    def search(self, query, limit=None, include_parent_path=True):
+        self.search_calls.append(
+            {"query": query, "limit": limit, "include_parent_path": include_parent_path}
+        )
         return [
             {
                 "id": "page-books",
@@ -74,7 +80,7 @@ class SearchAdapter:
 
 
 class DuplicateTitleSearchAdapter:
-    def search(self, query):
+    def search(self, query, limit=None, include_parent_path=True):
         return [
             {
                 "id": "page-books-current",
@@ -92,6 +98,27 @@ class DuplicateTitleSearchAdapter:
                 "url": "https://example.com/template-books",
                 "last_edited_time": "2023-08-25T00:00:00Z",
             },
+        ]
+
+
+class ManySearchAdapter:
+    def __init__(self):
+        self.search_calls = []
+
+    def search(self, query, limit=None, include_parent_path=True):
+        self.search_calls.append(
+            {"query": query, "limit": limit, "include_parent_path": include_parent_path}
+        )
+        return [
+            {
+                "id": f"page-{index}",
+                "object": "page",
+                "title": f"候选 {index}",
+                "parent_path": "工具 / 模板",
+                "url": f"https://example.com/page-{index}",
+                "last_edited_time": "2026-05-10T00:00:00Z",
+            }
+            for index in range(1, 5)
         ]
 
 
@@ -149,7 +176,8 @@ class DataSourceScanAdapter:
 
 def test_target_search_outputs_candidates_without_writing_cache(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: SearchAdapter()))
+    adapter = SearchAdapter()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: adapter))
 
     result = cli.main(["target", "search", "--query", "书单"])
 
@@ -157,6 +185,8 @@ def test_target_search_outputs_candidates_without_writing_cache(tmp_path, monkey
     data = json.loads(capsys.readouterr().out)
     assert data == {
         "query": "书单",
+        "result_count": 1,
+        "truncated": False,
         "results": [
             {
                 "id": "page-books",
@@ -167,7 +197,9 @@ def test_target_search_outputs_candidates_without_writing_cache(tmp_path, monkey
             }
         ],
         "requires_confirmation": True,
+        "next_action": "choose_exact_target_or_scan",
     }
+    assert adapter.search_calls == [{"query": "书单", "limit": 6, "include_parent_path": True}]
     assert json.loads((tmp_path / "aliases.json").read_text(encoding="utf-8")) == {"aliases": {}}
 
 
@@ -205,6 +237,77 @@ def test_target_search_marks_duplicate_titles_as_requiring_disambiguation(tmp_pa
         }
     ]
     assert json.loads((tmp_path / "aliases.json").read_text(encoding="utf-8")) == {"aliases": {}}
+
+
+def test_target_search_limit_caps_results(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    adapter = ManySearchAdapter()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: adapter))
+
+    result = cli.main(["target", "search", "--query", "书单", "--limit", "2"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["result_count"] == 2
+    assert data["truncated"] is True
+    assert [result["id"] for result in data["results"]] == ["page-1", "page-2"]
+    assert adapter.search_calls == [{"query": "书单", "limit": 3, "include_parent_path": True}]
+
+
+def test_target_search_compact_omits_large_fields(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    adapter = ManySearchAdapter()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: adapter))
+
+    result = cli.main(["target", "search", "--query", "书单", "--limit", "2", "--compact"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["results"] == [
+        {
+            "id": "page-1",
+            "object": "page",
+            "title": "候选 1",
+            "last_edited_time": "2026-05-10T00:00:00Z",
+        },
+        {
+            "id": "page-2",
+            "object": "page",
+            "title": "候选 2",
+            "last_edited_time": "2026-05-10T00:00:00Z",
+        },
+    ]
+    assert adapter.search_calls == [{"query": "书单", "limit": 3, "include_parent_path": False}]
+
+
+def test_target_search_compact_can_include_parent_path(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    adapter = ManySearchAdapter()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: adapter))
+
+    result = cli.main([
+        "target",
+        "search",
+        "--query",
+        "书单",
+        "--limit",
+        "1",
+        "--compact",
+        "--include-parent-path",
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["results"] == [
+        {
+            "id": "page-1",
+            "object": "page",
+            "title": "候选 1",
+            "last_edited_time": "2026-05-10T00:00:00Z",
+            "parent_path": "工具 / 模板",
+        }
+    ]
+    assert adapter.search_calls == [{"query": "书单", "limit": 2, "include_parent_path": True}]
 
 
 def test_target_scan_saves_target_cache_and_alias(tmp_path, monkeypatch, capsys):

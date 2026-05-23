@@ -64,6 +64,8 @@ def print_json(data: dict[str, Any]) -> None:
 
 
 LABELED_INPUT_PATTERN = re.compile(r"(?:^|[\s,，;；|｜])([^\s,，;；|｜:：]{1,32})\s*[:：]")
+DEFAULT_SEARCH_LIMIT = 5
+MAX_SEARCH_LIMIT = 100
 
 
 def _labeled_input_keys(raw_input: str) -> set[str]:
@@ -222,11 +224,44 @@ def duplicate_title_groups(results: list[dict[str, Any]]) -> list[dict[str, Any]
     ]
 
 
+def _compact_target_search_result(result: dict[str, Any], include_parent_path: bool = False) -> dict[str, Any]:
+    keys = ["id", "object", "title", "last_edited_time"]
+    if include_parent_path:
+        keys.append("parent_path")
+    return {key: result.get(key) for key in keys if result.get(key) is not None}
+
+
+def _target_search_limit(value: int) -> int:
+    if value < 1 or value > MAX_SEARCH_LIMIT:
+        raise CliInputError(f"--limit 必须在 1 到 {MAX_SEARCH_LIMIT} 之间")
+    return value
+
+
 def cmd_target_search(args: argparse.Namespace) -> int:
+    limit = _target_search_limit(args.limit)
     config = ensure_config()
     adapter = NotionAdapter.from_config(config)
-    results = adapter.search(args.query)
-    output: dict[str, Any] = {"query": args.query, "results": results, "requires_confirmation": True}
+    include_parent_path = args.include_parent_path or not args.compact
+    raw_results = adapter.search(
+        args.query,
+        limit=min(limit + 1, MAX_SEARCH_LIMIT),
+        include_parent_path=include_parent_path,
+    )
+    truncated = len(raw_results) > limit
+    results = raw_results[:limit]
+    if args.compact:
+        results = [
+            _compact_target_search_result(result, include_parent_path=args.include_parent_path)
+            for result in results
+        ]
+    output: dict[str, Any] = {
+        "query": args.query,
+        "result_count": len(results),
+        "truncated": truncated,
+        "results": results,
+        "requires_confirmation": True,
+        "next_action": "choose_exact_target_or_scan",
+    }
     duplicates = duplicate_title_groups(results)
     if duplicates:
         output["confirmation_reason"] = "duplicate_target_names"
@@ -642,6 +677,9 @@ def build_parser() -> argparse.ArgumentParser:
     target_inspect.set_defaults(func=cmd_target_inspect)
     target_search = target_subparsers.add_parser("search")
     target_search.add_argument("--query", required=True)
+    target_search.add_argument("--limit", type=int, default=DEFAULT_SEARCH_LIMIT)
+    target_search.add_argument("--compact", action="store_true")
+    target_search.add_argument("--include-parent-path", action="store_true")
     target_search.set_defaults(func=cmd_target_search)
     target_scan = target_subparsers.add_parser("scan")
     target_scan_group = target_scan.add_mutually_exclusive_group(required=True)

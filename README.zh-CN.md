@@ -108,7 +108,7 @@ capture-to-notion target inspect --alias books --compact
 搜索目标页面或数据库：
 
 ```bash
-capture-to-notion target search --query "书单"
+capture-to-notion target search --query "书单" --limit 5 --compact
 ```
 
 扫描已确认的目标：

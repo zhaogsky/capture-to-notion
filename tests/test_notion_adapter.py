@@ -171,6 +171,15 @@ def test_search_calls_sdk_search_and_simplifies_results():
     ]
 
 
+def test_search_passes_page_size_when_limit_is_set():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    adapter.search("书单", limit=5)
+
+    assert client.search_calls == [{"query": "书单", "page_size": 5}]
+
+
 def test_search_includes_parent_path_when_parent_pages_are_available():
     class ParentPathClient(FakeClient):
         def search(self, **kwargs):
@@ -208,6 +217,31 @@ def test_search_includes_parent_path_when_parent_pages_are_available():
     adapter = NotionAdapter(ParentPathClient())
 
     assert adapter.search("书单")[0]["parent_path"] == "工具 / 模板"
+
+
+def test_search_can_skip_parent_path_resolution():
+    class ParentPathClient(FakeClient):
+        def search(self, **kwargs):
+            self.search_calls.append(kwargs)
+            return {
+                "results": [
+                    {
+                        "id": "page-books",
+                        "object": "page",
+                        "url": "https://example.com/page-books",
+                        "last_edited_time": "2026-05-10T00:00:00Z",
+                        "properties": {"title": {"type": "title", "title": [{"plain_text": "书单"}]}},
+                        "parent": {"type": "page_id", "page_id": "page-template"},
+                    }
+                ]
+            }
+
+        def retrieve_page(self, page_id):
+            raise AssertionError("parent path should not be resolved")
+
+    adapter = NotionAdapter(ParentPathClient())
+
+    assert "parent_path" not in adapter.search("书单", include_parent_path=False)[0]
 
 
 def test_search_marks_workspace_parent_as_top_level_location():

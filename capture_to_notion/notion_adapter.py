@@ -153,9 +153,20 @@ class NotionAdapter:
         except Exception as exc:
             raise _convert_api_error(exc) from exc
 
-    def search(self, query: str) -> list[dict[str, Any]]:
-        response = self._call(self.client.search, query=query)
-        return [self._simplify_search_result(result) for result in response.get("results", [])]
+    def search(
+        self,
+        query: str,
+        limit: int | None = None,
+        include_parent_path: bool = True,
+    ) -> list[dict[str, Any]]:
+        kwargs: dict[str, Any] = {"query": query}
+        if limit is not None:
+            kwargs["page_size"] = limit
+        response = self._call(self.client.search, **kwargs)
+        return [
+            self._simplify_search_result(result, include_parent_path=include_parent_path)
+            for result in response.get("results", [])
+        ]
 
     def retrieve_page(self, page_id: str) -> dict[str, Any]:
         return self._call(self.client.pages.retrieve, page_id=page_id)
@@ -309,7 +320,7 @@ class NotionAdapter:
 
         return " / ".join(reversed(labels)) if labels else None
 
-    def _simplify_search_result(self, result: dict[str, Any]) -> dict[str, Any]:
+    def _simplify_search_result(self, result: dict[str, Any], include_parent_path: bool = True) -> dict[str, Any]:
         simplified = {
             "id": result.get("id"),
             "object": result.get("object"),
@@ -317,7 +328,8 @@ class NotionAdapter:
             "url": result.get("url"),
             "last_edited_time": result.get("last_edited_time"),
         }
-        parent_path = self._parent_path(result.get("parent"))
-        if parent_path:
-            simplified["parent_path"] = parent_path
+        if include_parent_path:
+            parent_path = self._parent_path(result.get("parent"))
+            if parent_path:
+                simplified["parent_path"] = parent_path
         return simplified

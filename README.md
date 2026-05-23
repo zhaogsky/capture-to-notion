@@ -108,7 +108,7 @@ capture-to-notion target inspect --alias books --compact
 Search for a target page or database:
 
 ```bash
-capture-to-notion target search --query "书单"
+capture-to-notion target search --query "书单" --limit 5 --compact
 ```
 
 Scan a confirmed target:

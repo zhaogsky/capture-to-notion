@@ -37,6 +37,30 @@ When a summary-like field is planned:
 4. If no content source is available, do not write the summary-like field. Present the plan's `enrichment_requirements` and ask the user to provide a transcript/content source or confirm accepting metadata instead.
 5. Keep this profile-driven: do not hardcode a Notion property name, page title, platform name, or content type in runtime logic.
 
+## Low-Token Execution Protocol
+
+Default to the lowest-token deterministic path.
+
+1. If the user names a known target or alias, use that alias/cache first.
+   - Do not run `target search` before `capture preflight` unless the target is unknown.
+   - If preflight returns `cache_hit` and `plan_directly`, go directly to `capture plan --compact`.
+2. Always use compact stdout for planning commands:
+   - `capture-to-notion capture preflight --input ... --compact`
+   - `capture-to-notion capture plan --input ... --output ... --compact`
+3. Do not paste raw JSON to the user unless debugging is explicitly requested.
+   - Convert compact preflight/plan output into the minimal confirmation template below.
+   - Keep the full executable plan only in the `--output` JSON file.
+4. Only run `target search` when:
+   - `target_missing`, `target_not_resolved`, or `ambiguous_target` is returned;
+   - the user explicitly asks to search;
+   - no reliable alias/cache exists.
+5. When `target search` is necessary, use the smallest useful query and a limited result set.
+   - Prefer exact program/page names.
+   - Use `--limit 5 --compact` by default.
+   - Do not inspect or read the full saved search output unless needed.
+6. When discussing current behavior or token cost, verify current Skill/CLI implementation first.
+   - Do not describe cache-first, alias reuse, compact preflight/plan, or confirmation gating as missing unless just verified missing.
+
 ## Required Flow
 
 1. Apply Summary Preprocessing when the request requires it.
@@ -69,7 +93,7 @@ capture-to-notion capture preflight --input /path/to/input.json --compact
    - `ambiguous_target`: multiple likely targets or unresolved target identity; show candidates and wait for the user to choose one exact page ID before scan/plan/apply.
    - `direct_plan_allowed`: deterministic facts are sufficient; continue to `capture plan`.
    - `url_parse_suggested` / `ask_before_parse`: external URL parsing or enrichment may help, but it is only a recommendation-stage action.
-8. If the target page/database has not been scanned or cached and preflight indicates cache is needed, run `capture-to-notion target search --query ...` first. If multiple results have the same title, show each candidate with title, parent path when available, page ID, URL, and last edited time, then wait for the user to choose the exact page ID. Do not scan, alias, plan, or apply until the user chooses one.
+8. If the target page/database has not been scanned or cached and preflight indicates cache is needed, run `capture-to-notion target search --query ... --limit 5 --compact` first. If multiple plausible results remain, show only the title, page/data source ID, and last edited time unless the user asks for more context; then wait for the user to choose the exact page ID. Do not scan, alias, plan, or apply until the user chooses one.
 9. After the user identifies one exact target page/database, run `capture-to-notion target scan --page-id ... --alias ...` if preflight or cache status shows it has not been scanned or cached.
 10. External URLs are not automatically parsed or fetched by default. If preflight suggests URL parsing/enrichment, first recommend it or ask for confirmation; do not silently parse/fetch the URL.
 11. When preflight shows direct planning is allowed, run:
@@ -112,20 +136,28 @@ This command only inspects local cache and does not write to Notion.
 
 ## Output Style
 
-Summarize preflight/plan results like this:
+When a plan is ready, show a concise but reviewable confirmation template:
 
 ```txt
-预检结论：可直接规划 / 需先选目标 / 建议先扫描缓存 / 如要解析 URL 需先确认
-我计划写入：
-- 类型：book
-- 目标页面：书单
-- 目标数据库：Books
-- 标题：...
-- 状态：initialized
-- 封面：计划下载并映射到「封面」字段；执行 apply 时会尝试下载/上传，失败则回退为外部 URL
-- 写入：当前为计划展示；用户确认后才运行 `capture apply --confirmed`
-- 需要确认：...
+计划写入：
+- 目标：<target page> / <data source>
+- 操作：新建 / 更新
+- 页面：<新建时写标题；更新时写 page_id + 标题>
+- 标题：<title>
+- 状态：<state>
+- 关键字段：
+  - <字段1>：<值的短摘要>
+  - <字段2>：<值的短摘要>
+  - <字段3>：<值的短摘要>
+- 摘要来源：<逐字稿 / 页面简介 + Show Notes / 用户输入>
+- 未写入字段：<重要但本次不写入的字段及原因>
+- 风险/限制：<例如“未找到逐字稿”“搜索未命中同名页，预计新建”>
+- 确认后动作：运行 `capture apply --confirmed`
+
+是否确认写入？
 ```
+
+Keep the plan detailed enough to verify the target page, operation, important field values, omissions, and risks. Do not include full JSON, full search results, or long previews unless the user asks.
 
 ## Safety Rules
 
