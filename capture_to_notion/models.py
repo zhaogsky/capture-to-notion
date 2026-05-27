@@ -27,6 +27,7 @@ class CaptureInput:
     target_scope_hint: str | None = None
     user_requested_action: str | None = None
     existing_page_id: str | None = None
+    workflow_confirmations: list[str] = field(default_factory=list)
     options: CaptureOptions = field(default_factory=CaptureOptions)
 
     @classmethod
@@ -51,6 +52,11 @@ class CaptureInput:
             target_scope_hint=data.get("target_scope_hint"),
             user_requested_action=data.get("user_requested_action"),
             existing_page_id=data.get("existing_page_id"),
+            workflow_confirmations=[
+                value
+                for value in data.get("workflow_confirmations", [])
+                if isinstance(value, str)
+            ],
             options=options,
         )
 
@@ -65,6 +71,11 @@ class Target:
     data_source_id: str | None
     confidence: str
     source: str
+    target_id: str | None = None
+    view_id: str | None = None
+    view_name: str | None = None
+    view_type: str | None = None
+    display_page_id: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Target":
@@ -74,6 +85,11 @@ class Target:
             data_source_id=data["data_source_id"],
             confidence=data["confidence"],
             source=data["source"],
+            target_id=data.get("target_id"),
+            view_id=data.get("view_id"),
+            view_name=data.get("view_name"),
+            view_type=data.get("view_type"),
+            display_page_id=data.get("display_page_id"),
         )
 
 
@@ -121,6 +137,7 @@ class WritePlan:
     planned_asset_operations: list[AssetOperation] = field(default_factory=list)
     planned_completion_operations: list[dict[str, Any]] = field(default_factory=list)
     capture_input: dict[str, Any] | None = None
+    preflight_workflow: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WritePlan":
@@ -148,6 +165,7 @@ class WritePlan:
             ],
             planned_completion_operations=data.get("planned_completion_operations", []),
             capture_input=data.get("capture_input"),
+            preflight_workflow=data.get("preflight_workflow"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -155,10 +173,14 @@ class WritePlan:
         for operation in asset_operations:
             if operation.get("record_key") == "cover":
                 operation.pop("record_key")
+        target = asdict(self.target)
+        for key in ("target_id", "view_id", "view_name", "view_type", "display_page_id"):
+            if target.get(key) is None:
+                target.pop(key)
         data = {
             "plan_id": self.plan_id,
             "content_type": self.content_type,
-            "target": asdict(self.target),
+            "target": target,
             "summary": self.summary,
             "normalized_record": self.normalized_record,
             "field_mapping": self.field_mapping,
@@ -179,6 +201,8 @@ class WritePlan:
             data["planned_completion_operations"] = self.planned_completion_operations
         if self.capture_input is not None:
             data["capture_input"] = self.capture_input
+        if self.preflight_workflow is not None:
+            data["preflight_workflow"] = self.preflight_workflow
         return data
 
     def to_json(self) -> str:

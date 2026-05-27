@@ -25,47 +25,84 @@ BOOK_PARSER_PROFILE = {
 
 def seed_book_target(tmp_path):
     config_dir = tmp_path
-    targets_dir = config_dir / "targets"
-    targets_dir.mkdir(parents=True, exist_ok=True)
+    graph_id = "bookshelf"
+    profile_id = "bookshelf-profile"
+    field_mapping = {
+        "title": "名称",
+        "author": "作者",
+        "isbn": "ISBN",
+        "publisher": "出版社",
+        "page_count": "页数",
+        "state": "阅读状态",
+        "cover": "封面",
+    }
+    schema = {
+        "名称": {"name": "名称", "type": "title"},
+        "作者": {"name": "作者", "type": "rich_text"},
+        "ISBN": {"name": "ISBN", "type": "rich_text"},
+        "出版社": {"name": "出版社", "type": "rich_text"},
+        "页数": {"name": "页数", "type": "number"},
+        "阅读状态": {"name": "阅读状态", "type": "status"},
+        "封面": {"name": "封面", "type": "files"},
+    }
+    graphs_dir = config_dir / "cache-v2" / "graphs"
+    profiles_dir = config_dir / "cache-v2" / "profiles"
+    graphs_dir.mkdir(parents=True, exist_ok=True)
+    profiles_dir.mkdir(parents=True, exist_ok=True)
 
     write_json(
-        config_dir / "aliases.json",
+        graphs_dir / f"{graph_id}.json",
         {
-            "aliases": {
-                "书单": {
-                    "type": "page",
-                    "page_id": "page-books",
-                    "description": "书籍、作者、阅读状态、封面",
-                    "target_id": "bookshelf",
+            "cache_version": 2,
+            "graph_id": graph_id,
+            "root": {"kind": "page", "id": "page-books"},
+            "pages": {"page-books": {"page_id": "page-books", "title": "书单"}},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": schema,
                 }
-            }
+            },
+            "views": {},
         },
     )
     write_json(
-        targets_dir / "bookshelf.json",
+        profiles_dir / f"{profile_id}.json",
         {
-            "target": {"page_id": "page-books", "title": "书单", "verified_at": "2026-05-05T10:00:00Z"},
-            "parser_profile": BOOK_PARSER_PROFILE,
-            "data_sources": {
-                "books": {
-                    "data_source_id": "ds-books",
-                    "title": "Books",
-                    "role": "primary",
-                    "content_types": ["book"],
-                    "schema_hash": "abc123",
-                    "fields": {
-                        "title": "名称",
-                        "author": "作者",
-                        "isbn": "ISBN",
-                        "publisher": "出版社",
-                        "page_count": "页数",
-                        "state": "阅读状态",
-                        "cover": "封面",
+            "cache_version": 2,
+            "profile_id": profile_id,
+            "graph_id": graph_id,
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "canonical_view_id": None,
+                    "field_mapping": field_mapping,
+                    "field_sources": {key: "user_binding" for key in field_mapping},
+                    "state_mapping": {"field": "阅读状态", "values": {"initialized": "想读", "completed": "已读"}},
+                    "asset_mapping": {"cover": {"field": "封面", "type": "files", "strategy": "download_and_attach"}},
+                    "relation_mapping": {},
+                    "parser_profile": {
+                        "labels": BOOK_PARSER_PROFILE["book"]["labels"],
+                        "required_schema_fields": [],
+                        "required_value_fields": [],
+                        "trusted_field_sources": ["user_binding"],
                     },
                 }
             },
-            "state_mapping": {"field": "阅读状态", "values": {"initialized": "想读", "completed": "已读"}},
-            "asset_mapping": {"cover": {"field": "封面", "type": "files", "strategy": "download_and_attach"}},
+        },
+    )
+    write_json(
+        config_dir / "cache-v2" / "aliases.json",
+        {
+            "cache_version": 2,
+            "aliases": {
+                "书单": {
+                    "graph_id": graph_id,
+                    "profile_id": profile_id,
+                    "kind": "write_profile",
+                }
+            },
         },
     )
 
@@ -94,8 +131,10 @@ def test_cache_inspect_outputs_json(tmp_path, monkeypatch):
 
     data = json.loads(result.stdout)
     assert data["config_root"] == str(tmp_path)
+    assert data["cache_version"] == 2
     assert data["aliases"] == {}
-    assert data["routes"] == {}
+    assert data["graphs"] == []
+    assert data["profiles"] == []
 
 
 def test_target_suggest_without_route_requires_confirmation(tmp_path):
@@ -210,11 +249,9 @@ def test_capture_plan_alias_missing_target_cache_suggests_target_scan(tmp_path):
 
     result = run_cli(["capture", "plan", "--input", str(input_file)], tmp_path)
 
-    assert result.returncode == 0
-    data = json.loads(result.stdout)
-    assert data["requires_confirmation"] is True
-    assert data["confirmation_reason"] == "target_structure_missing"
-    assert "capture-to-notion target scan --page-id page-books --alias 书单" in data["warnings"]
+    assert result.returncode == 2
+    assert "next_action=scan_target" in result.stderr
+    assert "reason=v2_target_missing" in result.stderr
 
 
 def test_capture_plan_stdout_includes_review_summary(tmp_path):

@@ -9,14 +9,19 @@ from typing import Any
 
 from capture_to_notion.assets import plan_cover_asset
 from capture_to_notion.cache import CacheStore
+from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.config import AppConfig
 from capture_to_notion.classifier import classify_content_type, normalize_state
 from capture_to_notion.models import AssetOperation, CaptureInput, Target, WritePlan
 from capture_to_notion.schema import WRITABLE_PROPERTY_TYPES, confirmation_blocking_warnings
+from capture_to_notion.target_resolver import resolve_capture_target
 
 
 METADATA_DELIMITER_PATTERN = r"[\s,，;；|｜]"
 METADATA_COLON_PATTERN = r"[:：]"
+METADATA_ASSIGNMENT_PATTERN = rf"(?:{METADATA_COLON_PATTERN}|=|改成|设为|更新为|调整为|变更为)"
+METADATA_LABEL_PREFIX_PATTERN = r"(?:然后|并且|同时|并|把|将)?"
+METADATA_VALUE_TERMINATOR_PATTERN = r"[\r\n;；|｜]"
 
 
 def _string_list(value: Any) -> list[str]:
@@ -57,14 +62,19 @@ def _known_parser_labels(parser_profile: dict[str, Any] | None) -> list[str]:
     return known_labels
 
 
+def _metadata_label_pattern(labels: list[str]) -> str:
+    return "|".join(re.escape(label) for label in sorted(labels, key=len, reverse=True))
+
+
 def extract_labeled_value(raw_input: str, labels: list[str], known_labels: list[str] | None = None) -> str | None:
     if not labels:
         return None
-    label_pattern = "|".join(re.escape(label) for label in labels)
+    label_pattern = _metadata_label_pattern(labels)
     known_label_values = known_labels if known_labels is not None else labels
-    known_label_pattern = "|".join(re.escape(label) for label in known_label_values)
+    boundary_label_values = list(dict.fromkeys([*known_label_values, "页面信息"]))
+    known_label_pattern = _metadata_label_pattern(boundary_label_values)
     match = re.search(
-        rf"(?:^|{METADATA_DELIMITER_PATTERN})(?:{label_pattern})\s*{METADATA_COLON_PATTERN}\s*(.+?)(?=(?:{METADATA_DELIMITER_PATTERN}+(?:{known_label_pattern})\s*{METADATA_COLON_PATTERN})|[\r\n;；|｜]|$)",
+        rf"(?:^|{METADATA_DELIMITER_PATTERN})(?:{METADATA_LABEL_PREFIX_PATTERN})(?:{label_pattern})\s*{METADATA_ASSIGNMENT_PATTERN}\s*(.+?)(?=(?:(?:{METADATA_DELIMITER_PATTERN}+|。)(?:{METADATA_LABEL_PREFIX_PATTERN})(?:{known_label_pattern})\s*{METADATA_ASSIGNMENT_PATTERN})|{METADATA_VALUE_TERMINATOR_PATTERN}|$)",
         raw_input,
         flags=re.IGNORECASE,
     )
@@ -117,9 +127,9 @@ def extract_title(raw_input: str, parser_profile: dict[str, Any] | None = None) 
     if quoted_title:
         return _clean_title_suffix(quoted_title, parser_profile)
     known_labels = _known_parser_labels(parser_profile)
-    known_label_pattern = "|".join(re.escape(label) for label in known_labels)
+    known_label_pattern = _metadata_label_pattern(known_labels)
     label_suffix = re.search(
-        rf"(?:^|{METADATA_DELIMITER_PATTERN})(?:{known_label_pattern})\s*{METADATA_COLON_PATTERN}",
+        rf"(?:^|{METADATA_DELIMITER_PATTERN})(?:{METADATA_LABEL_PREFIX_PATTERN})(?:{known_label_pattern})\s*{METADATA_ASSIGNMENT_PATTERN}",
         raw_input,
         flags=re.IGNORECASE,
     ) if known_label_pattern else None
@@ -517,23 +527,55 @@ def _asset_summary(operation: AssetOperation) -> dict[str, str | None]:
     }
 
 
+LOCATION_PROOF_KEYS = ("database_id", "parent_page_id", "parent_database_id", "parent_data_source_id")
+
+
+def _location_proof_fields(*sources: dict[str, Any] | None) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in LOCATION_PROOF_KEYS:
+            value = source.get(key)
+            if isinstance(value, str) and value:
+                fields.setdefault(key, value)
+    return fields
+
+
 def _primary_write_target(
     *,
     operation: dict[str, Any],
     title: Any,
     target_page: str | None,
+    write_status: str,
+    location_proof: dict[str, Any] | None = None,
+    context_verification_source: str | None = None,
 ) -> dict[str, Any]:
     page_id = operation.get("page_id")
-    return {
+    target = {
         "type": "primary_page",
         "action": "update_page" if page_id else "create_page",
         "title": title,
         "target_page": target_page,
         "target_data_source": operation.get("target_data_source"),
         "data_source_id": operation.get("data_source_id"),
+        "view_id": operation.get("view_id"),
+        "display_view_name": operation.get("view_name"),
+        "display_view_type": operation.get("view_type"),
+        "target_kind": operation.get("target_kind"),
         "page_id": page_id,
         "page_id_status": "known" if page_id else "pending_after_apply",
     }
+    for optional_key in ("view_id", "display_view_name", "display_view_type", "target_kind"):
+        if target.get(optional_key) is None:
+            target.pop(optional_key)
+    if location_proof:
+        target.update(location_proof)
+    if context_verification_source:
+        target["context_verification_source"] = context_verification_source
+    if write_status != "ready":
+        target["write_status"] = write_status
+    return target
 
 
 def _completion_write_target(
@@ -541,13 +583,15 @@ def _completion_write_target(
     operation: dict[str, Any],
     normalized_record: dict[str, Any],
     structure: dict[str, Any],
+    write_status: str,
+    context_verification_source: str | None = None,
 ) -> dict[str, Any] | None:
     source_record_key = operation.get("source_record_key")
     target_data_source_id = operation.get("target_data_source_id")
     if not isinstance(source_record_key, str) or not isinstance(target_data_source_id, str):
         return None
     target_data_source = _data_source_by_id(structure, target_data_source_id)
-    return {
+    target = {
         "type": "relation_page",
         "action": "update_page",
         "source_record_key": source_record_key,
@@ -557,6 +601,12 @@ def _completion_write_target(
         "page_id": None,
         "page_id_status": "pending_relation_resolution",
     }
+    target.update(_location_proof_fields(target_data_source))
+    if context_verification_source:
+        target["context_verification_source"] = context_verification_source
+    if write_status != "ready":
+        target["write_status"] = write_status
+    return target
 
 
 def _write_targets(
@@ -566,12 +616,18 @@ def _write_targets(
     normalized_record: dict[str, Any],
     target_page: str | None,
     structure: dict[str, Any],
+    write_status: str,
+    context_verification_source: str | None = None,
 ) -> list[dict[str, Any]]:
+    target_structure = structure.get("target") if isinstance(structure.get("target"), dict) else {}
     targets = [
         _primary_write_target(
             operation=operation,
             title=normalized_record.get("title"),
             target_page=target_page,
+            write_status=write_status,
+            location_proof=_location_proof_fields(_data_source_by_id(structure, operation.get("data_source_id")), target_structure),
+            context_verification_source=context_verification_source,
         )
         for operation in operations
         if operation.get("type") == "create_or_update_page"
@@ -581,6 +637,8 @@ def _write_targets(
             operation=operation,
             normalized_record=normalized_record,
             structure=structure,
+            write_status=write_status,
+            context_verification_source=context_verification_source,
         )
         if target is not None:
             targets.append(target)
@@ -812,16 +870,23 @@ def build_plan_summary(
 
 
 def build_plan_cli_summary(plan: WritePlan) -> dict[str, Any]:
+    target = {
+        "page_title": plan.target.page_title,
+        "page_id": plan.target.page_id,
+        "data_source_id": plan.target.data_source_id,
+        "view_id": plan.target.view_id,
+        "view_name": plan.target.view_name,
+        "view_type": plan.target.view_type,
+        "confidence": plan.target.confidence,
+        "source": plan.target.source,
+    }
+    for optional_key in ("view_id", "view_name", "view_type"):
+        if target.get(optional_key) is None:
+            target.pop(optional_key)
     return {
         "plan_id": plan.plan_id,
         "content_type": plan.content_type,
-        "target": {
-            "page_title": plan.target.page_title,
-            "page_id": plan.target.page_id,
-            "data_source_id": plan.target.data_source_id,
-            "confidence": plan.target.confidence,
-            "source": plan.target.source,
-        },
+        "target": target,
         "summary": plan.summary,
         "warnings": list(plan.warnings),
         "requires_confirmation": plan.requires_confirmation,
@@ -1010,6 +1075,24 @@ def _parser_profile_with_schema_input_labels(
     return {**parser_profile, "labels": labels}
 
 
+def _parser_profile_with_mapped_schema_field_labels(
+    parser_profile: dict[str, Any],
+    fields: dict[str, str],
+    schema: dict[str, Any],
+) -> dict[str, Any]:
+    labels = dict(parser_profile.get("labels", {})) if isinstance(parser_profile.get("labels"), dict) else {}
+    schema_input_labels: dict[str, list[str]] = {}
+    for record_key, target_field in fields.items():
+        if not isinstance(record_key, str) or not isinstance(target_field, str):
+            continue
+        if record_key != target_field or record_key in labels:
+            continue
+        if not isinstance(schema.get(target_field), dict):
+            continue
+        schema_input_labels[record_key] = [record_key]
+    return _parser_profile_with_schema_input_labels(parser_profile, schema_input_labels)
+
+
 def _apply_schema_input_field_mappings(
     *,
     raw_input: str,
@@ -1119,22 +1202,35 @@ def unresolved_plan(
     )
 
 
-def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
+def build_capture_plan(capture: CaptureInput, cache: CacheStore | CacheV2Store) -> WritePlan:
     content_type = classify_content_type(capture)
     states_config = cache.read_json(cache.config.states_file, {"states": {}})
     config_data = cache.read_json(cache.config.config_file, {})
     default_parser_profile = _parser_profile_default_from_config(config_data, content_type)
-    alias = cache.find_alias(capture.target_hint)
-    if not alias:
-        return unresolved_plan(capture, content_type, "target_not_resolved", states_config=states_config)
+    resolution = resolve_capture_target(capture, cache, content_type)
+    if resolution.get("status") in {
+        "target_missing",
+        "target_not_resolved",
+        "ambiguous_target",
+        "target_context_unverified",
+        "target_context_mismatch",
+    }:
+        reason = "target_not_resolved" if resolution.get("status") == "target_missing" else str(resolution.get("status") or "target_not_resolved")
+        return unresolved_plan(
+            capture,
+            content_type,
+            reason,
+            states_config=states_config,
+        )
 
-    structure = cache.target_structure(alias.get("target_id"))
-    if not structure:
+    structure = resolution.get("structure")
+    if not isinstance(structure, dict) or not structure:
         warnings = ["目标页面未解析，需要先选择或确认存储页面。"]
-        page_id = alias.get("page_id")
-        if isinstance(page_id, str) and page_id and capture.target_hint:
+        page_id = resolution.get("page_id")
+        alias_name = resolution.get("alias") or capture.target_hint
+        if isinstance(page_id, str) and page_id and isinstance(alias_name, str):
             warnings.append(
-                f"capture-to-notion target scan --page-id {_shell_arg(page_id)} --alias {_shell_arg(capture.target_hint)}"
+                f"capture-to-notion target scan --page-id {_shell_arg(page_id)} --alias {_shell_arg(alias_name)}"
             )
         return unresolved_plan(capture, content_type, "target_structure_missing", warnings, states_config=states_config)
 
@@ -1162,10 +1258,15 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         schema=data_source_schema if isinstance(data_source_schema, dict) else {},
         parser_profile=parser_profile,
     )
+    parser_profile = _parser_profile_with_mapped_schema_field_labels(
+        parser_profile,
+        fields if isinstance(fields, dict) else {},
+        data_source_schema if isinstance(data_source_schema, dict) else {},
+    )
     if cache_updated:
         data_source["fields"] = fields
         data_source["field_sources"] = field_sources
-        target_id = alias.get("target_id")
+        target_id = resolution.get("target_id")
         if isinstance(target_id, str) and target_id:
             cache.write_json(cache.config.targets_dir / f"{target_id}.json", structure)
     required_schema_fields = _required_schema_fields(parser_profile)
@@ -1282,18 +1383,30 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         "target_data_source": data_source.get("title"),
         "data_source_id": data_source.get("data_source_id"),
     }
-    if capture.existing_page_id:
-        write_operation["page_id"] = capture.existing_page_id
+    for operation_key, resolution_key in (
+        ("view_id", "view_id"),
+        ("view_name", "view_name"),
+        ("view_type", "view_type"),
+        ("target_kind", "target_kind"),
+    ):
+        value = resolution.get(resolution_key)
+        if value is not None:
+            write_operation[operation_key] = value
+    existing_page_id = resolution.get("existing_page_id")
+    if isinstance(existing_page_id, str) and existing_page_id:
+        write_operation["page_id"] = existing_page_id
     planned_operations = [write_operation]
     operations = [] if requires_confirmation else planned_operations
     planned_completion_operations = [] if requires_confirmation else completion_operations
     planned_asset_operations = [] if requires_confirmation else asset_operations
     write_targets = _write_targets(
-        operations=operations,
-        completion_operations=planned_completion_operations,
+        operations=planned_operations,
+        completion_operations=completion_operations,
         normalized_record=normalized_record,
         target_page=structure.get("target", {}).get("title"),
         structure=structure,
+        write_status="requires_confirmation" if requires_confirmation else "ready",
+        context_verification_source=resolution.get("context_verification_source") if isinstance(resolution.get("context_verification_source"), str) else None,
     )
 
     plan = WritePlan(
@@ -1304,7 +1417,12 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
             page_id=structure.get("target", {}).get("page_id"),
             data_source_id=data_source.get("data_source_id"),
             confidence="high",
-            source="alias_cache",
+            source=str(resolution.get("source") or "alias_cache"),
+            target_id=resolution.get("target_id") or structure.get("target", {}).get("target_id"),
+            view_id=resolution.get("view_id"),
+            view_name=resolution.get("view_name"),
+            view_type=resolution.get("view_type"),
+            display_page_id=resolution.get("page_id"),
         ),
         summary=build_plan_summary(
             content_type=content_type,
@@ -1337,5 +1455,8 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore) -> WritePlan:
         capture_input=capture.to_dict(),
     )
     if not requires_confirmation:
-        cache.save_plan(plan.plan_id, plan.to_dict())
+        if isinstance(cache, CacheV2Store):
+            cache.write_plan(plan.plan_id, plan.to_dict())
+        else:
+            cache.save_plan(plan.plan_id, plan.to_dict())
     return plan

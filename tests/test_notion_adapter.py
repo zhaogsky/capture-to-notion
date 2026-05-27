@@ -23,14 +23,28 @@ class FakeClient:
         self.query_calls = []
         self.data_source_query_calls = []
         self.create_page_calls = []
+        self.create_database_calls = []
+        self.update_data_source_calls = []
         self.update_page_calls = []
+        self.view_list_calls = []
+        self.view_retrieve_calls = []
+        self.view_create_calls = []
+        self.view_update_calls = []
+        self.view_delete_calls = []
         self.file_upload_create_calls = []
         self.file_upload_send_calls = []
         self.file_upload_send_payloads = []
         self.database = {"id": "db-1", "object": "database"}
         self.pages = types.SimpleNamespace(retrieve=self.retrieve_page, update=self.update_page, create=self.create_page)
-        self.databases = types.SimpleNamespace(retrieve=self.retrieve_database, query=self.query_database)
-        self.data_sources = types.SimpleNamespace(retrieve=self.retrieve_data_source, query=self.query_data_source)
+        self.databases = types.SimpleNamespace(retrieve=self.retrieve_database, query=self.query_database, create=self.create_database)
+        self.data_sources = types.SimpleNamespace(retrieve=self.retrieve_data_source, query=self.query_data_source, update=self.update_data_source)
+        self.views = types.SimpleNamespace(
+            list=self.list_views,
+            retrieve=self.retrieve_view,
+            create=self.create_view,
+            update=self.update_view,
+            delete=self.delete_view,
+        )
         self.blocks = types.SimpleNamespace(children=types.SimpleNamespace(list=self.list_block_children))
         self.file_uploads = types.SimpleNamespace(create=self.create_file_upload, send=self.send_file_upload)
 
@@ -75,6 +89,34 @@ class FakeClient:
     def create_page(self, **kwargs):
         self.create_page_calls.append(kwargs)
         return {"id": "created-page", "url": "https://example.com/created-page"}
+
+    def create_database(self, **kwargs):
+        self.create_database_calls.append(kwargs)
+        return {"id": "created-database"}
+
+    def update_data_source(self, **kwargs):
+        self.update_data_source_calls.append(kwargs)
+        return {"id": kwargs["data_source_id"], "properties": kwargs.get("properties", {})}
+
+    def list_views(self, **kwargs):
+        self.view_list_calls.append(kwargs)
+        return {"results": [{"object": "view", "id": "view-1"}], "has_more": False}
+
+    def retrieve_view(self, **kwargs):
+        self.view_retrieve_calls.append(kwargs)
+        return {"object": "view", "id": kwargs["view_id"], "type": "gallery"}
+
+    def create_view(self, **kwargs):
+        self.view_create_calls.append(kwargs)
+        return {"object": "view", "id": "created-view", **kwargs}
+
+    def update_view(self, **kwargs):
+        self.view_update_calls.append(kwargs)
+        return {"object": "view", "id": kwargs["view_id"]}
+
+    def delete_view(self, **kwargs):
+        self.view_delete_calls.append(kwargs)
+        return {"object": "view", "id": kwargs["view_id"], "in_trash": True}
 
     def create_file_upload(self, **kwargs):
         self.file_upload_create_calls.append(kwargs)
@@ -141,8 +183,8 @@ def test_from_config_constructs_official_sdk_client_with_token(tmp_path, monkeyp
     created = {}
 
     class FakeSdkClient:
-        def __init__(self, auth):
-            created["auth"] = auth
+        def __init__(self, **kwargs):
+            created.update(kwargs)
 
     fake_module = types.SimpleNamespace(Client=FakeSdkClient)
     monkeypatch.setitem(sys.modules, "notion_client", fake_module)
@@ -151,6 +193,29 @@ def test_from_config_constructs_official_sdk_client_with_token(tmp_path, monkeyp
 
     assert isinstance(adapter, NotionAdapter)
     assert created["auth"] == "secret_sdk"
+
+
+def test_adapter_from_config_passes_configured_notion_version(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    data = json.loads(config.config_file.read_text(encoding="utf-8"))
+    data["notion"]["auth"]["token"] = "secret-token"
+    data["notion"]["api_version"] = "2026-03-11"
+    config.config_file.write_text(json.dumps(data), encoding="utf-8")
+
+    created = {}
+
+    class FakeSdkClient:
+        def __init__(self, **kwargs):
+            created.update(kwargs)
+
+    fake_module = types.SimpleNamespace(Client=FakeSdkClient)
+    monkeypatch.setitem(sys.modules, "notion_client", fake_module)
+
+    adapter = NotionAdapter.from_config(config)
+
+    assert isinstance(adapter, NotionAdapter)
+    assert created == {"auth": "secret-token", "notion_version": "2026-03-11"}
 
 
 def test_search_calls_sdk_search_and_simplifies_results():
@@ -299,6 +364,67 @@ def test_create_page_uses_data_source_parent():
             "properties": {"书名": {"title": []}},
         }
     ]
+
+
+def test_create_database_uses_initial_data_source_properties():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    result = adapter.create_database(
+        "page-show",
+        "数据库",
+        {
+            "主题": {"type": "title", "title": {}},
+            "状态": {"type": "status", "status": {}},
+        },
+    )
+
+    assert result == {"id": "created-database"}
+    assert client.create_database_calls == [
+        {
+            "parent": {"type": "page_id", "page_id": "page-show"},
+            "title": [{"type": "text", "text": {"content": "数据库"}}],
+            "initial_data_source": {
+                "title": [{"type": "text", "text": {"content": "数据库"}}],
+                "properties": {
+                    "主题": {"type": "title", "title": {}},
+                    "状态": {"type": "status", "status": {}},
+                },
+            },
+        }
+    ]
+
+
+
+def test_update_data_source_delegates_properties_to_sdk_client():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    result = adapter.update_data_source("ds-episodes", {"状态": {"type": "status", "status": {}}})
+
+    assert result == {"id": "ds-episodes", "properties": {"状态": {"type": "status", "status": {}}}}
+    assert client.update_data_source_calls == [
+        {"data_source_id": "ds-episodes", "properties": {"状态": {"type": "status", "status": {}}}}
+    ]
+
+
+def test_views_api_methods_delegate_to_sdk():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    assert adapter.list_views(data_source_id="ds-1") == [{"object": "view", "id": "view-1"}]
+    assert adapter.retrieve_view("view-1")["type"] == "gallery"
+    assert adapter.create_view(data_source_id="ds-1", database_id="db-1", name="Episodes", view_type="gallery")["id"] == "created-view"
+    assert adapter.update_view("view-1", name="New name")["id"] == "view-1"
+    assert adapter.delete_view("view-1")["in_trash"] is True
+
+    assert client.view_list_calls == [{"data_source_id": "ds-1"}]
+    assert client.view_retrieve_calls == [{"view_id": "view-1"}]
+    assert client.view_create_calls == [
+        {"data_source_id": "ds-1", "database_id": "db-1", "name": "Episodes", "type": "gallery"}
+    ]
+    assert client.view_update_calls == [{"view_id": "view-1", "name": "New name"}]
+    assert client.view_delete_calls == [{"view_id": "view-1"}]
 
 
 def test_create_page_converts_file_upload_cover_to_external_url():

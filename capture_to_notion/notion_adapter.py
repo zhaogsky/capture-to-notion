@@ -65,6 +65,12 @@ def notion_token(config: AppConfig) -> str:
     return token
 
 
+def notion_api_version(config: AppConfig) -> str:
+    data = _config_data(config)
+    version = data.get("notion", {}).get("api_version")
+    return str(version) if version else "2026-03-11"
+
+
 def _plain_text(value: Any) -> str | None:
     if isinstance(value, str):
         return value
@@ -143,7 +149,7 @@ class NotionAdapter:
             from notion_client import Client
         except ImportError as exc:
             raise NotionApiError("notion-client package is not installed") from exc
-        return cls(Client(auth=notion_token(config)))
+        return cls(Client(auth=notion_token(config), notion_version=notion_api_version(config)))
 
     def _call(self, func: Callable[..., T], **kwargs: Any) -> T:
         try:
@@ -236,6 +242,73 @@ class NotionAdapter:
 
     def upload_file_for_property(self, path: Path, name: str, mime_type: str) -> dict[str, Any] | None:
         return self.upload_file(path, name, mime_type)
+
+    def create_database(self, page_id: str, title: str, properties: dict[str, Any]) -> dict[str, Any]:
+        rich_title = [{"type": "text", "text": {"content": title}}]
+        return self._call(
+            self.client.databases.create,
+            parent={"type": "page_id", "page_id": page_id},
+            title=rich_title,
+            initial_data_source={"title": rich_title, "properties": properties},
+        )
+
+    def update_data_source(self, data_source_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+        return self._call(self.client.data_sources.update, data_source_id=data_source_id, properties=properties)
+
+    def list_views(self, data_source_id: str | None = None, database_id: str | None = None) -> list[dict[str, Any]]:
+        scopes = [scope for scope in (database_id, data_source_id) if scope]
+        if len(scopes) != 1:
+            raise NotionApiError("list_views requires exactly one of database_id or data_source_id")
+        kwargs: dict[str, Any] = {}
+        if data_source_id is not None:
+            kwargs["data_source_id"] = data_source_id
+        if database_id is not None:
+            kwargs["database_id"] = database_id
+        response = self._call(self.client.views.list, **kwargs)
+        return response.get("results", [])
+
+    def retrieve_view(self, view_id: str) -> dict[str, Any]:
+        return self._call(self.client.views.retrieve, view_id=view_id)
+
+    def create_view(
+        self,
+        *,
+        data_source_id: str,
+        name: str,
+        view_type: str,
+        database_id: str | None = None,
+        view_id: str | None = None,
+        create_database: dict[str, Any] | None = None,
+        filter: dict[str, Any] | None = None,
+        sorts: list[dict[str, Any]] | None = None,
+        quick_filters: dict[str, Any] | None = None,
+        configuration: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        parent_scopes = [scope for scope in (database_id, view_id, create_database) if scope]
+        if len(parent_scopes) != 1:
+            raise NotionApiError("create_view requires exactly one of database_id, view_id, or create_database")
+        kwargs: dict[str, Any] = {"data_source_id": data_source_id, "name": name, "type": view_type}
+        if database_id is not None:
+            kwargs["database_id"] = database_id
+        if view_id is not None:
+            kwargs["view_id"] = view_id
+        if create_database is not None:
+            kwargs["create_database"] = create_database
+        if filter is not None:
+            kwargs["filter"] = filter
+        if sorts is not None:
+            kwargs["sorts"] = sorts
+        if quick_filters is not None:
+            kwargs["quick_filters"] = quick_filters
+        if configuration is not None:
+            kwargs["configuration"] = configuration
+        return self._call(self.client.views.create, **kwargs)
+
+    def update_view(self, view_id: str, **options: Any) -> dict[str, Any]:
+        return self._call(self.client.views.update, view_id=view_id, **options)
+
+    def delete_view(self, view_id: str) -> dict[str, Any]:
+        return self._call(self.client.views.delete, view_id=view_id)
 
     def list_block_children(self, block_id: str) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []

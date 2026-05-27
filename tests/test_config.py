@@ -12,27 +12,51 @@ def test_ensure_config_creates_default_files(tmp_path, monkeypatch):
     assert isinstance(config, AppConfig)
     assert config.root == tmp_path
     assert (tmp_path / "config.json").exists()
-    assert (tmp_path / "aliases.json").read_text(encoding="utf-8") == '{\n  "aliases": {}\n}\n'
-    assert (tmp_path / "routes.json").read_text(encoding="utf-8") == '{\n  "routes": {}\n}\n'
+    assert not (tmp_path / "aliases.json").exists()
+    assert not (tmp_path / "routes.json").exists()
     assert (tmp_path / "states.json").exists()
-    assert (tmp_path / "targets").is_dir()
-    assert (tmp_path / "plans").is_dir()
+    assert not (tmp_path / "targets").exists()
+    assert not (tmp_path / "plans").exists()
     assert (tmp_path / "logs").is_dir()
-    assert (tmp_path / "cache" / "assets" / "covers" / "books").is_dir()
-    assert (tmp_path / "cache" / "assets" / "covers" / "podcast_episodes").is_dir()
+    assert (tmp_path / "cache-v2" / "graphs").is_dir()
+    assert (tmp_path / "cache-v2" / "profiles").is_dir()
+    assert (tmp_path / "cache-v2" / "plans").is_dir()
+    assert (tmp_path / "cache-v2" / "assets").is_dir()
+    assert not (tmp_path / "cache" / "pages").exists()
+    assert not (tmp_path / "cache" / "data-sources").exists()
+    assert not (tmp_path / "cache" / "searches").exists()
+    assert not (tmp_path / "cache" / "enrichment").exists()
+    assert not (tmp_path / "cache" / "assets" / "covers" / "books").exists()
+    assert not (tmp_path / "cache" / "assets" / "covers" / "podcast_episodes").exists()
 
 
-def test_ensure_config_does_not_overwrite_existing_aliases(tmp_path, monkeypatch):
+def test_ensure_config_does_not_overwrite_existing_v2_aliases(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
 
-    aliases_path = tmp_path / "aliases.json"
+    aliases_path = tmp_path / "cache-v2" / "aliases.json"
     aliases_path.parent.mkdir(parents=True, exist_ok=True)
-    custom_aliases = '{\n  "aliases": {\n    "custom": "自定义"\n  }\n}\n'
+    custom_aliases = '{\n  "cache_version": 2,\n  "aliases": {\n    "custom": {\n      "graph_id": "graph-custom",\n      "profile_id": null,\n      "kind": "graph"\n    }\n  }\n}\n'
     aliases_path.write_text(custom_aliases, encoding="utf-8")
 
     ensure_config()
 
     assert aliases_path.read_text(encoding="utf-8") == custom_aliases
+
+
+def test_default_config_contains_v2_cache_paths_and_notion_api_version(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+
+    config = ensure_config()
+    data = json.loads(config.config_file.read_text(encoding="utf-8"))
+
+    assert data["notion"]["api_version"] == "2026-03-11"
+    assert config.cache_v2_dir == tmp_path / "cache-v2"
+    assert config.graphs_v2_dir == tmp_path / "cache-v2" / "graphs"
+    assert config.profiles_v2_dir == tmp_path / "cache-v2" / "profiles"
+    assert config.aliases_v2_file == tmp_path / "cache-v2" / "aliases.json"
+    assert config.plans_v2_dir == tmp_path / "cache-v2" / "plans"
+    assert config.assets_v2_dir == tmp_path / "cache-v2" / "assets"
+    assert config.aliases_v2_file.read_text(encoding="utf-8") == '{\n  "cache_version": 2,\n  "aliases": {}\n}\n'
 
 
 def test_ensure_config_writes_book_parser_profile_defaults(tmp_path, monkeypatch):

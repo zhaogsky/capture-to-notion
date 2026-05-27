@@ -178,6 +178,12 @@ def _config_from_root(config_root_path: Path) -> AppConfig:
         plans_dir=config_root_path / "plans",
         logs_dir=config_root_path / "logs",
         covers_dir=config_root_path / "cache" / "assets" / "covers",
+        cache_v2_dir=config_root_path / "cache-v2",
+        graphs_v2_dir=config_root_path / "cache-v2" / "graphs",
+        profiles_v2_dir=config_root_path / "cache-v2" / "profiles",
+        plans_v2_dir=config_root_path / "cache-v2" / "plans",
+        assets_v2_dir=config_root_path / "cache-v2" / "assets",
+        aliases_v2_file=config_root_path / "cache-v2" / "aliases.json",
     )
 
 

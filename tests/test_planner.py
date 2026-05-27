@@ -20,6 +20,7 @@ from capture_to_notion.planner import (
 
 
 def write_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
@@ -139,6 +140,218 @@ def seed_podcast_target(config, parser_profile=True):
     )
 
 
+def test_capture_plan_updates_database_item_resolved_from_page_alias(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    write_json(
+        config.aliases_file,
+        {"aliases": {"可能性的艺术": {"type": "page", "page_id": "page-book-1", "target_id": "book-item"}}},
+    )
+    write_json(
+        config.targets_dir / "book-item.json",
+        {
+            "target": {
+                "page_id": "page-book-1",
+                "title": "可能性的艺术",
+                "target_id": "book-item",
+                "data_source_id": "ds-books",
+            },
+            "parser_profile": {
+                "book": {
+                    **BOOK_PARSER_PROFILE,
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "summary_key_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {"title": "名称", "state": "阅读状态"},
+                    "field_sources": {"title": "profile", "state": "profile"},
+                    "schema": {"名称": {"type": "title"}, "阅读状态": {"type": "status"}},
+                }
+            },
+        },
+    )
+
+    plan = build_capture_plan(
+        CaptureInput(raw_input="《可能性的艺术》", target_hint="可能性的艺术", content_type_hint="book"),
+        cache,
+    )
+
+    assert plan.requires_confirmation is False
+    assert plan.operations[0]["page_id"] == "page-book-1"
+    assert plan.target.page_id == "page-book-1"
+    assert plan.target.data_source_id == "ds-books"
+    assert plan.target.source == "target_hint_alias"
+    assert plan.summary["write_targets"][0]["action"] == "update_page"
+
+
+
+def test_capture_plan_data_source_alias_creates_without_implicit_update(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    write_json(
+        config.aliases_file,
+        {"aliases": {"书库": {"type": "data_source", "data_source_id": "ds-books", "target_id": "books-ds"}}},
+    )
+    write_json(
+        config.targets_dir / "books-ds.json",
+        {
+            "target": {"page_id": "page-books", "title": "Books", "target_id": "books-ds", "data_source_id": "ds-books"},
+            "parser_profile": {
+                "book": {
+                    **BOOK_PARSER_PROFILE,
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "summary_key_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {"title": "名称", "state": "阅读状态"},
+                    "field_sources": {"title": "profile", "state": "profile"},
+                    "schema": {"名称": {"type": "title"}, "阅读状态": {"type": "status"}},
+                }
+            },
+        },
+    )
+
+    plan = build_capture_plan(CaptureInput(raw_input="《新书》", target_hint="书库", content_type_hint="book"), cache)
+
+    assert plan.requires_confirmation is False
+    assert "page_id" not in plan.operations[0]
+    assert plan.target.page_id == "page-books"
+    assert plan.target.target_id == "books-ds"
+    assert plan.target.source == "data_source_alias"
+    assert plan.summary["write_targets"][0]["action"] == "create_page"
+    assert plan.summary["write_targets"][0]["page_id"] is None
+    assert plan.summary["write_targets"][0]["page_id_status"] == "pending_after_apply"
+
+
+
+def test_capture_plan_write_targets_include_location_proof(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    write_json(
+        config.aliases_file,
+        {"aliases": {"书库": {"type": "data_source", "data_source_id": "ds-books", "target_id": "books-ds"}}},
+    )
+    write_json(
+        config.targets_dir / "books-ds.json",
+        {
+            "target": {"page_id": "page-books", "title": "Books", "target_id": "books-ds", "data_source_id": "ds-books"},
+            "parser_profile": {
+                "book": {
+                    **BOOK_PARSER_PROFILE,
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "summary_key_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "database_id": "db-books",
+                    "parent_page_id": "page-books",
+                    "fields": {"title": "名称", "state": "阅读状态"},
+                    "field_sources": {"title": "profile", "state": "profile"},
+                    "schema": {"名称": {"type": "title"}, "阅读状态": {"type": "status"}},
+                }
+            },
+        },
+    )
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="《新书》",
+            target_hint="书库",
+            target_context_hint="parent page id page-books",
+            target_scope_hint="data_source",
+            content_type_hint="book",
+        ),
+        cache,
+    )
+
+    write_target = plan.summary["write_targets"][0]
+    assert write_target["database_id"] == "db-books"
+    assert write_target["parent_page_id"] == "page-books"
+    assert write_target["context_verification_source"] == "parent_page_id_match"
+
+
+
+def test_capture_plan_explicit_existing_page_id_overrides_database_item_page(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    write_json(
+        config.aliases_file,
+        {"aliases": {"可能性的艺术": {"type": "page", "page_id": "page-book-1", "target_id": "book-item"}}},
+    )
+    write_json(
+        config.targets_dir / "book-item.json",
+        {
+            "target": {
+                "page_id": "page-book-1",
+                "title": "可能性的艺术",
+                "target_id": "book-item",
+                "data_source_id": "ds-books",
+            },
+            "parser_profile": {
+                "book": {
+                    **BOOK_PARSER_PROFILE,
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "summary_key_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {"title": "名称", "state": "阅读状态"},
+                    "field_sources": {"title": "profile", "state": "profile"},
+                    "schema": {"名称": {"type": "title"}, "阅读状态": {"type": "status"}},
+                }
+            },
+        },
+    )
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="《可能性的艺术》",
+            target_hint="可能性的艺术",
+            content_type_hint="book",
+            existing_page_id="page-explicit",
+        ),
+        cache,
+    )
+
+    assert plan.operations[0]["page_id"] == "page-explicit"
+    assert plan.summary["write_targets"][0]["page_id"] == "page-explicit"
+
+
+
 def test_capture_plan_infers_and_caches_unmapped_date_field_from_schema(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -195,7 +408,7 @@ def test_capture_plan_infers_and_caches_unmapped_date_field_from_schema(tmp_path
 
     plan = build_capture_plan(
         CaptureInput(
-            raw_input="《这就是卢梭》 时间：2026-05-18 简介：卢梭专题导论",
+            raw_input="《这就是卢梭》 时间改成 2026-05-18 简介：卢梭专题导论",
             target_hint="独树不成林",
             state="已完成",
             content_type_hint="podcast_episode",
@@ -215,6 +428,133 @@ def test_capture_plan_infers_and_caches_unmapped_date_field_from_schema(tmp_path
     cached_data_source = cached_target["data_sources"]["episodes"]
     assert cached_data_source["fields"]["完成时间"] == "完成时间"
     assert cached_data_source["field_sources"]["完成时间"] == "profile"
+
+
+
+def test_capture_plan_maps_date_and_status_schema_input_fields_in_one_sentence(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "独树不成林": {
+                    "type": "page",
+                    "page_id": "page-podcasts",
+                    "target_id": "podcastshelf",
+                }
+            }
+        },
+    )
+    write_json(
+        config.targets_dir / "podcastshelf.json",
+        {
+            "target": {"page_id": "page-podcasts", "title": "独树不成林", "target_id": "podcastshelf"},
+            "parser_profile": {"podcast_episode": {"trusted_field_sources": ["explicit", "profile"]}},
+            "data_sources": {
+                "episodes": {
+                    "data_source_id": "ds-podcasts",
+                    "title": "Podcast Episodes",
+                    "role": "primary",
+                    "content_types": ["podcast_episode"],
+                    "fields": {"title": "主题", "state": "状态"},
+                    "field_sources": {"title": "profile", "state": "profile"},
+                    "schema": {
+                        "主题": {"type": "title"},
+                        "状态": {"type": "select"},
+                        "完成时间": {"type": "date"},
+                        "收听进度": {
+                            "type": "status",
+                            "options": [{"name": "已完成", "color": "green"}],
+                        },
+                    },
+                }
+            },
+            "state_mapping": {"field": "状态", "values": {"completed": "已完成"}},
+        },
+    )
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="某一期节目 完成时间改成 2026-05-25 收听进度设为 已完成",
+            target_hint="独树不成林",
+            state="completed",
+            content_type_hint="podcast_episode",
+            options=CaptureOptions(),
+        ),
+        cache,
+    )
+
+    assert plan.normalized_record["完成时间"] == "2026-05-25"
+    assert plan.normalized_record["收听进度"] == "已完成"
+    assert plan.field_mapping["完成时间"] == "完成时间"
+    assert plan.field_mapping["收听进度"] == "收听进度"
+
+
+
+def test_capture_plan_uses_cached_schema_field_labels_for_assignment_parsing(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "某一期节目": {
+                    "type": "page",
+                    "page_id": "page-episode",
+                    "target_id": "episode-item",
+                }
+            }
+        },
+    )
+    write_json(
+        config.targets_dir / "episode-item.json",
+        {
+            "target": {
+                "page_id": "page-episode",
+                "title": "某一期节目",
+                "target_id": "episode-item",
+                "data_source_id": "ds-episodes",
+            },
+            "parser_profile": {"podcast_episode": {"trusted_field_sources": ["profile"]}},
+            "data_sources": {
+                "episodes": {
+                    "data_source_id": "ds-episodes",
+                    "title": "Podcast Episodes",
+                    "role": "primary",
+                    "content_types": ["podcast_episode"],
+                    "fields": {"状态": "状态", "完成时间": "完成时间"},
+                    "field_sources": {"状态": "profile", "完成时间": "profile"},
+                    "schema": {
+                        "主题": {"type": "title"},
+                        "状态": {"type": "select"},
+                        "完成时间": {"type": "date"},
+                    },
+                }
+            },
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="这期播客已经听完了，然后状态改成已完成，完成时间改成 2026-05-25。页面信息：节目名=罗永浩的十字路口",
+            target_hint="某一期节目",
+            state="completed",
+            content_type_hint="podcast_episode",
+            options=CaptureOptions(),
+        ),
+        cache,
+    )
+
+    assert plan.requires_confirmation is False
+    assert plan.normalized_record["状态"] == "已完成"
+    assert plan.normalized_record["完成时间"] == "2026-05-25"
+    assert plan.field_mapping == {"状态": "状态", "完成时间": "完成时间"}
+    assert plan.operations[0]["page_id"] == "page-episode"
 
 
 
@@ -987,6 +1327,14 @@ def test_extract_title_handles_nested_chinese_book_quotes():
 
 
 
+def test_extract_title_truncates_before_known_label_assignment_suffix():
+    assert planner_module.extract_title(
+        "某一期节目 完成时间改成 2026-05-25",
+        {"labels": {"completed_at": ["完成时间"]}},
+    ) == "某一期节目"
+
+
+
 def test_book_capture_plan_strips_target_alias_from_title_prefix_before_metadata(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -1052,6 +1400,19 @@ def test_book_capture_plan_requires_confirmation_when_key_values_are_missing(tmp
         {"type": "create_or_update_page", "target_data_source": "Books", "data_source_id": "ds-books"}
     ]
     assert plan.asset_operations == []
+    assert plan.summary["write_targets"] == [
+        {
+            "type": "primary_page",
+            "action": "create_page",
+            "target_page": "书单",
+            "target_data_source": "Books",
+            "data_source_id": "ds-books",
+            "page_id": None,
+            "page_id_status": "pending_after_apply",
+            "title": "可能性的艺术",
+            "write_status": "requires_confirmation",
+        }
+    ]
     assert plan.summary["key_fields"]["author"] == {"target_field": "作者", "value_status": "missing_value"}
     assert plan.summary["key_fields"]["isbn"] == {"target_field": "ISBN", "value_status": "missing_value"}
     assert plan.summary["key_fields"]["page_count"] == {"target_field": "页数", "value_status": "missing_value"}
@@ -1747,7 +2108,15 @@ def test_book_capture_plan_requires_confirmation_for_page_count_mapping_ambiguit
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
-            "parser_profile": {"book": BOOK_PARSER_PROFILE},
+            "parser_profile": {
+                "book": {
+                    **BOOK_PARSER_PROFILE,
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "summary_key_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
             "data_sources": {
                 "db-books": {
                     "data_source_id": "db-books",
@@ -2061,9 +2430,44 @@ def test_extract_labeled_author_stops_before_following_label_delimiters(raw_inpu
     ) == expected
 
 
-def test_extract_labeled_author_supports_english_and_colon_variants():
-    assert extract_labeled_value("author: Liu Yu", ["作者", "author"]) == "Liu Yu"
-    assert extract_labeled_value("作者: 刘瑜", ["作者", "author"]) == "刘瑜"
+@pytest.mark.parametrize(
+    ("raw_input", "expected"),
+    [
+        ("author: Liu Yu", "Liu Yu"),
+        ("作者：刘瑜", "刘瑜"),
+        ("author = Liu Yu", "Liu Yu"),
+        ("作者改成 刘瑜", "刘瑜"),
+        ("作者设为 刘瑜", "刘瑜"),
+        ("作者更新为 刘瑜", "刘瑜"),
+        ("作者调整为 刘瑜", "刘瑜"),
+        ("作者变更为 刘瑜", "刘瑜"),
+    ],
+)
+def test_extract_labeled_author_supports_assignment_connectors(raw_input, expected):
+    assert extract_labeled_value(raw_input, ["作者", "author"]) == expected
+
+
+
+def test_extract_labeled_value_supports_transition_prefixes_and_sentence_terminators():
+    raw_input = "这期播客已经听完了，然后状态改成已完成，完成时间改成 2026-05-25。页面信息：节目名=罗永浩的十字路口"
+    known_labels = ["状态", "完成时间", "页面信息", "节目名"]
+
+    assert extract_labeled_value(raw_input, ["状态"], known_labels) == "已完成"
+    assert extract_labeled_value(raw_input, ["完成时间"], known_labels) == "2026-05-25"
+
+
+def test_extract_labeled_value_preserves_chinese_periods_in_long_structured_fields():
+    raw_input = "内容描述：第一句。第二句。\n状态：未开始"
+    known_labels = ["内容描述", "状态"]
+
+    assert extract_labeled_value(raw_input, ["内容描述"], known_labels) == "第一句。第二句"
+
+
+def test_extract_labeled_value_stops_at_chinese_period_before_known_label():
+    raw_input = "完成时间改成 2026-05-25。页面信息：节目名=罗永浩的十字路口"
+    known_labels = ["完成时间", "页面信息", "节目名"]
+
+    assert extract_labeled_value(raw_input, ["完成时间"], known_labels) == "2026-05-25"
 
 
 def test_podcast_labeled_podcast_populates_normalized_record_and_mapping(tmp_path, monkeypatch):
@@ -2095,6 +2499,13 @@ def test_extract_labeled_podcast_stops_before_chinese_date_labels():
     known_labels = ["播客", "podcast", "节目", "发布日期", "发布于", "published_at"]
     assert extract_labeled_value("播客：忽左忽右 发布日期：2026-05-10", ["播客", "podcast", "节目"], known_labels) == "忽左忽右"
     assert extract_labeled_value("节目：忽左忽右 发布于：2026-05-10", ["播客", "podcast", "节目"], known_labels) == "忽左忽右"
+
+
+
+def test_extract_labeled_value_prefers_longer_labels_for_main_and_known_boundaries():
+    known_labels = ["节目", "节目名", "完成", "完成时间"]
+    assert extract_labeled_value("节目名：忽左忽右 完成时间改成 2026-05-25", ["节目", "节目名"], known_labels) == "忽左忽右"
+    assert extract_labeled_value("节目名：忽左忽右 完成时间改成 2026-05-25", ["完成", "完成时间"], known_labels) == "2026-05-25"
 
 
 @pytest.mark.parametrize(
@@ -3423,7 +3834,15 @@ def test_book_capture_plan_requires_confirmation_when_cover_field_source_is_untr
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
-            "parser_profile": {"book": BOOK_PARSER_PROFILE},
+            "parser_profile": {
+                "book": {
+                    **BOOK_PARSER_PROFILE,
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "summary_key_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
             "data_sources": {
                 "db-books": {
                     "data_source_id": "db-books",
@@ -3503,7 +3922,15 @@ def test_capture_plan_preserves_scanned_confirmation_signal(tmp_path, monkeypatc
         config.targets_dir / "bookshelf.json",
         {
             "target": {"page_id": "page-books", "title": "书单", "target_id": "bookshelf"},
-            "parser_profile": {"book": BOOK_PARSER_PROFILE},
+            "parser_profile": {
+                "book": {
+                    **BOOK_PARSER_PROFILE,
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "summary_key_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
             "data_sources": {
                 "db-books": {
                     "data_source_id": "db-books",
@@ -3593,3 +4020,64 @@ def test_build_asset_operations_uses_safe_cache_path_for_record_key(tmp_path, mo
     relative_parts = cache_path.relative_to(config.covers_dir.parent).parts
     assert ".." not in relative_parts
     assert relative_parts[0] != "../附件/危险"
+
+
+def test_v2_plan_uses_write_profile_and_view_context(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "graph-1",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-1",
+            "root": {"kind": "page", "id": "page-1"},
+            "data_sources": {
+                "ds-1": {
+                    "data_source_id": "ds-1",
+                    "title": "Rows",
+                    "schema": {
+                        "Name": {"id": "title", "type": "title", "name": "Name"},
+                        "Summary": {"id": "s", "type": "rich_text", "name": "Summary"},
+                    },
+                }
+            },
+            "views": {"view-1": {"view_id": "view-1", "name": "Episodes", "type": "gallery", "data_source_id": "ds-1"}},
+        },
+    )
+    store.write_profile(
+        "profile-1",
+        {
+            "cache_version": 2,
+            "profile_id": "profile-1",
+            "graph_id": "graph-1",
+            "write_profiles": {
+                "podcast_episode": {
+                    "canonical_data_source_id": "ds-1",
+                    "canonical_view_id": "view-1",
+                    "field_mapping": {"title": "Name", "description": "Summary"},
+                    "field_sources": {"title": "user_binding", "description": "user_binding"},
+                    "parser_profile": {"labels": {"description": ["摘要"]}},
+                }
+            },
+        },
+    )
+    store.bind_alias("Program", graph_id="graph-1", profile_id="profile-1", kind="page")
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict({"raw_input": "标题：Example\n摘要：Summary text", "target_hint": "Program", "content_type_hint": "podcast_episode"}),
+        store,
+    )
+
+    assert plan.target.data_source_id == "ds-1"
+    assert plan.target.target_id == "graph-1"
+    assert plan.target.view_id == "view-1"
+    assert plan.target.view_type == "gallery"
+    assert plan.field_mapping == {"title": "Name", "description": "Summary"}
+    write_target = plan.summary["write_targets"][0]
+    assert write_target["target_kind"] == "view_backed_data_source"
+    assert write_target["display_view_type"] == "gallery"
+    assert write_target["display_view_name"] == "Episodes"
+    assert write_target["data_source_id"] == "ds-1"

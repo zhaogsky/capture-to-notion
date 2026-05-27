@@ -7,7 +7,11 @@ from pathlib import Path
 
 
 DEFAULT_CONFIG = {
-    "notion": {"auth": {"env_token_name": "NOTION_TOKEN"}, "default_workspace": "default"},
+    "notion": {
+        "auth": {"env_token_name": "NOTION_TOKEN"},
+        "default_workspace": "default",
+        "api_version": "2026-03-11",
+    },
     "behavior": {
         "confirmation": {
             "require_for_first_target": True,
@@ -53,6 +57,12 @@ class AppConfig:
     plans_dir: Path
     logs_dir: Path
     covers_dir: Path
+    cache_v2_dir: Path
+    graphs_v2_dir: Path
+    profiles_v2_dir: Path
+    plans_v2_dir: Path
+    assets_v2_dir: Path
+    aliases_v2_file: Path
 
 
 def config_root() -> Path:
@@ -73,18 +83,20 @@ def ensure_config() -> AppConfig:
     plans_dir = root / "plans"
     logs_dir = root / "logs"
     covers_dir = root / "cache" / "assets" / "covers"
+    cache_v2_dir = root / "cache-v2"
+    graphs_v2_dir = cache_v2_dir / "graphs"
+    profiles_v2_dir = cache_v2_dir / "profiles"
+    plans_v2_dir = cache_v2_dir / "plans"
+    assets_v2_dir = cache_v2_dir / "assets"
 
     for path in [
         root,
-        targets_dir,
-        plans_dir,
         logs_dir,
-        root / "cache" / "pages",
-        root / "cache" / "data-sources",
-        root / "cache" / "searches",
-        root / "cache" / "enrichment",
-        covers_dir / "books",
-        covers_dir / "podcast_episodes",
+        cache_v2_dir,
+        graphs_v2_dir,
+        profiles_v2_dir,
+        plans_v2_dir,
+        assets_v2_dir,
     ]:
         path.mkdir(parents=True, exist_ok=True)
 
@@ -92,11 +104,11 @@ def ensure_config() -> AppConfig:
     aliases_file = root / "aliases.json"
     routes_file = root / "routes.json"
     states_file = root / "states.json"
+    aliases_v2_file = cache_v2_dir / "aliases.json"
 
     write_json_if_missing(config_file, DEFAULT_CONFIG)
-    write_json_if_missing(aliases_file, {"aliases": {}})
-    write_json_if_missing(routes_file, {"routes": {}})
     write_json_if_missing(states_file, DEFAULT_STATES)
+    write_json_if_missing(aliases_v2_file, {"cache_version": 2, "aliases": {}})
 
     return AppConfig(
         root=root,
@@ -108,4 +120,10 @@ def ensure_config() -> AppConfig:
         plans_dir=plans_dir,
         logs_dir=logs_dir,
         covers_dir=covers_dir,
+        cache_v2_dir=cache_v2_dir,
+        graphs_v2_dir=graphs_v2_dir,
+        profiles_v2_dir=profiles_v2_dir,
+        plans_v2_dir=plans_v2_dir,
+        assets_v2_dir=assets_v2_dir,
+        aliases_v2_file=aliases_v2_file,
     )

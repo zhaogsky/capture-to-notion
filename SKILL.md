@@ -13,7 +13,18 @@ The CLI can preflight captures, suggest targets, scan Notion pages/databases, pl
 
 Supported first-version write behavior includes cached target/schema mapping, explicit author/podcast relation resolution, cover download/cache/upload fallback to external URL, and warning reporting when optional enrichment fails.
 
-Capture plans depend on target cache `parser_profile`, `fields`, and `field_sources`. Do not use Notion MCP or property-name guessing to fill business mappings. When `field_sources` are present, treat only sources listed in the active parser profile `trusted_field_sources` as trusted for required mappings; warnings such as `*_schema_incomplete`, `*_key_values_missing`, and `untrusted_field_mapping` must be shown to the user for confirmation.
+Capture plans depend on v2 write profiles, target graph schema, and trusted field mappings. Do not use Notion MCP or property-name guessing to fill business mappings. When `field_sources` are present, treat only trusted profile/user bindings as trusted for required mappings; warnings such as `*_schema_incomplete`, `*_key_values_missing`, and `untrusted_field_mapping` must be shown to the user for confirmation.
+
+## V2 Notion Graph Cache
+
+Capture to Notion uses only the v2 graph cache under `cache-v2/`. Legacy target cache files are not read by capture preflight, plan, or apply. If a target has no v2 graph/profile, route to scan/bind instead of falling back to old cache.
+
+A v2 target consists of:
+- a graph: pages, blocks, databases, data sources, and views from Notion API;
+- a write profile: content type to canonical data source/view plus field mappings;
+- an alias: user-facing name to graph/profile.
+
+Writes always go to a data source. Views are display context and are validated when present.
 
 ## Summary Preprocessing
 
@@ -37,13 +48,30 @@ When a summary-like field is planned:
 4. If no content source is available, do not write the summary-like field. Present the plan's `enrichment_requirements` and ask the user to provide a transcript/content source or confirm accepting metadata instead.
 5. Keep this profile-driven: do not hardcode a Notion property name, page title, platform name, or content type in runtime logic.
 
+## Preflight-First Workflow Gate
+
+For any Notion capture, write, update, initialize, or completion request, run `capture-to-notion capture preflight --input ... --compact` before searching, scanning, planning, or applying. Do not decide the next step manually: route only by `workflow.planning.next_action` from preflight. Do not reinterpret, override, or skip the workflow route based on your own judgment.
+
+Routing rules:
+
+- `suggest_target`: only ask for or suggest a target. Do not run `capture plan` or `capture apply`.
+- `choose_target`: only show candidates and wait for the user to choose an exact target. Do not plan or apply.
+- `scan_target`: only run `target scan`, then rerun preflight. Do not plan until the rerun returns `capture_plan`.
+- `sync_target_cache`: run `capture plan --compact` so the CLI can perform one scoped sync for the exact `workflow.target_resolution.sync` target, then rerun preflight internally. Do not search Notion, switch targets, or manually scan a fallback target.
+- `confirm_risky_target`: explain the risk and wait for explicit confirmation or a different target. Do not plan or apply.
+- `capture_plan`: run `capture plan --compact`, show the confirmation summary, and wait for explicit user confirmation before `capture apply --confirmed`.
+
+Do not search Notion with generic content-type words such as book, podcast, article, video, or note. Search requires concrete identity facts such as title, author, ISBN, episode title, podcast name, project name, or a user-confirmed target name.
+
+External URLs must not be fetched or parsed automatically unless the user explicitly requests it or confirms the recommended enrichment step. If a URL is present but identity or target facts are insufficient, recommend URL enrichment instead of generic target search.
+
 ## Low-Token Execution Protocol
 
 Default to the lowest-token deterministic path.
 
 1. If the user names a known target or alias, use that alias/cache first.
    - Do not run `target search` before `capture preflight` unless the target is unknown.
-   - If preflight returns `cache_hit` and `plan_directly`, go directly to `capture plan --compact`.
+   - If preflight returns `workflow.planning.next_action == "capture_plan"`, go directly to `capture plan --compact`.
 2. Always use compact stdout for planning commands:
    - `capture-to-notion capture preflight --input ... --compact`
    - `capture-to-notion capture plan --input ... --output ... --compact`
@@ -86,23 +114,23 @@ Default to the lowest-token deterministic path.
 capture-to-notion capture preflight --input /path/to/input.json --compact
 ```
 
-7. Interpret preflight facts first, then decide the next user-facing recommendation:
-   - `target_missing`: no reliable target yet; recommend target suggestion or ask the user to specify one.
-   - `cache_missing`: target cache/schema facts are missing; if the user already identified one exact target, run `capture-to-notion target scan --page-id ... --alias ...` first.
-   - `risky_target`: target may be writable but has structural or trust warnings; explain the risk and ask before continuing.
-   - `ambiguous_target`: multiple likely targets or unresolved target identity; show candidates and wait for the user to choose one exact page ID before scan/plan/apply.
-   - `direct_plan_allowed`: deterministic facts are sufficient; continue to `capture plan`.
-   - `url_parse_suggested` / `ask_before_parse`: external URL parsing or enrichment may help, but it is only a recommendation-stage action.
+7. Interpret `workflow.planning.next_action` as the only next-step router:
+   - `suggest_target`: no reliable target yet; recommend target suggestion or ask the user to specify one.
+   - `choose_target`: multiple likely targets or unresolved target identity; show candidates and wait for one exact page ID/data source ID.
+   - `scan_target`: target cache/schema facts are missing or stale; scan the exact target, then rerun preflight.
+   - `sync_target_cache`: target cache is missing location facts for the resolved target; run `capture plan --compact` and let the CLI perform one scoped sync for the exact sync request before planning.
+   - `confirm_risky_target`: target may be writable but has structural or trust warnings; explain the risk and ask before continuing.
+   - `capture_plan`: deterministic facts are sufficient; continue to `capture plan`.
 8. If the target page/database has not been scanned or cached and preflight indicates cache is needed, run `capture-to-notion target search --query ... --limit 5 --compact` first. If multiple plausible results remain, show only the title, page/data source ID, and last edited time unless the user asks for more context; then wait for the user to choose the exact page ID. Do not scan, alias, plan, or apply until the user chooses one.
 9. After the user identifies one exact target page/database, run `capture-to-notion target scan --page-id ... --alias ...` if preflight or cache status shows it has not been scanned or cached.
 10. External URLs are not automatically parsed or fetched by default. If preflight suggests URL parsing/enrichment, first recommend it or ask for confirmation; do not silently parse/fetch the URL.
-11. When preflight shows direct planning is allowed, run:
+11. Only when preflight returns `workflow.planning.next_action == "capture_plan"` or `"sync_target_cache"`, run:
 
 ```bash
 capture-to-notion capture plan --input /path/to/input.json --output /path/to/plan.json --compact
 ```
 
-If the input contains labeled fields that the cache cannot cover, the plan command should revalidate the target page/data source schema, update the local target cache when the actual schema has matching writable fields, and then build the plan from the refreshed cache. Clear matches do not require user confirmation; only ambiguous target/data-source choices or incompatible field types should block for confirmation.
+If the v2 graph/profile cannot cover the requested target or mapping, stop at the preflight route and rebuild/bind the v2 cache explicitly before planning. Do not refresh or fall back to legacy cache during capture plan.
 
 12. Present the compact stdout preflight conclusion and plan to the user in concise Chinese. The `--output` plan file remains the complete executable JSON for apply.
 13. If `requires_confirmation` is true, ask the user to confirm or choose a target before writing.
@@ -164,7 +192,7 @@ Keep the plan detailed enough to verify the target page, operation, important fi
 - Never silently write to Notion on first use of a target page.
 - Never overwrite or modify Notion schema automatically.
 - Never store business cache in Claude memory.
-- Stay cache-first: when reliable target cache or schema facts already exist, use them before considering a re-scan.
+- Stay cache-first: when reliable target cache or schema facts already exist, use them before considering a re-scan; when preflight requests `sync_target_cache`, let `capture plan` perform the scoped cache sync instead of choosing another target.
 - Do not use Notion MCP as a fallback; stay within the capture-to-notion Skill backend and CLI flow.
 - External URLs are not automatically parsed or fetched by default; recommend or ask first.
 - Missing `/summarize` CLI/backend is not a blocker by itself; when the user requested summarization and enough content is available to the current AI session, use AI fallback summarization and continue to preflight/plan.

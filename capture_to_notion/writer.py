@@ -104,6 +104,24 @@ def build_plan_properties(plan: WritePlan, target_structure: dict[str, Any]) -> 
     return _build_record_properties(plan.normalized_record, plan, target_structure, _plan_schema(plan, target_structure))
 
 
+def _validate_plan_target(plan: WritePlan, target_structure: dict[str, Any]) -> None:
+    data_source_id = plan.target.data_source_id
+    if not data_source_id:
+        raise NotionWriterError("Plan target is missing data_source_id")
+    _data_source_schema(target_structure, data_source_id)
+    target = target_structure.get("target")
+    cached_page_id = target.get("page_id") if isinstance(target, dict) else None
+    if (
+        isinstance(plan.target.page_id, str)
+        and plan.target.page_id
+        and isinstance(cached_page_id, str)
+        and cached_page_id
+        and plan.target.page_id != cached_page_id
+    ):
+        raise NotionWriterError("Plan target page_id does not match target_structure page_id")
+
+
+
 def _validate_write_operations(plan: WritePlan) -> None:
     for operation in plan.operations:
         operation_type = operation.get("type")
@@ -240,6 +258,7 @@ def apply_write_plan(
     if not plan.operations:
         raise NotionWriterError("Plan has no operations to apply")
 
+    _validate_plan_target(plan, target_structure)
     _validate_write_operations(plan)
     schema = _plan_schema(plan, target_structure)
 

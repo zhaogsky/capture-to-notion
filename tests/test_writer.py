@@ -142,6 +142,22 @@ def test_build_plan_properties_raises_when_plan_has_no_data_source_id():
         raise AssertionError("expected NotionWriterError")
 
 
+def test_apply_write_plan_rejects_target_page_id_mismatch():
+    plan = make_plan()
+    target_structure = make_target_structure()
+    target_structure["target"] = {"page_id": "page-drifted"}
+    adapter = FakeApplyAdapter()
+
+    try:
+        apply_write_plan(plan, target_structure, adapter)
+    except NotionWriterError as exc:
+        assert "page_id" in str(exc)
+    else:
+        raise AssertionError("expected NotionWriterError")
+    assert adapter.calls == []
+
+
+
 def test_apply_write_plan_creates_page_with_built_properties():
     plan = make_plan()
     plan.warnings = ["check title"]

@@ -27,6 +27,7 @@ class FakeAdapter:
 
 
 def seed_profile_mapping(config, target_id, data_source_id, fields):
+    config.targets_dir.mkdir(parents=True, exist_ok=True)
     (config.targets_dir / f"{target_id}.json").write_text(
         json.dumps(
             {
@@ -257,6 +258,119 @@ def test_scan_page_discovers_child_databases_normalizes_schema_and_saves_target(
     assert aliases["书单"]["page_id"] == "page-books"
 
 
+def test_scan_page_target_caches_child_database_location_facts(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    adapter = FakeAdapter(
+        pages={"page-books": {"id": "page-books", "title": "书单"}},
+        children={
+            "page-books": [
+                {
+                    "type": "child_database",
+                    "id": "block-books",
+                    "child_database": {"database_id": "db-books", "title": "Books"},
+                }
+            ]
+        },
+        databases={
+            "db-books": {
+                "id": "db-books",
+                "title": "Books",
+                "parent": {"type": "page_id", "page_id": "page-books"},
+                "properties": {"Name": {"id": "title", "type": "title", "title": {}}},
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-books", CacheStore(config), target_id="bookshelf")
+
+    data_source = result["data_sources"]["db-books"]
+    assert data_source["database_id"] == "db-books"
+    assert data_source["parent_page_id"] == "page-books"
+    assert data_source["parent_type"] == "page_id"
+    assert data_source["source_block_id"] == "block-books"
+    assert data_source["source_block_type"] == "child_database"
+    saved = json.loads((config.targets_dir / "bookshelf.json").read_text(encoding="utf-8"))
+    assert saved["data_sources"]["db-books"]["source_block_id"] == "block-books"
+
+
+def test_scan_page_target_detects_database_item_parent_and_saves_page_alias(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_profile_mapping(config, "book-item", "ds-books", {"title": "名称", "state": "状态"})
+    adapter = FakeAdapter(
+        pages={
+            "page-book-1": {
+                "id": "page-book-1",
+                "title": "可能性的艺术",
+                "parent": {"type": "data_source_id", "data_source_id": "ds-books"},
+            }
+        },
+        data_sources={
+            "ds-books": {
+                "id": "ds-books",
+                "title": [{"plain_text": "Books"}],
+                "properties": {
+                    "名称": {"id": "title", "type": "title", "title": {}},
+                    "状态": {"id": "status", "type": "status", "status": {"options": []}},
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-book-1", cache, target_id="book-item", alias="可能性的艺术")
+
+    assert result["target"] == {
+        "page_id": "page-book-1",
+        "title": "可能性的艺术",
+        "target_id": "book-item",
+        "data_source_id": "ds-books",
+    }
+    assert result["data_sources"]["ds-books"]["role"] == "primary"
+    assert result["data_sources"]["ds-books"]["fields"] == {"title": "名称", "state": "状态"}
+    aliases = json.loads(config.aliases_file.read_text(encoding="utf-8"))["aliases"]
+    assert aliases["可能性的艺术"] == {
+        "type": "page",
+        "page_id": "page-book-1",
+        "title": "可能性的艺术",
+        "target_id": "book-item",
+    }
+
+
+
+def test_scan_page_target_marks_database_item_single_data_source_primary_without_profile_mapping(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    adapter = FakeAdapter(
+        pages={
+            "page-episode-1": {
+                "id": "page-episode-1",
+                "title": "某一期节目",
+                "parent": {"type": "data_source_id", "data_source_id": "ds-episodes"},
+            }
+        },
+        data_sources={
+            "ds-episodes": {
+                "id": "ds-episodes",
+                "properties": {
+                    "主题": {"id": "title", "type": "title", "title": {}},
+                    "状态": {"id": "status", "type": "select", "select": {"options": []}},
+                    "完成时间": {"id": "date", "type": "date", "date": {}},
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-episode-1", cache, target_id="episode-item", alias="某一期节目")
+
+    assert result["data_sources"]["ds-episodes"]["role"] == "primary"
+    assert result["requires_confirmation"] is False
+    assert result["confirmation_reason"] is None
+
+
+
 def test_scan_data_source_target_caches_selected_source_as_primary(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -319,6 +433,39 @@ def test_scan_data_source_target_caches_selected_source_as_primary(tmp_path, mon
         "title": "Books",
         "target_id": "books-ds",
     }
+
+
+def test_scan_data_source_target_caches_parent_page_location_facts(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    adapter = FakeAdapter(
+        databases={
+            "db-books": {
+                "id": "db-books",
+                "parent": {"type": "page_id", "page_id": "page-books"},
+            }
+        },
+        data_sources={
+            "ds-books": {
+                "id": "ds-books",
+                "title": "Books",
+                "parent": {"type": "database_id", "database_id": "db-books"},
+                "properties": {"Name": {"id": "title", "type": "title", "title": {}}},
+            }
+        },
+    )
+
+    result = scan_data_source_target(adapter, "ds-books", CacheStore(config), target_id="books-ds")
+
+    assert result["target"]["data_source_id"] == "ds-books"
+    assert result["target"]["database_id"] == "db-books"
+    assert result["target"]["parent_database_id"] == "db-books"
+    assert result["target"]["parent_page_id"] == "page-books"
+    assert result["target"]["parent_type"] == "database_id"
+    data_source = result["data_sources"]["ds-books"]
+    assert data_source["database_id"] == "db-books"
+    assert data_source["parent_database_id"] == "db-books"
+    assert data_source["parent_page_id"] == "page-books"
 
 
 def test_scan_page_uses_real_data_source_schema_from_database_metadata(tmp_path, monkeypatch):
@@ -969,6 +1116,55 @@ def test_scan_page_preserves_matching_data_source_parser_profile(tmp_path, monke
     assert saved["data_sources"]["ds-episodes"]["parser_profile"] == parser_profile
 
 
+def test_scan_data_source_target_preserves_trusted_mapping_and_parser_profile_while_adding_location_facts(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    parser_profile = {"book": {"field_mapping": {"title": "Name", "state": "Status"}}}
+    cache.write_json(
+        config.targets_dir / "books-ds.json",
+        {
+            "target": {"target_id": "books-ds", "data_source_id": "ds-books"},
+            "parser_profile": parser_profile,
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "parser_profile": parser_profile,
+                    "fields": {"title": "Name", "state": "Status"},
+                    "field_sources": {"title": "explicit", "state": "profile"},
+                }
+            },
+        },
+    )
+    adapter = FakeAdapter(
+        databases={"db-books": {"id": "db-books", "parent": {"type": "page_id", "page_id": "page-books"}}},
+        data_sources={
+            "ds-books": {
+                "id": "ds-books",
+                "title": "Books",
+                "parent": {"type": "database_id", "database_id": "db-books"},
+                "properties": {
+                    "Name": {"id": "title", "type": "title", "title": {}},
+                    "Status": {"id": "status", "type": "status", "status": {"options": []}},
+                },
+            }
+        },
+    )
+
+    result = scan_data_source_target(adapter, "ds-books", cache, target_id="books-ds")
+
+    data_source = result["data_sources"]["ds-books"]
+    assert result["parser_profile"] == parser_profile
+    assert data_source["parser_profile"] == parser_profile
+    assert data_source["fields"] == {"title": "Name", "state": "Status"}
+    assert data_source["field_sources"] == {"title": "explicit", "state": "profile"}
+    assert data_source["database_id"] == "db-books"
+    assert data_source["parent_page_id"] == "page-books"
+    saved = json.loads((config.targets_dir / "books-ds.json").read_text(encoding="utf-8"))
+    assert saved["data_sources"]["ds-books"]["parser_profile"] == parser_profile
+    assert saved["data_sources"]["ds-books"]["parent_page_id"] == "page-books"
+
+
 
 def test_scan_page_does_not_infer_extra_business_fields_from_schema_names(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
@@ -1103,6 +1299,39 @@ def test_scan_page_builds_state_mapping_from_profile_mapped_select_state_field(t
     assert result["state_mapping"] == {"field": "状态", "values": {}}
 
 
+def test_scan_page_preserves_cached_state_mapping_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_profile_mapping(config, "bookshelf", "db-books", {"title": "名称", "state": "状态"})
+    cached = json.loads((config.targets_dir / "bookshelf.json").read_text(encoding="utf-8"))
+    cached["state_mapping"] = {"field": "状态", "values": {"completed": "完成"}}
+    cache.write_json(config.targets_dir / "bookshelf.json", cached)
+    adapter = FakeAdapter(
+        pages={"page-books": {"id": "page-books", "title": "书单"}},
+        children={"page-books": [{"type": "child_database", "id": "db-books", "child_database": {"title": "Books"}}]},
+        databases={
+            "db-books": {
+                "id": "db-books",
+                "title": "Books",
+                "properties": {
+                    "名称": {"id": "title", "type": "title", "title": {}},
+                    "状态": {
+                        "id": "state",
+                        "type": "status",
+                        "status": {"options": [{"name": "完成", "color": "green"}]},
+                    },
+                },
+            }
+        },
+    )
+
+    result = scan_page_target(adapter, "page-books", cache, target_id="bookshelf")
+
+    assert result["state_mapping"] == {"field": "状态", "values": {"completed": "完成"}}
+
+
+
 def test_scan_page_builds_cover_asset_mapping_from_profile_mapped_cover_field(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -1152,3 +1381,107 @@ def test_build_asset_mapping_includes_non_cover_mapped_files_field():
         "cover": {"field": "封面图", "type": "files", "strategy": "download_and_attach"},
         "attachment": {"field": "附件", "type": "files", "strategy": "download_and_attach"},
     }
+
+
+def test_scan_page_target_writes_v2_graph(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.scanner import scan_page_graph
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {"id": page_id, "parent": {"type": "workspace"}, "properties": {}}
+
+        def list_block_children(self, block_id):
+            return [
+                {
+                    "id": "db-1",
+                    "type": "child_database",
+                    "parent": {"type": "page_id", "page_id": "page-1"},
+                    "child_database": {"title": "Episodes"},
+                    "has_children": False,
+                }
+            ]
+
+        def retrieve_database(self, database_id):
+            return {
+                "id": database_id,
+                "title": [{"plain_text": "Episodes"}],
+                "parent": {"type": "page_id", "page_id": "page-1"},
+                "is_inline": True,
+                "data_sources": [{"id": "ds-1"}],
+            }
+
+        def retrieve_data_source(self, data_source_id):
+            return {
+                "id": data_source_id,
+                "title": [{"plain_text": "Rows"}],
+                "parent": {"type": "database_id", "database_id": "db-1"},
+                "database_parent": {"type": "page_id", "page_id": "page-1"},
+                "properties": {"Name": {"id": "title", "name": "Name", "type": "title"}},
+            }
+
+        def list_views(self, data_source_id=None, database_id=None):
+            assert database_id == "db-1" or data_source_id == "ds-1"
+            return [{"id": "view-1", "name": "Episodes", "type": "gallery", "database_id": "db-1", "data_source_id": "ds-1"}]
+
+    graph = scan_page_graph(Adapter(), "page-1", store, graph_id="graph-1")
+
+    assert graph["cache_version"] == 2
+    assert graph["root"] == {"kind": "page", "id": "page-1"}
+    assert "page-1" in graph["pages"]
+    assert "db-1" in graph["databases"]
+    assert "ds-1" in graph["data_sources"]
+    assert graph["data_sources"]["ds-1"]["database_id"] == "db-1"
+    assert graph["data_sources"]["ds-1"]["parent_page_id"] == "page-1"
+    assert graph["data_sources"]["ds-1"]["parent_type"] == "database_id"
+    assert graph["data_sources"]["ds-1"]["source_block_id"] == "db-1"
+    assert graph["data_sources"]["ds-1"]["source_block_type"] == "child_database"
+    assert graph["views"]["view-1"]["type"] == "gallery"
+    assert graph["views"]["view-1"]["location"] == {"type": "page_id", "id": "page-1", "discovered_from": "page_scan"}
+    assert store.read_graph("graph-1")["views"]["view-1"]["data_source_id"] == "ds-1"
+
+
+def test_scan_data_source_graph_writes_parent_location_facts(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.scanner import scan_data_source_graph
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+
+    class Adapter:
+        database_calls = 0
+
+        def retrieve_data_source(self, data_source_id):
+            return {
+                "id": data_source_id,
+                "title": [{"plain_text": "Rows"}],
+                "parent": {"type": "database_id", "database_id": "db-1"},
+                "properties": {"Name": {"id": "title", "name": "Name", "type": "title"}},
+            }
+
+        def retrieve_database(self, database_id):
+            self.database_calls += 1
+            return {
+                "id": database_id,
+                "title": [{"plain_text": "Episodes"}],
+                "parent": {"type": "page_id", "page_id": "page-1"},
+                "data_sources": [{"id": "ds-1"}],
+            }
+
+        def list_views(self, data_source_id=None, database_id=None):
+            return []
+
+    adapter = Adapter()
+    graph = scan_data_source_graph(adapter, "ds-1", store, graph_id="graph-1")
+
+    assert adapter.database_calls == 1
+    assert graph["root"] == {"kind": "data_source", "id": "ds-1"}
+    assert graph["data_sources"]["ds-1"]["database_id"] == "db-1"
+    assert graph["data_sources"]["ds-1"]["parent_page_id"] == "page-1"
+    assert graph["data_sources"]["ds-1"]["parent_type"] == "database_id"
+    assert store.read_graph("graph-1")["data_sources"]["ds-1"]["parent_page_id"] == "page-1"

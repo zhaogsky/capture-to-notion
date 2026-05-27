@@ -11,52 +11,64 @@ def write_json(path, data):
 
 def seed_cached_books_target(root):
     write_json(
-        root / "aliases.json",
+        root / "cache-v2" / "graphs" / "bookshelf.json",
         {
-            "aliases": {
-                "books": {
-                    "type": "page",
-                    "page_id": "page-books",
-                    "description": "Books and reading status",
-                    "target_id": "bookshelf",
+            "cache_version": 2,
+            "graph_id": "bookshelf",
+            "root": {"kind": "page", "id": "page-books"},
+            "pages": {"page-books": {"page_id": "page-books", "title": "Bookshelf"}},
+            "blocks": {},
+            "databases": {},
+            "data_sources": {
+                "ds-books": {
+                    "object": "data_source",
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema_hash": "abc123",
+                    "schema": {
+                        "Name": {"type": "title"},
+                        "Author": {"type": "rich_text"},
+                        "Status": {"type": "status"},
+                        "Cover": {"type": "files"},
+                    },
                 }
-            }
+            },
+            "views": {},
         },
     )
     write_json(
-        root / "targets" / "bookshelf.json",
+        root / "cache-v2" / "profiles" / "profile-books.json",
         {
-            "target": {
-                "page_id": "page-books",
-                "title": "Bookshelf",
-                "verified_at": "2026-05-11T00:00:00Z",
-                "target_id": "raw-target-id",
-                "workspace": "private",
-            },
-            "data_sources": {
-                "books": {
-                    "data_source_id": "ds-books",
-                    "title": "Books",
-                    "role": "primary",
-                    "content_types": ["book"],
-                    "schema_hash": "abc123",
-                    "fields": {
+            "cache_version": 2,
+            "profile_id": "profile-books",
+            "graph_id": "bookshelf",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "canonical_view_id": None,
+                    "field_mapping": {
                         "title": "Name",
                         "author": "Author",
                         "state": "Status",
                         "cover": "Cover",
                     },
                     "field_sources": {
-                        "title": "profile",
-                        "author": "profile",
-                        "state": "profile",
-                        "cover": "profile",
+                        "title": "user_binding",
+                        "author": "user_binding",
+                        "state": "user_binding",
+                        "cover": "user_binding",
                     },
+                    "state_mapping": {"field": "Status", "values": {"initialized": "Want to read", "completed": "Read"}},
+                    "asset_mapping": {"cover": {"field": "Cover", "type": "files", "strategy": "download_and_attach"}},
+                    "relation_mapping": {},
+                    "parser_profile": {},
                 }
             },
-            "state_mapping": {"field": "Status", "values": {"initialized": "Want to read", "completed": "Read"}},
-            "asset_mapping": {"cover": {"field": "Cover", "type": "files", "strategy": "download_and_attach"}},
         },
+    )
+    write_json(
+        root / "cache-v2" / "aliases.json",
+        {"cache_version": 2, "aliases": {"books": {"graph_id": "bookshelf", "profile_id": "profile-books", "kind": "write_profile"}}},
     )
 
 
@@ -161,6 +173,51 @@ class PodcastCompletionDateScanAdapter:
         }
 
 
+class CreateDatabaseAdapter:
+    def __init__(self):
+        self.created = []
+
+    def create_database(self, page_id, title, properties):
+        self.created.append({"page_id": page_id, "title": title, "properties": properties})
+        return {"id": "db-episodes", "title": [{"plain_text": title}]}
+
+    def retrieve_page(self, page_id):
+        return {"id": page_id, "parent": {"type": "data_source_id", "data_source_id": "ds-programs"}, "properties": {}}
+
+    def list_block_children(self, page_id):
+        return [{"type": "child_database", "id": "db-episodes", "child_database": {"title": "数据库"}}]
+
+    def retrieve_database(self, database_id):
+        return {
+            "id": database_id,
+            "title": [{"plain_text": "数据库"}],
+            "parent": {"type": "page_id", "page_id": "page-show"},
+            "data_sources": [{"id": "ds-episodes", "name": "数据库"}],
+        }
+
+    def retrieve_data_source(self, data_source_id):
+        if data_source_id == "ds-programs":
+            return {
+                "id": data_source_id,
+                "title": [{"plain_text": "节目索引"}],
+                "parent": {"type": "database_id", "database_id": "db-programs"},
+                "properties": {
+                    "播客名称": {"id": "title", "type": "title", "title": {}},
+                    "主播": {"id": "podcast", "type": "rich_text", "rich_text": {}},
+                },
+            }
+        return {
+            "id": data_source_id,
+            "title": [{"plain_text": "数据库"}],
+            "properties": {
+                "主题": {"id": "title", "type": "title", "title": {}},
+                "状态": {"id": "state", "type": "status", "status": {"options": []}},
+                "内容描述": {"id": "description", "type": "rich_text", "rich_text": {}},
+                "完成时间": {"id": "completed", "type": "date", "date": {}},
+            },
+        }
+
+
 class DataSourceScanAdapter:
     def retrieve_data_source(self, data_source_id):
         return {
@@ -172,6 +229,152 @@ class DataSourceScanAdapter:
                 "Cover": {"id": "cover", "type": "files", "files": {}},
             },
         }
+
+
+def test_cache_reset_v2_requires_confirmation(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(tmp_path / "aliases.json", {"aliases": {"old": {"target_id": "old"}}})
+
+    result = cli.main(["cache", "reset-v2", "--delete-legacy"])
+
+    assert result == 2
+    assert "--confirmed" in capsys.readouterr().err
+    assert (tmp_path / "aliases.json").exists()
+
+
+
+def test_cache_reset_v2_deletes_legacy_paths_and_recreates_v2(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(tmp_path / "aliases.json", {"aliases": {"old": {"target_id": "old"}}})
+    write_json(tmp_path / "routes.json", {"routes": {"book": {}}})
+    write_json(tmp_path / "targets" / "old.json", {"target": {}})
+    write_json(tmp_path / "plans" / "old.json", {"plan_id": "old"})
+
+    result = cli.main(["cache", "reset-v2", "--delete-legacy", "--confirmed"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["cache_version"] == 2
+    assert data["deleted_legacy"] is True
+    assert not (tmp_path / "aliases.json").exists()
+    assert not (tmp_path / "routes.json").exists()
+    assert not (tmp_path / "targets").exists()
+    assert not (tmp_path / "plans").exists()
+    assert json.loads((tmp_path / "cache-v2" / "aliases.json").read_text(encoding="utf-8")) == {
+        "cache_version": 2,
+        "aliases": {},
+    }
+
+
+
+def test_target_bind_profile_writes_v2_profile_and_alias(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(
+        tmp_path / "cache-v2" / "graphs" / "graph-books.json",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-books",
+            "root": {"kind": "page", "id": "page-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "schema": {"Name": {"type": "title"}, "Status": {"type": "status"}},
+                }
+            },
+            "views": {"view-books": {"view_id": "view-books", "data_source_id": "ds-books", "type": "gallery"}},
+        },
+    )
+
+    result = cli.main([
+        "target",
+        "bind-profile",
+        "--alias",
+        "books",
+        "--graph-id",
+        "graph-books",
+        "--profile-id",
+        "profile-books",
+        "--content-type",
+        "book",
+        "--data-source-id",
+        "ds-books",
+        "--view-id",
+        "view-books",
+        "--field",
+        "title=Name",
+        "--field",
+        "state=Status",
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data == {
+        "alias": "books",
+        "graph_id": "graph-books",
+        "profile_id": "profile-books",
+        "content_type": "book",
+        "data_source_id": "ds-books",
+        "view_id": "view-books",
+    }
+    profile = json.loads((tmp_path / "cache-v2" / "profiles" / "profile-books.json").read_text(encoding="utf-8"))
+    write_profile = profile["write_profiles"]["book"]
+    assert write_profile["field_mapping"] == {"title": "Name", "state": "Status"}
+    assert write_profile["field_sources"] == {"title": "user_binding", "state": "user_binding"}
+    aliases = json.loads((tmp_path / "cache-v2" / "aliases.json").read_text(encoding="utf-8"))["aliases"]
+    assert aliases["books"] == {"graph_id": "graph-books", "profile_id": "profile-books", "kind": "write_profile"}
+
+
+
+def test_capture_preflight_cli_uses_v2_cache(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(
+        tmp_path / "cache-v2" / "graphs" / "graph-books.json",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-books",
+            "root": {"kind": "page", "id": "page-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {"Name": {"type": "title"}, "Status": {"type": "status"}},
+                }
+            },
+            "views": {"view-books": {"view_id": "view-books", "data_source_id": "ds-books", "name": "Gallery", "type": "gallery"}},
+        },
+    )
+    write_json(
+        tmp_path / "cache-v2" / "profiles" / "profile-books.json",
+        {
+            "cache_version": 2,
+            "profile_id": "profile-books",
+            "graph_id": "graph-books",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "canonical_view_id": "view-books",
+                    "field_mapping": {"title": "Name", "state": "Status"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding"},
+                    "parser_profile": {},
+                }
+            },
+        },
+    )
+    write_json(
+        tmp_path / "cache-v2" / "aliases.json",
+        {"cache_version": 2, "aliases": {"books": {"graph_id": "graph-books", "profile_id": "profile-books", "kind": "write_profile"}}},
+    )
+    input_file = tmp_path / "capture.json"
+    write_json(input_file, {"raw_input": "可能性的艺术", "target_hint": "books", "state": "initialized", "content_type_hint": "book"})
+
+    result = cli.main(["capture", "preflight", "--input", str(input_file), "--compact"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["next_action"] == "capture_plan"
+    assert data["target"]["data_source_id"] == "ds-books"
+    assert data["target"]["view_id"] == "view-books"
+
 
 
 def test_target_search_outputs_candidates_without_writing_cache(tmp_path, monkeypatch, capsys):
@@ -200,7 +403,9 @@ def test_target_search_outputs_candidates_without_writing_cache(tmp_path, monkey
         "next_action": "choose_exact_target_or_scan",
     }
     assert adapter.search_calls == [{"query": "书单", "limit": 6, "include_parent_path": True}]
-    assert json.loads((tmp_path / "aliases.json").read_text(encoding="utf-8")) == {"aliases": {}}
+    assert not (tmp_path / "aliases.json").exists()
+    assert json.loads((tmp_path / "cache-v2" / "aliases.json").read_text(encoding="utf-8")) == {"cache_version": 2, "aliases": {}}
+    assert list((tmp_path / "cache-v2" / "graphs").glob("*.json")) == []
 
 
 def test_target_search_marks_duplicate_titles_as_requiring_disambiguation(tmp_path, monkeypatch, capsys):
@@ -236,7 +441,9 @@ def test_target_search_marks_duplicate_titles_as_requiring_disambiguation(tmp_pa
             ],
         }
     ]
-    assert json.loads((tmp_path / "aliases.json").read_text(encoding="utf-8")) == {"aliases": {}}
+    assert not (tmp_path / "aliases.json").exists()
+    assert json.loads((tmp_path / "cache-v2" / "aliases.json").read_text(encoding="utf-8")) == {"cache_version": 2, "aliases": {}}
+    assert list((tmp_path / "cache-v2" / "graphs").glob("*.json")) == []
 
 
 def test_target_search_limit_caps_results(tmp_path, monkeypatch, capsys):
@@ -310,7 +517,7 @@ def test_target_search_compact_can_include_parent_path(tmp_path, monkeypatch, ca
     assert adapter.search_calls == [{"query": "书单", "limit": 2, "include_parent_path": True}]
 
 
-def test_target_scan_saves_target_cache_and_alias(tmp_path, monkeypatch, capsys):
+def test_target_scan_saves_v2_graph_and_alias(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: ScanAdapter()))
 
@@ -319,16 +526,86 @@ def test_target_scan_saves_target_cache_and_alias(tmp_path, monkeypatch, capsys)
     assert result == 0
     data = json.loads(capsys.readouterr().out)
     assert data == {
-        "target_id": "bookshelf",
-        "target_file": str(tmp_path / "targets" / "bookshelf.json"),
+        "cache_version": 2,
+        "graph_id": "bookshelf",
+        "graph_file": str(tmp_path / "cache-v2" / "graphs" / "bookshelf.json"),
         "data_sources": ["Books"],
-        "requires_confirmation": True,
+        "views": [],
+        "requires_profile_binding": True,
+        "next_action": "target bind-profile",
     }
-    target = json.loads((tmp_path / "targets" / "bookshelf.json").read_text(encoding="utf-8"))
-    assert target["confirmation_reason"] == "field_mapping_missing"
-    assert target["data_sources"]["db-books"]["fields"] == {}
-    aliases = json.loads((tmp_path / "aliases.json").read_text(encoding="utf-8"))["aliases"]
-    assert aliases["书单"]["target_id"] == "bookshelf"
+    graph = json.loads((tmp_path / "cache-v2" / "graphs" / "bookshelf.json").read_text(encoding="utf-8"))
+    assert graph["root"] == {"kind": "page", "id": "page-books"}
+    assert set(graph["data_sources"]) == {"db-books"}
+    assert set(graph["data_sources"]["db-books"]["schema"]) == {"名称", "阅读状态", "封面"}
+    aliases = json.loads((tmp_path / "cache-v2" / "aliases.json").read_text(encoding="utf-8"))["aliases"]
+    assert aliases["书单"] == {"graph_id": "bookshelf", "profile_id": None, "kind": "graph"}
+
+
+def test_target_create_database_creates_then_scans_v2_graph(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    adapter = CreateDatabaseAdapter()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: adapter))
+    schema_file = tmp_path / "episode-schema.json"
+    write_json(
+        schema_file,
+        {
+            "properties": {
+                "主题": {"type": "title", "title": {}},
+                "状态": {"type": "status", "status": {}},
+                "内容描述": {"type": "rich_text", "rich_text": {}},
+                "完成时间": {"type": "date", "date": {}},
+            }
+        },
+    )
+
+    result = cli.main([
+        "target",
+        "create-database",
+        "--page-id",
+        "page-show",
+        "--title",
+        "数据库",
+        "--schema",
+        str(schema_file),
+        "--alias",
+        "枫言枫语",
+        "--target-id",
+        "fyfy",
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data == {
+        "cache_version": 2,
+        "graph_id": "fyfy",
+        "graph_file": str(tmp_path / "cache-v2" / "graphs" / "fyfy.json"),
+        "data_sources": ["数据库"],
+        "views": [],
+        "requires_profile_binding": True,
+        "next_action": "target bind-profile",
+        "created_database_id": "db-episodes",
+        "created_database_title": "数据库",
+    }
+    assert adapter.created == [
+        {
+            "page_id": "page-show",
+            "title": "数据库",
+            "properties": {
+                "主题": {"type": "title", "title": {}},
+                "状态": {"type": "status", "status": {}},
+                "内容描述": {"type": "rich_text", "rich_text": {}},
+                "完成时间": {"type": "date", "date": {}},
+            },
+        }
+    ]
+    graph = json.loads((tmp_path / "cache-v2" / "graphs" / "fyfy.json").read_text(encoding="utf-8"))
+    assert graph["root"] == {"kind": "page", "id": "page-show"}
+    assert graph["data_sources"]["ds-episodes"]["database_id"] == "db-episodes"
+    assert set(graph["data_sources"]["ds-episodes"]["schema"]) == {"主题", "状态", "内容描述", "完成时间"}
+    aliases = json.loads((tmp_path / "cache-v2" / "aliases.json").read_text(encoding="utf-8"))["aliases"]
+    assert aliases["枫言枫语"] == {"graph_id": "fyfy", "profile_id": None, "kind": "graph"}
+
 
 
 def test_capture_plan_refreshes_cache_when_input_field_needs_actual_schema(tmp_path, monkeypatch, capsys):
@@ -390,29 +667,20 @@ def test_capture_plan_refreshes_cache_when_input_field_needs_actual_schema(tmp_p
             "target_hint": "独树不成林",
             "state": "已完成",
             "content_type_hint": "podcast_episode",
+            "workflow_confirmations": ["risky_target"],
         },
     )
     monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: PodcastCompletionDateScanAdapter()))
 
     result = cli.main(["capture", "plan", "--input", str(input_file), "--compact"])
 
-    assert result == 0
-    data = json.loads(capsys.readouterr().out)
-    assert data["summary"]["mapped_fields"]["完成时间"] == "完成时间"
-    assert data["summary"]["writable_fields"]["完成时间"] == {
-        "target_field": "完成时间",
-        "value_status": "present",
-        "write_status": "planned",
-    }
-    target = json.loads((tmp_path / "targets" / "podcastshelf.json").read_text(encoding="utf-8"))
-    assert "完成时间" in target["data_sources"]["db-podcasts"]["schema"]
-    assert target["data_sources"]["db-podcasts"]["fields"]["完成时间"] == "完成时间"
+    assert result == 2
+    assert "v2_target_missing" in capsys.readouterr().err
 
 
 
 def test_target_scan_accepts_data_source_id(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
-    seed_cached_books_target(tmp_path)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: DataSourceScanAdapter()))
 
     result = cli.main([
@@ -429,22 +697,19 @@ def test_target_scan_accepts_data_source_id(tmp_path, monkeypatch, capsys):
     assert result == 0
     data = json.loads(capsys.readouterr().out)
     assert data == {
-        "target_id": "books-ds",
-        "target_file": str(tmp_path / "targets" / "books-ds.json"),
+        "cache_version": 2,
+        "graph_id": "books-ds",
+        "graph_file": str(tmp_path / "cache-v2" / "graphs" / "books-ds.json"),
         "data_sources": ["Books"],
-        "requires_confirmation": False,
+        "views": [],
+        "requires_profile_binding": True,
+        "next_action": "target bind-profile",
     }
-    target = json.loads((tmp_path / "targets" / "books-ds.json").read_text(encoding="utf-8"))
-    assert target["target"] == {
-        "page_id": None,
-        "title": "Books",
-        "target_id": "books-ds",
-        "data_source_id": "ds-books",
-    }
-    assert target["data_sources"]["ds-books"]["role"] == "primary"
-    aliases = json.loads((tmp_path / "aliases.json").read_text(encoding="utf-8"))["aliases"]
-    assert aliases["书单Books"]["type"] == "data_source"
-    assert aliases["书单Books"]["data_source_id"] == "ds-books"
+    graph = json.loads((tmp_path / "cache-v2" / "graphs" / "books-ds.json").read_text(encoding="utf-8"))
+    assert graph["root"] == {"kind": "data_source", "id": "ds-books"}
+    assert graph["data_sources"]["ds-books"]["title"] == "Books"
+    aliases = json.loads((tmp_path / "cache-v2" / "aliases.json").read_text(encoding="utf-8"))["aliases"]
+    assert aliases["书单Books"] == {"graph_id": "books-ds", "profile_id": None, "kind": "graph"}
 
 
 def test_target_list_outputs_cached_targets_without_notion_adapter(tmp_path, monkeypatch, capsys):
@@ -465,13 +730,15 @@ def test_target_list_outputs_cached_targets_without_notion_adapter(tmp_path, mon
         "targets": [
             {
                 "alias": "books",
-                "target_id": "bookshelf",
-                "page_id": "page-books",
+                "graph_id": "bookshelf",
+                "profile_id": "profile-books",
+                "kind": "write_profile",
+                "root_kind": "page",
+                "root_id": "page-books",
                 "title": "Bookshelf",
-                "description": "Books and reading status",
                 "data_sources": ["Books"],
+                "views": [],
                 "content_types": ["book"],
-                "verified_at": "2026-05-11T00:00:00Z",
                 "status": "cached",
             }
         ],
@@ -493,31 +760,40 @@ def test_target_inspect_outputs_cached_target_details_without_notion_adapter(tmp
     data = json.loads(capsys.readouterr().out)
     assert data == {
         "alias": "books",
-        "target_id": "bookshelf",
-        "target_file": str(tmp_path / "targets" / "bookshelf.json"),
-        "target": {
-            "page_id": "page-books",
-            "title": "Bookshelf",
-            "verified_at": "2026-05-11T00:00:00Z",
-        },
+        "graph_id": "bookshelf",
+        "profile_id": "profile-books",
+        "kind": "write_profile",
+        "graph_file": str(tmp_path / "cache-v2" / "graphs" / "bookshelf.json"),
+        "profile_file": str(tmp_path / "cache-v2" / "profiles" / "profile-books.json"),
+        "root": {"kind": "page", "id": "page-books"},
+        "target": {"page_id": "page-books", "title": "Bookshelf"},
         "data_sources": [
             {
-                "key": "books",
+                "key": "ds-books",
                 "data_source_id": "ds-books",
                 "title": "Books",
-                "role": "primary",
-                "content_types": ["book"],
                 "schema_hash": "abc123",
-                "fields": {
+                "schema_fields": ["Author", "Cover", "Name", "Status"],
+            }
+        ],
+        "write_profiles": {
+            "book": {
+                "canonical_data_source_id": "ds-books",
+                "canonical_view_id": None,
+                "field_mapping": {
                     "title": "Name",
                     "author": "Author",
                     "state": "Status",
                     "cover": "Cover",
                 },
+                "field_sources": {
+                    "title": "user_binding",
+                    "author": "user_binding",
+                    "state": "user_binding",
+                    "cover": "user_binding",
+                },
             }
-        ],
-        "state_mapping": {"field": "Status", "values": {"initialized": "Want to read", "completed": "Read"}},
-        "asset_mapping": {"cover": {"field": "Cover", "type": "files", "strategy": "download_and_attach"}},
+        },
         "status": "cached",
     }
 
@@ -540,29 +816,26 @@ def test_target_inspect_compact_omits_full_fields(tmp_path, monkeypatch, capsys)
     data = json.loads(capsys.readouterr().out)
     assert data == {
         "alias": "books",
-        "target_id": "bookshelf",
-        "target_file": str(tmp_path / "targets" / "bookshelf.json"),
-        "target": {
-            "page_id": "page-books",
-            "title": "Bookshelf",
-            "verified_at": "2026-05-11T00:00:00Z",
-        },
+        "graph_id": "bookshelf",
+        "profile_id": "profile-books",
+        "kind": "write_profile",
+        "root": {"kind": "page", "id": "page-books"},
+        "target": {"page_id": "page-books", "title": "Bookshelf"},
         "data_sources": [
             {
-                "key": "books",
+                "key": "ds-books",
                 "data_source_id": "ds-books",
                 "title": "Books",
-                "role": "primary",
-                "content_types": ["book"],
                 "schema_hash": "abc123",
                 "field_count": 4,
             }
         ],
+        "content_types": ["book"],
         "status": "cached",
     }
-    assert "fields" not in data["data_sources"][0]
-    assert "state_mapping" not in data
-    assert "asset_mapping" not in data
+    assert "schema_fields" not in data["data_sources"][0]
+    assert "write_profiles" not in data
+    assert "graph_file" not in data
 
 
 
@@ -579,51 +852,25 @@ def test_target_inspect_outputs_cached_target_details_by_target_id_without_notio
 
     assert result == 0
     data = json.loads(capsys.readouterr().out)
-    assert data == {
-        "alias": "books",
-        "target_id": "bookshelf",
-        "target_file": str(tmp_path / "targets" / "bookshelf.json"),
-        "target": {
-            "page_id": "page-books",
-            "title": "Bookshelf",
-            "verified_at": "2026-05-11T00:00:00Z",
-        },
-        "data_sources": [
-            {
-                "key": "books",
-                "data_source_id": "ds-books",
-                "title": "Books",
-                "role": "primary",
-                "content_types": ["book"],
-                "schema_hash": "abc123",
-                "fields": {
-                    "title": "Name",
-                    "author": "Author",
-                    "state": "Status",
-                    "cover": "Cover",
-                },
-            }
-        ],
-        "state_mapping": {"field": "Status", "values": {"initialized": "Want to read", "completed": "Read"}},
-        "asset_mapping": {"cover": {"field": "Cover", "type": "files", "strategy": "download_and_attach"}},
-        "status": "cached",
+    assert data["alias"] == "books"
+    assert data["graph_id"] == "bookshelf"
+    assert data["profile_id"] == "profile-books"
+    assert data["target"] == {"page_id": "page-books", "title": "Bookshelf"}
+    assert data["data_sources"][0]["data_source_id"] == "ds-books"
+    assert data["write_profiles"]["book"]["field_mapping"] == {
+        "title": "Name",
+        "author": "Author",
+        "state": "Status",
+        "cover": "Cover",
     }
+    assert data["status"] == "cached"
 
 
 def test_target_inspect_existing_alias_missing_cache_reports_target_cache_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     write_json(
-        tmp_path / "aliases.json",
-        {
-            "aliases": {
-                "books": {
-                    "type": "page",
-                    "page_id": "page-books",
-                    "description": "Books and reading status",
-                    "target_id": "bookshelf",
-                }
-            }
-        },
+        tmp_path / "cache-v2" / "aliases.json",
+        {"cache_version": 2, "aliases": {"books": {"graph_id": "bookshelf", "profile_id": "profile-books", "kind": "write_profile"}}},
     )
 
     result = cli.main(["target", "inspect", "--alias", "books"])
@@ -631,35 +878,26 @@ def test_target_inspect_existing_alias_missing_cache_reports_target_cache_error(
     assert result == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "未找到 target alias: books" not in captured.err
-    assert "未找到 target cache: bookshelf" in captured.err
+    assert "未找到 v2 target alias: books" not in captured.err
+    assert "未找到 v2 graph cache: bookshelf" in captured.err
 
 
 def test_target_inspect_invalid_cache_reports_target_cache_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     write_json(
-        tmp_path / "aliases.json",
-        {
-            "aliases": {
-                "books": {
-                    "type": "page",
-                    "page_id": "page-books",
-                    "description": "Books and reading status",
-                    "target_id": "bookshelf",
-                }
-            }
-        },
+        tmp_path / "cache-v2" / "aliases.json",
+        {"cache_version": 2, "aliases": {"books": {"graph_id": "bookshelf", "profile_id": "profile-books", "kind": "write_profile"}}},
     )
-    (tmp_path / "targets").mkdir(parents=True)
-    (tmp_path / "targets" / "bookshelf.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "cache-v2" / "graphs").mkdir(parents=True)
+    (tmp_path / "cache-v2" / "graphs" / "bookshelf.json").write_text("{not json", encoding="utf-8")
 
     result = cli.main(["target", "inspect", "--alias", "books"])
 
     assert result == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "未找到 target alias: books" not in captured.err
-    assert "target cache 无效: bookshelf" in captured.err
+    assert "未找到 v2 target alias: books" not in captured.err
+    assert "未找到 v2 graph cache: bookshelf" in captured.err
 
 
 def test_target_inspect_missing_target_id_cache_reports_target_cache_error(tmp_path, monkeypatch, capsys):
@@ -670,20 +908,20 @@ def test_target_inspect_missing_target_id_cache_reports_target_cache_error(tmp_p
     assert result == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "未找到 target cache: bookshelf" in captured.err
+    assert "未找到 v2 graph cache: bookshelf" in captured.err
 
 
 def test_target_inspect_invalid_target_id_cache_reports_target_cache_error(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
-    (tmp_path / "targets").mkdir(parents=True)
-    (tmp_path / "targets" / "bookshelf.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "cache-v2" / "graphs").mkdir(parents=True)
+    (tmp_path / "cache-v2" / "graphs" / "bookshelf.json").write_text("{not json", encoding="utf-8")
 
     result = cli.main(["target", "inspect", "--target-id", "bookshelf"])
 
     assert result == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "target cache 无效: bookshelf" in captured.err
+    assert "未找到 v2 graph cache: bookshelf" in captured.err
 
 
 def test_target_inspect_missing_alias_exits_with_readable_error(tmp_path, monkeypatch, capsys):
@@ -694,66 +932,48 @@ def test_target_inspect_missing_alias_exits_with_readable_error(tmp_path, monkey
     assert result == 2
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "未找到 target alias: missing" in captured.err
+    assert "未找到 v2 target alias: missing" in captured.err
 
 
 def test_target_list_handles_mixed_invalid_cache_entries(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     write_json(
-        tmp_path / "aliases.json",
+        tmp_path / "cache-v2" / "aliases.json",
         {
+            "cache_version": 2,
             "aliases": {
-                "bad-json": {
-                    "type": "page",
-                    "page_id": "page-bad-json",
-                    "description": "Invalid JSON cache",
-                    "target_id": "bad-json",
-                },
-                "missing": {
-                    "type": "page",
-                    "page_id": "page-missing",
-                    "description": "Missing target cache",
-                    "target_id": "missing-cache",
-                },
-                "no-target-id": {
-                    "type": "page",
-                    "page_id": "page-no-target-id",
-                    "description": "No target id",
-                },
+                "bad-json": {"graph_id": "bad-json", "profile_id": None, "kind": "graph"},
+                "missing": {"graph_id": "missing-cache", "profile_id": None, "kind": "graph"},
+                "no-graph-id": {"profile_id": None, "kind": "graph"},
                 "non-dict-alias": "skip me",
-                "numeric-target-id": {
-                    "type": "page",
-                    "page_id": "page-numeric-target-id",
-                    "description": "Numeric target id",
-                    "target_id": 123,
-                },
-                "valid-weird": {
-                    "type": "page",
-                    "page_id": "page-valid-weird-alias",
-                    "description": "Malformed content types are ignored",
-                    "target_id": "valid-weird",
-                },
-            }
+                "numeric-graph-id": {"graph_id": 123, "profile_id": None, "kind": "graph"},
+                "valid-weird": {"graph_id": "valid-weird", "profile_id": "profile-weird", "kind": "write_profile"},
+            },
         },
     )
-    (tmp_path / "targets").mkdir(parents=True)
-    (tmp_path / "targets" / "bad-json.json").write_text("{not json", encoding="utf-8")
+    (tmp_path / "cache-v2" / "graphs").mkdir(parents=True)
+    (tmp_path / "cache-v2" / "graphs" / "bad-json.json").write_text("{not json", encoding="utf-8")
     write_json(
-        tmp_path / "targets" / "valid-weird.json",
+        tmp_path / "cache-v2" / "graphs" / "valid-weird.json",
         {
-            "target": {
-                "page_id": "page-valid-weird-cache",
-                "title": "Valid Weird",
-                "verified_at": "2026-05-11T00:00:00Z",
-            },
+            "cache_version": 2,
+            "graph_id": "valid-weird",
+            "root": {"kind": "page", "id": "page-valid-weird-cache"},
+            "pages": {"page-valid-weird-cache": {"page_id": "page-valid-weird-cache", "title": "Valid Weird"}},
             "data_sources": {
-                "string": {"title": "String Source", "content_types": "book"},
-                "none": {"title": "None Source", "content_types": None},
-                "number": {"title": "Number Source", "content_types": 42},
-                "dict": {"title": "Dict Source", "content_types": {"type": "book"}},
-                "mixed": {"title": "Mixed Source", "content_types": ["article", 7, None, "book"]},
-                "tuple": {"title": "Tuple Source", "content_types": ("video", 9)},
+                "string": {"data_source_id": "string", "title": "String Source"},
+                "none": {"data_source_id": "none", "title": "None Source"},
             },
+            "views": {},
+        },
+    )
+    write_json(
+        tmp_path / "cache-v2" / "profiles" / "profile-weird.json",
+        {
+            "cache_version": 2,
+            "profile_id": "profile-weird",
+            "graph_id": "valid-weird",
+            "write_profiles": {"article": {}, "book": {}, "video": {}},
         },
     )
 
@@ -771,64 +991,59 @@ def test_target_list_handles_mixed_invalid_cache_entries(tmp_path, monkeypatch, 
         "targets": [
             {
                 "alias": "bad-json",
-                "target_id": "bad-json",
-                "page_id": "page-bad-json",
+                "graph_id": "bad-json",
+                "profile_id": None,
+                "kind": "graph",
                 "title": None,
-                "description": "Invalid JSON cache",
                 "data_sources": [],
+                "views": [],
                 "content_types": [],
-                "verified_at": None,
-                "status": "invalid_cache",
+                "status": "missing_cache",
             },
             {
                 "alias": "missing",
-                "target_id": "missing-cache",
-                "page_id": "page-missing",
+                "graph_id": "missing-cache",
+                "profile_id": None,
+                "kind": "graph",
                 "title": None,
-                "description": "Missing target cache",
                 "data_sources": [],
+                "views": [],
                 "content_types": [],
-                "verified_at": None,
                 "status": "missing_cache",
             },
             {
-                "alias": "no-target-id",
-                "target_id": None,
-                "page_id": "page-no-target-id",
+                "alias": "no-graph-id",
+                "graph_id": None,
+                "profile_id": None,
+                "kind": "graph",
                 "title": None,
-                "description": "No target id",
                 "data_sources": [],
+                "views": [],
                 "content_types": [],
-                "verified_at": None,
                 "status": "missing_cache",
             },
             {
-                "alias": "numeric-target-id",
-                "target_id": 123,
-                "page_id": "page-numeric-target-id",
+                "alias": "numeric-graph-id",
+                "graph_id": 123,
+                "profile_id": None,
+                "kind": "graph",
                 "title": None,
-                "description": "Numeric target id",
                 "data_sources": [],
+                "views": [],
                 "content_types": [],
-                "verified_at": None,
                 "status": "missing_cache",
             },
             {
                 "alias": "valid-weird",
-                "target_id": "valid-weird",
-                "page_id": "page-valid-weird-alias",
+                "graph_id": "valid-weird",
+                "profile_id": "profile-weird",
+                "kind": "write_profile",
+                "root_kind": "page",
+                "root_id": "page-valid-weird-cache",
                 "title": "Valid Weird",
-                "description": "Malformed content types are ignored",
-                "data_sources": [
-                    "String Source",
-                    "None Source",
-                    "Number Source",
-                    "Dict Source",
-                    "Mixed Source",
-                    "Tuple Source",
-                ],
+                "data_sources": ["String Source", "None Source"],
+                "views": [],
                 "content_types": ["article", "book", "video"],
-                "verified_at": "2026-05-11T00:00:00Z",
                 "status": "cached",
             },
         ],

@@ -9,6 +9,7 @@ import pytest
 
 from capture_to_notion import assets, cli, verifier
 from capture_to_notion.cache import CacheStore
+from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.config import ensure_config
 from capture_to_notion.models import WritePlan
 from capture_to_notion.verifier import verify_capture_page
@@ -93,6 +94,15 @@ def test_target_structure_for_data_source_returns_none_when_missing_or_falsy(tmp
     assert cache.target_structure_for_data_source("ds-missing") is None
 
 
+ALLOWED_PREFLIGHT_WORKFLOW = {
+    "planning": {
+        "status": "allowed",
+        "next_action": "capture_plan",
+        "reason": "direct_plan_allowed",
+    }
+}
+
+
 def write_plan_file(path: Path, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     data = {
         "plan_id": "plan-apply-1",
@@ -102,7 +112,8 @@ def write_plan_file(path: Path, overrides: dict[str, Any] | None = None) -> dict
             "page_id": "page-books",
             "data_source_id": "ds-books",
             "confidence": "high",
-            "source": "cache",
+            "source": "v2_profile",
+            "target_id": "graph-books",
         },
         "normalized_record": {"title": "可能性的艺术", "state": "initialized"},
         "field_mapping": {"title": "书名", "state": "阅读状态"},
@@ -112,9 +123,15 @@ def write_plan_file(path: Path, overrides: dict[str, Any] | None = None) -> dict
         "warnings": [],
         "requires_confirmation": False,
         "confirmation_reason": None,
+        "preflight_workflow": ALLOWED_PREFLIGHT_WORKFLOW,
     }
     if overrides:
+        target_override = overrides.get("target")
+        if isinstance(target_override, dict):
+            overrides = dict(overrides)
+            overrides["target"] = {**data["target"], **target_override}
         data.update(overrides)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     return data
 
@@ -133,6 +150,49 @@ def seed_target_cache(config) -> None:
                         "阅读状态": {"name": "阅读状态", "type": "status"},
                     },
                 },
+            },
+        },
+    )
+    seed_v2_graph(config)
+
+
+def seed_v2_graph(
+    config,
+    *,
+    graph_id: str = "graph-books",
+    page_id: str = "page-books",
+    data_source_id: str = "ds-books",
+    title: str = "书单",
+    data_source_title: str = "Books",
+    schema: dict[str, dict[str, Any]] | None = None,
+    view_id: str = "view-books",
+    view_data_source_id: str | None = None,
+) -> None:
+    CacheV2Store(config).write_graph(
+        graph_id,
+        {
+            "cache_version": 2,
+            "graph_id": graph_id,
+            "root": {"kind": "page", "id": page_id},
+            "pages": {page_id: {"page_id": page_id, "title": title}},
+            "data_sources": {
+                data_source_id: {
+                    "data_source_id": data_source_id,
+                    "title": data_source_title,
+                    "schema": schema
+                    or {
+                        "书名": {"name": "书名", "type": "title"},
+                        "阅读状态": {"name": "阅读状态", "type": "status"},
+                    },
+                }
+            },
+            "views": {
+                view_id: {
+                    "view_id": view_id,
+                    "name": "Books Gallery",
+                    "type": "gallery",
+                    "data_source_id": view_data_source_id or data_source_id,
+                }
             },
         },
     )
@@ -245,6 +305,40 @@ def test_capture_apply_requires_confirmation_before_adapter(tmp_path, monkeypatc
     assert "field_mapping_ambiguous" in stderr
     assert adapter_factory.called is False
 
+
+def test_capture_apply_requires_confirmed_for_all_writes_before_adapter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    seed_target_cache(config)
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(plan_path)
+    adapter_factory = AdapterFactoryProbe()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+
+    assert exit_code == 2
+    stderr = capsys.readouterr().err
+    assert "--confirmed" in stderr
+    assert adapter_factory.called is False
+
+
+def test_capture_apply_rejects_plan_without_allowed_workflow_before_adapter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    seed_target_cache(config)
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(plan_path, {"preflight_workflow": {"planning": {"next_action": "scan_target", "reason": "schema_stale"}}})
+    adapter_factory = AdapterFactoryProbe()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 2
+    stderr = capsys.readouterr().err
+    assert "next_action=scan_target" in stderr
+    assert adapter_factory.called is False
+
 def test_capture_apply_rejects_empty_operations_before_adapter(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
     config = ensure_config()
@@ -261,6 +355,247 @@ def test_capture_apply_rejects_empty_operations_before_adapter(tmp_path, monkeyp
     assert "没有可执行操作" in stderr
     assert "capture plan" in stderr
     assert adapter_factory.called is False
+
+
+CONTEXT_PREFLIGHT_WORKFLOW = {
+    "planning": {
+        "status": "allowed",
+        "next_action": "capture_plan",
+        "reason": "direct_plan_allowed",
+    },
+    "target_resolution": {
+        "status": "cache_hit",
+        "target_context_hint": "上下文页",
+        "target_context_verified": True,
+        "page_id": "page-books",
+        "target_id": "books",
+        "data_source_id": "ds-books",
+    },
+}
+
+
+def test_capture_apply_rejects_context_plan_missing_capture_input_before_adapter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    seed_target_cache(config)
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "preflight_workflow": CONTEXT_PREFLIGHT_WORKFLOW,
+            "capture_input": None,
+            "summary": {"write_targets": [{"type": "primary_page"}]},
+        },
+    )
+    adapter_factory = AdapterFactoryProbe()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 2
+    assert "context_capture_input_missing" in capsys.readouterr().err
+    assert adapter_factory.called is False
+
+
+
+def test_capture_apply_rejects_context_plan_missing_write_targets_before_adapter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    seed_target_cache(config)
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "preflight_workflow": CONTEXT_PREFLIGHT_WORKFLOW,
+            "capture_input": {
+                "raw_input": "《可能性的艺术》",
+                "target_hint": "书单",
+                "target_context_hint": "上下文页",
+                "state": "initialized",
+                "content_type_hint": "book",
+            },
+            "summary": {"write_targets": []},
+        },
+    )
+    adapter_factory = AdapterFactoryProbe()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 2
+    assert "context_write_targets_missing" in capsys.readouterr().err
+    assert adapter_factory.called is False
+
+
+
+def test_v2_apply_integrity_blocks_view_data_source_mismatch(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    seed_v2_graph(config, view_data_source_id="ds-other")
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "target": {
+                "page_title": "书单",
+                "page_id": "page-books",
+                "data_source_id": "ds-books",
+                "confidence": "high",
+                "source": "v2_profile",
+                "target_id": "graph-books",
+                "view_id": "view-books",
+                "view_name": "Books Gallery",
+                "view_type": "gallery",
+            },
+        },
+    )
+    adapter_factory = AdapterFactoryProbe()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 2
+    assert "view_data_source_id_mismatch" in capsys.readouterr().err
+    assert adapter_factory.called is False
+
+
+
+def test_capture_apply_rejects_cached_page_drift_before_adapter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    seed_target_cache(config)
+    cache = CacheStore(config)
+    cache.write_json(
+        config.targets_dir / "books.json",
+        {
+            "target": {"page_id": "page-drifted", "title": "书单"},
+            "data_sources": {
+                "books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {
+                        "书名": {"name": "书名", "type": "title"},
+                        "阅读状态": {"name": "阅读状态", "type": "status"},
+                    },
+                },
+            },
+        },
+    )
+    seed_v2_graph(config, page_id="page-drifted")
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(plan_path)
+    adapter_factory = AdapterFactoryProbe()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 2
+    assert "target_page_id_mismatch" in capsys.readouterr().err
+    assert adapter_factory.called is False
+
+
+
+def test_capture_apply_rejects_refreshed_context_failure_before_adapter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {
+            "aliases": {
+                "书单": {"type": "page", "page_id": "page-books", "target_id": "books"},
+                "上下文页": {"type": "page", "page_id": "page-other", "target_id": "other"},
+            }
+        },
+    )
+    seed_target_cache(config)
+    cache.write_json(config.targets_dir / "other.json", {"target": {"page_id": "page-other", "title": "其它页", "target_id": "other"}, "data_sources": {}})
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "preflight_workflow": CONTEXT_PREFLIGHT_WORKFLOW,
+            "capture_input": {
+                "raw_input": "《可能性的艺术》",
+                "target_hint": "书单",
+                "target_context_hint": "上下文页",
+                "state": "initialized",
+                "content_type_hint": "book",
+            },
+            "summary": {"write_targets": [{"type": "primary_page"}]},
+        },
+    )
+    adapter_factory = AdapterFactoryProbe()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 2
+    stderr = capsys.readouterr().err
+    assert "next_action=scan_target" in stderr
+    assert adapter_factory.called is False
+
+
+def test_capture_apply_uses_plan_target_id_when_data_source_exists_in_multiple_cached_targets(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    cache = CacheStore(config)
+    shared_data_source = {
+        "data_source_id": "ds-books",
+        "title": "Books",
+        "schema": {
+            "书名": {"name": "书名", "type": "title"},
+            "阅读状态": {"name": "阅读状态", "type": "status"},
+        },
+    }
+    cache.write_json(
+        config.targets_dir / "a-container.json",
+        {
+            "target": {"page_id": "page-container", "title": "父页面", "target_id": "container"},
+            "data_sources": {"books": shared_data_source},
+        },
+    )
+    cache.write_json(
+        config.targets_dir / "books-ds.json",
+        {
+            "target": {"page_id": "page-books", "title": "Books", "target_id": "books-ds"},
+            "data_sources": {"books": shared_data_source},
+        },
+    )
+    seed_v2_graph(config, graph_id="books-ds", title="Books")
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "target": {
+                "page_title": "Books",
+                "page_id": "page-books",
+                "data_source_id": "ds-books",
+                "confidence": "high",
+                "source": "data_source_alias",
+                "target_id": "books-ds",
+            },
+        },
+    )
+    fake_adapter = FakeAdapter(
+        {
+            "id": "page-created",
+            "object": "page",
+            "properties": {
+                "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                "阅读状态": {"type": "status", "status": {"name": "initialized"}},
+            },
+        }
+    )
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", AdapterFactoryProbe(fake_adapter))
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["applied"] is True
+    assert fake_adapter.created[0][0] == "ds-books"
+
 
 
 def test_capture_apply_uses_planned_operations_after_confirmation(tmp_path, monkeypatch, capsys):
@@ -314,6 +649,14 @@ def test_capture_apply_uses_planned_asset_operations_after_confirmation(tmp_path
                     },
                 },
             },
+        },
+    )
+    seed_v2_graph(
+        config,
+        schema={
+            "书名": {"name": "书名", "type": "title"},
+            "阅读状态": {"name": "阅读状态", "type": "status"},
+            "封面": {"name": "封面", "type": "files"},
         },
     )
     plan_path = tmp_path / "plan.json"
@@ -445,7 +788,7 @@ def test_capture_apply_successful_create_uses_fake_adapter(tmp_path, monkeypatch
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 0
     stdout = capsys.readouterr().out
@@ -495,7 +838,7 @@ def test_capture_apply_reports_verification_not_found_without_recreating(tmp_pat
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 0
     result = json.loads(capsys.readouterr().out)
@@ -640,6 +983,14 @@ def test_capture_apply_rescans_replans_and_retries_on_stale_cache_error(tmp_path
             "confirmation_reason": None,
         },
     )
+    seed_v2_graph(
+        config,
+        data_source_id="ds-old-books",
+        schema={
+            "旧书名": {"name": "旧书名", "type": "title"},
+            "旧状态": {"name": "旧状态", "type": "status"},
+        },
+    )
     plan_path = tmp_path / "plan.json"
     write_plan_file(
         plan_path,
@@ -667,20 +1018,134 @@ def test_capture_apply_rescans_replans_and_retries_on_stale_cache_error(tmp_path
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
-    assert exit_code == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["applied"] is True
-    assert result["recovered_from_stale_cache"] is True
+    assert exit_code == 2
+    assert "v2_stale_cache_recovery_requires_fresh_plan" in capsys.readouterr().err
     assert fake_adapter.create_attempts[0][0] == "ds-old-books"
-    assert fake_adapter.create_attempts[1][0] == "ds-new-books"
-    assert fake_adapter.scanned_pages == ["page-books"]
-    refreshed_plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    assert refreshed_plan["target"]["data_source_id"] == "ds-new-books"
-    assert refreshed_plan["field_mapping"] == {"title": "书名", "state": "阅读状态"}
-    refreshed_cache = json.loads((config.targets_dir / "books.json").read_text(encoding="utf-8"))
-    assert "ds-new-books" in [source["data_source_id"] for source in refreshed_cache["data_sources"].values()]
+    assert fake_adapter.scanned_pages == []
+
+
+def test_capture_apply_recovers_stale_data_source_only_target_without_page_id(tmp_path, monkeypatch, capsys):
+    class DataSourceOnlyRecoveringAdapter(FakeAdapter):
+        def __init__(self) -> None:
+            super().__init__(
+                pages={
+                    "page-created": {
+                        "id": "page-created",
+                        "object": "page",
+                        "properties": {
+                            "书名": {"type": "title", "title": [{"plain_text": "可能性的艺术"}]},
+                            "阅读状态": {"type": "status", "status": {"name": "initialized"}},
+                        },
+                    }
+                }
+            )
+            self.data_sources = {
+                "ds-books": {
+                    "id": "ds-books",
+                    "title": "Books",
+                    "properties": {
+                        "书名": {"id": "title", "type": "title", "title": {}},
+                        "阅读状态": {"id": "state", "type": "status", "status": {"options": []}},
+                    },
+                }
+            }
+            self.create_attempts: list[tuple[str, dict[str, Any]]] = []
+            self.retrieved_data_sources: list[str] = []
+
+        def create_page(self, data_source_id: str, properties: dict[str, Any]) -> dict[str, Any]:
+            self.create_attempts.append((data_source_id, properties))
+            if len(self.create_attempts) == 1:
+                raise cli.NotionApiError(
+                    "body failed validation",
+                    status=400,
+                    code="validation_error",
+                    body={"message": "body failed validation: schema is stale"},
+                )
+            return {"id": "page-created", "url": "https://notion.example/page-created"}
+
+        def retrieve_data_source(self, data_source_id: str) -> dict[str, Any]:
+            self.retrieved_data_sources.append(data_source_id)
+            return self.data_sources[data_source_id]
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    cache = CacheStore(config)
+    cache.write_json(
+        config.aliases_file,
+        {"aliases": {"书库": {"type": "data_source", "data_source_id": "ds-books", "target_id": "books-ds"}}},
+    )
+    cache.write_json(
+        config.targets_dir / "books-ds.json",
+        {
+            "target": {"page_id": None, "title": "Books", "target_id": "books-ds", "data_source_id": "ds-books"},
+            "parser_profile": {
+                "book": {
+                    "field_mapping": {"title": "书名", "state": "阅读状态"},
+                    "required_schema_fields": [],
+                    "required_value_fields": [],
+                    "trusted_field_sources": ["profile"],
+                }
+            },
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "role": "primary",
+                    "content_types": ["book"],
+                    "fields": {"title": "旧书名", "state": "旧状态"},
+                    "field_sources": {"title": "profile", "state": "profile"},
+                    "schema": {
+                        "旧书名": {"name": "旧书名", "type": "title"},
+                        "旧状态": {"name": "旧状态", "type": "status"},
+                    },
+                }
+            },
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        },
+    )
+    seed_v2_graph(
+        config,
+        schema={
+            "旧书名": {"name": "旧书名", "type": "title"},
+            "旧状态": {"name": "旧状态", "type": "status"},
+        },
+    )
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "target": {
+                "page_title": "Books",
+                "page_id": None,
+                "data_source_id": "ds-books",
+                "confidence": "high",
+                "source": "data_source_alias",
+            },
+            "normalized_record": {"title": "可能性的艺术", "state": "initialized"},
+            "field_mapping": {"title": "旧书名", "state": "旧状态"},
+            "operations": [{"type": "create_or_update_page", "data_source_id": "ds-books"}],
+            "capture_input": {
+                "raw_input": "《可能性的艺术》",
+                "target_hint": "书库",
+                "state": "initialized",
+                "content_type_hint": "book",
+                "options": {"allow_asset_download": True},
+            },
+        },
+    )
+    fake_adapter = DataSourceOnlyRecoveringAdapter()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", AdapterFactoryProbe(fake_adapter))
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 2
+    assert "v2_stale_cache_recovery_requires_fresh_plan" in capsys.readouterr().err
+    assert fake_adapter.retrieved_data_sources == []
+    assert len(fake_adapter.create_attempts) == 1
+
 
 
 def test_capture_apply_reports_possible_partial_write_for_ambiguous_create_error(tmp_path, monkeypatch, capsys):
@@ -728,7 +1193,7 @@ def test_capture_apply_reports_possible_partial_write_for_ambiguous_create_error
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 2
     assert "possible_partial_write" in capsys.readouterr().err
@@ -791,6 +1256,7 @@ def test_capture_apply_does_not_recover_update_page_not_found_as_create(tmp_path
             "confirmation_reason": None,
         },
     )
+    seed_v2_graph(config)
     plan_path = tmp_path / "plan.json"
     write_plan_file(
         plan_path,
@@ -809,7 +1275,7 @@ def test_capture_apply_does_not_recover_update_page_not_found_as_create(tmp_path
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 2
     assert "page not found" in capsys.readouterr().err
@@ -913,6 +1379,7 @@ def test_capture_apply_does_not_recreate_when_later_main_operation_fails(tmp_pat
             "confirmation_reason": None,
         },
     )
+    seed_v2_graph(config)
     plan_path = tmp_path / "plan.json"
     write_plan_file(
         plan_path,
@@ -934,7 +1401,7 @@ def test_capture_apply_does_not_recreate_when_later_main_operation_fails(tmp_pat
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 2
     assert "部分" in capsys.readouterr().err
@@ -1035,6 +1502,7 @@ def test_capture_apply_does_not_recreate_when_stale_error_happens_after_create(t
             "confirmation_reason": None,
         },
     )
+    seed_v2_graph(config)
     plan_path = tmp_path / "plan.json"
     write_plan_file(
         plan_path,
@@ -1063,7 +1531,7 @@ def test_capture_apply_does_not_recreate_when_stale_error_happens_after_create(t
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 2
     assert "部分" in capsys.readouterr().err
@@ -1103,7 +1571,7 @@ def test_capture_apply_includes_verification_summary_for_created_page(tmp_path, 
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
     allow_verify_url_checks(monkeypatch)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 0
     result = json.loads(capsys.readouterr().out)
@@ -1131,6 +1599,13 @@ def test_capture_apply_cover_download_failure_reports_asset_warning(tmp_path, mo
                     },
                 },
             },
+        },
+    )
+    seed_v2_graph(
+        config,
+        schema={
+            "书名": {"name": "书名", "type": "title"},
+            "封面": {"name": "封面", "type": "files"},
         },
     )
     cover_url = "https://example.com/cover.jpg"
@@ -1177,7 +1652,7 @@ def test_capture_apply_cover_download_failure_reports_asset_warning(tmp_path, mo
     monkeypatch.setattr(assets, "default_download", lambda url: (_ for _ in ()).throw(OSError("download failed")))
     allow_verify_url_checks(monkeypatch)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 0
     result = json.loads(capsys.readouterr().out)
@@ -1217,6 +1692,13 @@ def test_capture_apply_verification_reports_inaccessible_mapped_file_url(tmp_pat
             },
         },
     )
+    seed_v2_graph(
+        config,
+        schema={
+            "书名": {"name": "书名", "type": "title"},
+            "封面": {"name": "封面", "type": "files"},
+        },
+    )
     plan_path = tmp_path / "plan.json"
     write_plan_file(
         plan_path,
@@ -1250,7 +1732,7 @@ def test_capture_apply_verification_reports_inaccessible_mapped_file_url(tmp_pat
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
     monkeypatch.setattr(cli, "url_is_accessible", lambda url: False)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 0
     result = json.loads(capsys.readouterr().out)
@@ -1305,6 +1787,25 @@ def test_capture_apply_verifies_relation_completion_pages(tmp_path, monkeypatch,
             },
         },
     )
+    seed_v2_graph(
+        config,
+        schema={
+            "书名": {"name": "书名", "type": "title"},
+            "阅读状态": {"name": "阅读状态", "type": "status"},
+            "作者": {"name": "作者", "type": "relation", "target_database_id": "db-authors"},
+        },
+    )
+    graph = CacheV2Store(config).read_graph("graph-books")
+    assert graph is not None
+    graph["data_sources"]["ds-authors"] = {
+        "data_source_id": "ds-authors",
+        "title": "Authors",
+        "schema": {
+            "Author Picture": {"name": "Author Picture", "type": "files"},
+            "国籍": {"name": "国籍", "type": "select"},
+        },
+    }
+    CacheV2Store(config).write_graph("graph-books", graph)
     plan_path = tmp_path / "plan.json"
     write_plan_file(
         plan_path,
@@ -1358,7 +1859,7 @@ def test_capture_apply_verifies_relation_completion_pages(tmp_path, monkeypatch,
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
     allow_verify_url_checks(monkeypatch)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 0
     result = json.loads(capsys.readouterr().out)
@@ -1402,6 +1903,14 @@ def test_apply_verification_uses_plan_mapping_property_types_not_business_names(
             },
         },
     )
+    seed_v2_graph(
+        config,
+        page_id="page-custom",
+        data_source_id="ds-custom",
+        title="Custom",
+        data_source_title="Items",
+        schema={"Primary": {"type": "title"}, "Metric": {"type": "number"}},
+    )
     plan_path = tmp_path / "plan.json"
     write_plan_file(
         plan_path,
@@ -1433,7 +1942,7 @@ def test_apply_verification_uses_plan_mapping_property_types_not_business_names(
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 0
     result = json.loads(capsys.readouterr().out)
@@ -1469,7 +1978,7 @@ def test_capture_apply_preserves_result_when_verification_page_retrieval_fails(t
     adapter_factory = AdapterFactoryProbe(fake_adapter)
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 0
     result = json.loads(capsys.readouterr().out)
@@ -1967,7 +2476,7 @@ def test_capture_apply_invalid_plan_json_returns_readable_error(tmp_path, monkey
     plan_path = tmp_path / "plan.json"
     plan_path.write_text("{invalid json", encoding="utf-8")
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 2
     stderr = capsys.readouterr().err
@@ -1979,7 +2488,7 @@ def test_capture_apply_invalid_plan_shape_returns_readable_error(tmp_path, monke
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps({"plan_id": "missing-fields"}), encoding="utf-8")
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 2
     stderr = capsys.readouterr().err
@@ -1993,7 +2502,7 @@ def test_capture_apply_missing_target_structure_before_adapter(tmp_path, monkeyp
     adapter_factory = AdapterFactoryProbe()
     monkeypatch.setattr(cli.NotionAdapter, "from_config", adapter_factory)
 
-    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path)])
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
 
     assert exit_code == 2
     stderr = capsys.readouterr().err

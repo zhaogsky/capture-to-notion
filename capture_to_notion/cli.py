@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -11,10 +11,11 @@ from typing import Any
 class CliInputError(ValueError):
     """Raised when CLI input cannot be loaded or parsed."""
 
-from capture_to_notion.cache import CacheStore
+from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.classifier import classify_content_type
 from capture_to_notion.config import config_root, ensure_config
 from capture_to_notion.diagnostics import doctor_report, migrate_legacy_config, version_info
+from capture_to_notion.profile_binder import bind_write_profile
 from capture_to_notion.models import CaptureInput, WritePlan
 from capture_to_notion.notion_adapter import (
     NotionAdapter,
@@ -24,10 +25,11 @@ from capture_to_notion.notion_adapter import (
     NotionPermissionError,
     NotionRateLimitError,
 )
-from capture_to_notion.planner import build_capture_plan, build_plan_cli_summary, primary_data_source
+from capture_to_notion.planner import build_capture_plan, build_plan_cli_summary
 from capture_to_notion.preflight import build_capture_preflight, build_capture_preflight_summary
-from capture_to_notion.scanner import scan_data_source_target, scan_page_target
+from capture_to_notion.scanner import scan_data_source_graph, scan_page_graph
 from capture_to_notion.verifier import url_is_accessible, verify_capture_page
+from capture_to_notion.workflow_guard import assert_plan_workflow_allows_apply, assert_preflight_allows_plan, scoped_sync_request
 from capture_to_notion.writer import NotionWriterError, apply_write_plan
 
 
@@ -63,72 +65,8 @@ def print_json(data: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
-LABELED_INPUT_PATTERN = re.compile(r"(?:^|[\s,，;；|｜])([^\s,，;；|｜:：]{1,32})\s*[:：]")
 DEFAULT_SEARCH_LIMIT = 5
 MAX_SEARCH_LIMIT = 100
-
-
-def _labeled_input_keys(raw_input: str) -> set[str]:
-    return {match.group(1) for match in LABELED_INPUT_PATTERN.finditer(raw_input)}
-
-
-def _profile_labels(profile: Any) -> set[str]:
-    labels: set[str] = set()
-    if not isinstance(profile, dict):
-        return labels
-    raw_labels = profile.get("labels")
-    if isinstance(raw_labels, dict):
-        for value in raw_labels.values():
-            if isinstance(value, str):
-                labels.add(value)
-            elif isinstance(value, list):
-                labels.update(item for item in value if isinstance(item, str))
-    for section in profile.values():
-        if isinstance(section, dict):
-            labels.update(_profile_labels(section))
-    return labels
-
-
-def _known_input_labels(structure: dict[str, Any], data_source: dict[str, Any]) -> set[str]:
-    labels = _profile_labels(structure.get("parser_profile")) | _profile_labels(data_source.get("parser_profile"))
-    fields = data_source.get("fields", {})
-    if isinstance(fields, dict):
-        labels.update(key for key in fields if isinstance(key, str))
-        labels.update(value for value in fields.values() if isinstance(value, str))
-    return labels
-
-
-def _plan_needs_schema_refresh(capture: CaptureInput, cache: CacheStore) -> bool:
-    alias = cache.find_alias(capture.target_hint)
-    if not isinstance(alias, dict) or not isinstance(alias.get("page_id"), str):
-        return False
-    structure = cache.target_structure(alias.get("target_id"))
-    if not structure:
-        return False
-    content_type = classify_content_type(capture)
-    _, data_source = primary_data_source(structure, content_type)
-    if not isinstance(data_source, dict):
-        return False
-    input_keys = _labeled_input_keys(capture.raw_input)
-    if not input_keys:
-        return False
-    return bool(input_keys - _known_input_labels(structure, data_source))
-
-
-def _refresh_target_cache_for_plan(capture: CaptureInput, cache: CacheStore, adapter: Any) -> None:
-    alias = cache.find_alias(capture.target_hint)
-    if not isinstance(alias, dict):
-        return
-    page_id = alias.get("page_id")
-    if not isinstance(page_id, str) or not page_id:
-        return
-    scan_page_target(
-        adapter,
-        page_id,
-        cache,
-        target_id=alias.get("target_id") if isinstance(alias.get("target_id"), str) else None,
-        alias=capture.target_hint,
-    )
 
 
 def cmd_version(args: argparse.Namespace) -> int:
@@ -151,62 +89,231 @@ def cmd_config_migrate(args: argparse.Namespace) -> int:
 
 def cmd_cache_inspect(args: argparse.Namespace) -> int:
     config = ensure_config()
-    cache = CacheStore(config)
-    print_json({"config_root": str(config.root), "aliases": cache.aliases(), "routes": cache.routes()})
+    cache = CacheV2Store(config)
+    graphs = sorted(path.stem for path in config.graphs_v2_dir.glob("*.json"))
+    profiles = sorted(path.stem for path in config.profiles_v2_dir.glob("*.json"))
+    print_json({"config_root": str(config.root), "cache_version": 2, "aliases": cache.aliases(), "graphs": graphs, "profiles": profiles})
     return 0
+
+
+
+def _remove_path(path: Path) -> bool:
+    if not path.exists():
+        return False
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    return True
+
+
+
+def cmd_cache_reset_v2(args: argparse.Namespace) -> int:
+    config = ensure_config()
+    if not args.confirmed:
+        raise CliInputError("cache reset-v2 需要显式确认，请传入 --confirmed")
+    deleted: list[str] = []
+    if args.delete_legacy:
+        for path in (config.aliases_file, config.routes_file, config.targets_dir, config.plans_dir):
+            if path == config.plans_v2_dir:
+                continue
+            if _remove_path(path):
+                deleted.append(str(path))
+    for path in (config.cache_v2_dir, config.graphs_v2_dir, config.profiles_v2_dir, config.plans_v2_dir, config.assets_v2_dir):
+        path.mkdir(parents=True, exist_ok=True)
+    config.aliases_v2_file.write_text(
+        json.dumps({"cache_version": 2, "aliases": {}}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print_json(
+        {
+            "cache_version": 2,
+            "cache_v2_dir": str(config.cache_v2_dir),
+            "deleted_legacy": bool(args.delete_legacy),
+            "deleted_paths": deleted,
+        }
+    )
+    return 0
+
+
+def _v2_root_target(graph: dict[str, Any]) -> dict[str, Any]:
+    root = graph.get("root") if isinstance(graph.get("root"), dict) else {}
+    target: dict[str, Any] = {}
+    if root.get("kind") == "page" and isinstance(root.get("id"), str):
+        page_id = root["id"]
+        target["page_id"] = page_id
+        pages = graph.get("pages") if isinstance(graph.get("pages"), dict) else {}
+        page = pages.get(page_id) if isinstance(pages, dict) else None
+        if isinstance(page, dict) and isinstance(page.get("title"), str):
+            target["title"] = page["title"]
+    elif root.get("kind") == "data_source" and isinstance(root.get("id"), str):
+        target["data_source_id"] = root["id"]
+        data_sources = graph.get("data_sources") if isinstance(graph.get("data_sources"), dict) else {}
+        data_source = data_sources.get(root["id"]) if isinstance(data_sources, dict) else None
+        if isinstance(data_source, dict) and isinstance(data_source.get("title"), str):
+            target["title"] = data_source["title"]
+    return target
+
+
+def _v2_content_types(profile: dict[str, Any] | None) -> list[str]:
+    write_profiles = profile.get("write_profiles") if isinstance(profile, dict) else None
+    if not isinstance(write_profiles, dict):
+        return []
+    return sorted(key for key in write_profiles if isinstance(key, str))
+
+
+def _v2_profile_summary(profile: dict[str, Any] | None) -> dict[str, Any]:
+    write_profiles = profile.get("write_profiles") if isinstance(profile, dict) else None
+    if not isinstance(write_profiles, dict):
+        return {}
+    summary: dict[str, Any] = {}
+    for content_type, write_profile in write_profiles.items():
+        if not isinstance(content_type, str) or not isinstance(write_profile, dict):
+            continue
+        summary[content_type] = {
+            key: write_profile.get(key)
+            for key in ("canonical_data_source_id", "canonical_view_id", "field_mapping", "field_sources")
+            if key in write_profile
+        }
+    return summary
+
+
+def _v2_data_source_summaries(graph: dict[str, Any], *, compact: bool) -> list[dict[str, Any]]:
+    data_sources = graph.get("data_sources") if isinstance(graph.get("data_sources"), dict) else {}
+    summaries: list[dict[str, Any]] = []
+    for key, data_source in sorted(data_sources.items()):
+        if not isinstance(data_source, dict):
+            continue
+        schema = data_source.get("schema") if isinstance(data_source.get("schema"), dict) else {}
+        summary = {
+            "key": key,
+            "data_source_id": data_source.get("data_source_id"),
+            "title": data_source.get("title"),
+            "schema_hash": data_source.get("schema_hash"),
+        }
+        if compact:
+            summary["field_count"] = len(schema)
+        else:
+            summary["schema_fields"] = sorted(name for name in schema if isinstance(name, str))
+        summaries.append({k: v for k, v in summary.items() if v is not None})
+    return summaries
+
+
+def _v2_graph_detail(cache: CacheV2Store, *, alias_name: str | None, graph_id: str | None, compact: bool) -> dict[str, Any] | None:
+    alias = cache.find_alias(alias_name) if alias_name else None
+    resolved_graph_id = graph_id or (alias.get("graph_id") if isinstance(alias, dict) else None)
+    if not isinstance(resolved_graph_id, str) or not resolved_graph_id:
+        return None
+    graph = cache.read_graph(resolved_graph_id)
+    if not isinstance(graph, dict):
+        return None
+    aliases = cache.aliases()
+    resolved_alias_name = alias_name
+    if resolved_alias_name is None:
+        for candidate_alias, candidate in aliases.items():
+            if isinstance(candidate, dict) and candidate.get("graph_id") == resolved_graph_id:
+                resolved_alias_name = candidate_alias
+                alias = candidate
+                break
+    profile_id = alias.get("profile_id") if isinstance(alias, dict) else None
+    profile = cache.read_profile(profile_id) if isinstance(profile_id, str) else None
+    root = graph.get("root") if isinstance(graph.get("root"), dict) else {}
+    detail = {
+        "alias": resolved_alias_name,
+        "graph_id": resolved_graph_id,
+        "profile_id": profile_id,
+        "kind": alias.get("kind") if isinstance(alias, dict) else None,
+        "root": root,
+        "target": _v2_root_target(graph),
+        "data_sources": _v2_data_source_summaries(graph, compact=compact),
+        "status": "cached",
+    }
+    if compact:
+        detail["content_types"] = _v2_content_types(profile)
+    else:
+        detail["graph_file"] = str(cache.graph_path(resolved_graph_id))
+        if isinstance(profile_id, str):
+            detail["profile_file"] = str(cache.profile_path(profile_id))
+        detail["write_profiles"] = _v2_profile_summary(profile)
+    return {key: value for key, value in detail.items() if value is not None}
+
+
+def _v2_target_summary(cache: CacheV2Store, alias_name: str, alias: dict[str, Any]) -> dict[str, Any]:
+    graph_id = alias.get("graph_id")
+    profile_id = alias.get("profile_id")
+    graph = cache.read_graph(graph_id) if isinstance(graph_id, str) else None
+    profile = cache.read_profile(profile_id) if isinstance(profile_id, str) else None
+    if not isinstance(graph, dict):
+        return {
+            "alias": alias_name,
+            "graph_id": graph_id,
+            "profile_id": profile_id,
+            "kind": alias.get("kind"),
+            "title": None,
+            "data_sources": [],
+            "views": [],
+            "content_types": [],
+            "status": "missing_cache",
+        }
+    root = graph.get("root") if isinstance(graph.get("root"), dict) else {}
+    target = _v2_root_target(graph)
+    return {
+        "alias": alias_name,
+        "graph_id": graph_id,
+        "profile_id": profile_id,
+        "kind": alias.get("kind"),
+        "root_kind": root.get("kind"),
+        "root_id": root.get("id"),
+        "title": target.get("title"),
+        "data_sources": _graph_data_source_titles(graph),
+        "views": _graph_view_names(graph),
+        "content_types": _v2_content_types(profile),
+        "status": "cached",
+    }
 
 
 def cmd_target_suggest(args: argparse.Namespace) -> int:
     config = ensure_config()
-    cache = CacheStore(config)
+    cache = CacheV2Store(config)
     capture = load_capture_input(args.input)
     content_type = classify_content_type(capture)
     suggestions = []
-    routes = cache.routes().get(content_type, {}).get("preferred_targets", [])
-    for route in routes:
-        alias_name = route.get("alias")
-        alias = cache.find_alias(alias_name)
-        if alias:
-            suggestions.append({"alias": alias_name, "page_id": alias.get("page_id"), "confidence": route.get("confidence", "medium")})
+    for alias_name, alias in sorted(cache.aliases().items()):
+        if not isinstance(alias, dict):
+            continue
+        profile_id = alias.get("profile_id")
+        profile = cache.read_profile(profile_id) if isinstance(profile_id, str) else None
+        if content_type in _v2_content_types(profile):
+            suggestions.append({"alias": alias_name, "graph_id": alias.get("graph_id"), "profile_id": profile_id, "confidence": "high"})
     print_json({"content_type": content_type, "suggestions": suggestions, "requires_confirmation": len(suggestions) == 0})
     return 0
 
 
 def cmd_target_list(args: argparse.Namespace) -> int:
     config = ensure_config()
-    cache = CacheStore(config)
-    targets = cache.target_summaries()
+    cache = CacheV2Store(config)
+    targets = [
+        _v2_target_summary(cache, alias_name, alias)
+        for alias_name, alias in sorted(cache.aliases().items())
+        if isinstance(alias, dict)
+    ]
     print_json({"count": len(targets), "targets": targets})
     return 0
 
 
-def _target_cache_error(cache: CacheStore, target_id: str) -> CliInputError:
-    status = cache.target_cache_status(target_id)
-    if status == "invalid_cache":
-        return CliInputError(f"target cache 无效: {target_id}")
-    return CliInputError(f"未找到 target cache: {target_id}")
-
-
 def cmd_target_inspect(args: argparse.Namespace) -> int:
     config = ensure_config()
-    cache = CacheStore(config)
-    detail = (
-        cache.target_detail_summary(alias_name=args.alias, target_id=args.target_id)
-        if args.compact
-        else cache.target_detail(alias_name=args.alias, target_id=args.target_id)
-    )
+    cache = CacheV2Store(config)
+    detail = _v2_graph_detail(cache, alias_name=args.alias, graph_id=args.target_id, compact=args.compact)
     if detail is None:
         if args.alias:
-            reference = cache.target_reference(alias_name=args.alias)
-            if reference is None:
-                raise CliInputError(f"未找到 target alias: {args.alias}")
-            target_id = reference.get("target_id")
-            if target_id:
-                raise _target_cache_error(cache, target_id)
-            raise CliInputError(f"未找到 target_id: {args.alias}")
+            alias = cache.find_alias(args.alias)
+            if alias is None:
+                raise CliInputError(f"未找到 v2 target alias: {args.alias}")
+            raise CliInputError(f"未找到 v2 graph cache: {alias.get('graph_id')}")
         if args.target_id:
-            raise _target_cache_error(cache, args.target_id)
-        raise CliInputError("未找到 target_id")
+            raise CliInputError(f"未找到 v2 graph cache: {args.target_id}")
+        raise CliInputError("未找到 graph_id")
     print_json(detail)
     return 0
 
@@ -270,33 +377,139 @@ def cmd_target_search(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_target_scan(args: argparse.Namespace) -> int:
+def _load_database_schema(path: str) -> dict[str, Any]:
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise CliInputError(f"schema 文件不存在: {path}") from exc
+    except json.JSONDecodeError as exc:
+        raise CliInputError(f"schema 文件 JSON 无效: {path} ({exc.msg})") from exc
+    properties = data.get("properties") if isinstance(data, dict) else None
+    if not isinstance(properties, dict):
+        raise CliInputError("schema 文件必须包含 properties 对象")
+    if not any(isinstance(value, dict) and value.get("type") == "title" for value in properties.values()):
+        raise CliInputError("schema properties 必须包含一个 title 字段")
+    return properties
+
+
+def _parse_profile_fields(values: list[str] | None) -> tuple[dict[str, str], dict[str, str]]:
+    field_mapping: dict[str, str] = {}
+    for value in values or []:
+        if "=" not in value:
+            raise CliInputError("--field 必须使用 semantic=NotionProperty 格式")
+        semantic, property_name = value.split("=", 1)
+        semantic = semantic.strip()
+        property_name = property_name.strip()
+        if not semantic or not property_name:
+            raise CliInputError("--field 必须使用 semantic=NotionProperty 格式")
+        field_mapping[semantic] = property_name
+    return field_mapping, {key: "user_binding" for key in field_mapping}
+
+
+
+def cmd_target_bind_profile(args: argparse.Namespace) -> int:
     config = ensure_config()
-    cache = CacheStore(config)
-    adapter = NotionAdapter.from_config(config)
-    if args.data_source_id:
-        target = scan_data_source_target(adapter, args.data_source_id, cache, target_id=args.target_id, alias=args.alias)
-    else:
-        target = scan_page_target(adapter, args.page_id, cache, target_id=args.target_id, alias=args.alias)
-    target_id = target["target"]["target_id"]
+    cache = CacheV2Store(config)
+    graph = cache.read_graph(args.graph_id)
+    if graph is None:
+        raise CliInputError(f"未找到 v2 graph cache: {args.graph_id}")
+    field_mapping, field_sources = _parse_profile_fields(args.field)
+    try:
+        profile = bind_write_profile(
+            graph,
+            profile_id=args.profile_id,
+            content_type=args.content_type,
+            data_source_id=args.data_source_id,
+            view_id=args.view_id,
+            field_mapping=field_mapping,
+            field_sources=field_sources,
+            aliases=[args.alias],
+        )
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from exc
+    cache.write_profile(args.profile_id, profile)
+    cache.bind_alias(args.alias, graph_id=args.graph_id, profile_id=args.profile_id, kind="write_profile")
     print_json(
         {
-            "target_id": target_id,
-            "target_file": str(config.targets_dir / f"{target_id}.json"),
-            "data_sources": [
-                data_source.get("title")
-                for data_source in target.get("data_sources", {}).values()
-                if data_source.get("title")
-            ],
-            "requires_confirmation": target.get("requires_confirmation", True),
+            "alias": args.alias,
+            "graph_id": args.graph_id,
+            "profile_id": args.profile_id,
+            "content_type": args.content_type,
+            "data_source_id": args.data_source_id,
+            "view_id": args.view_id,
         }
     )
     return 0
 
 
+
+def _default_graph_id(source_id: str) -> str:
+    return source_id.replace("-", "")
+
+
+def _graph_data_source_titles(graph: dict[str, Any]) -> list[str]:
+    data_sources = graph.get("data_sources") if isinstance(graph.get("data_sources"), dict) else {}
+    return [
+        data_source.get("title")
+        for data_source in data_sources.values()
+        if isinstance(data_source, dict) and data_source.get("title")
+    ]
+
+
+def _graph_view_names(graph: dict[str, Any]) -> list[str]:
+    views = graph.get("views") if isinstance(graph.get("views"), dict) else {}
+    return [view.get("name") for view in views.values() if isinstance(view, dict) and view.get("name")]
+
+
+def _target_scan_output(config: Any, graph: dict[str, Any]) -> dict[str, Any]:
+    graph_id = graph["graph_id"]
+    return {
+        "cache_version": 2,
+        "graph_id": graph_id,
+        "graph_file": str(config.graphs_v2_dir / f"{graph_id}.json"),
+        "data_sources": _graph_data_source_titles(graph),
+        "views": _graph_view_names(graph),
+        "requires_profile_binding": True,
+        "next_action": "target bind-profile",
+    }
+
+
+def cmd_target_scan(args: argparse.Namespace) -> int:
+    config = ensure_config()
+    cache = CacheV2Store(config)
+    adapter = NotionAdapter.from_config(config)
+    if args.data_source_id:
+        graph_id = args.target_id or _default_graph_id(args.data_source_id)
+        graph = scan_data_source_graph(adapter, args.data_source_id, cache, graph_id=graph_id)
+    else:
+        graph_id = args.target_id or _default_graph_id(args.page_id)
+        graph = scan_page_graph(adapter, args.page_id, cache, graph_id=graph_id)
+    if args.alias:
+        cache.bind_alias(args.alias, graph_id=graph_id, profile_id=None, kind="graph")
+    print_json(_target_scan_output(config, graph))
+    return 0
+
+
+def cmd_target_create_database(args: argparse.Namespace) -> int:
+    config = ensure_config()
+    cache = CacheV2Store(config)
+    adapter = NotionAdapter.from_config(config)
+    properties = _load_database_schema(args.schema)
+    database = adapter.create_database(args.page_id, args.title, properties)
+    graph_id = args.target_id or _default_graph_id(args.page_id)
+    graph = scan_page_graph(adapter, args.page_id, cache, graph_id=graph_id)
+    if args.alias:
+        cache.bind_alias(args.alias, graph_id=graph_id, profile_id=None, kind="graph")
+    output = _target_scan_output(config, graph)
+    output["created_database_id"] = database.get("id")
+    output["created_database_title"] = args.title
+    print_json(output)
+    return 0
+
+
 def cmd_capture_preflight(args: argparse.Namespace) -> int:
     config = ensure_config()
-    cache = CacheStore(config)
+    cache = CacheV2Store(config)
     capture = load_capture_input(args.input)
     preflight = build_capture_preflight(capture, cache)
     print_json(build_capture_preflight_summary(preflight) if args.compact else preflight)
@@ -304,13 +517,38 @@ def cmd_capture_preflight(args: argparse.Namespace) -> int:
 
 
 
+def _run_v2_scoped_sync_for_plan(sync: dict[str, Any], cache: CacheV2Store, adapter: Any) -> None:
+    target_id = sync.get("target_id") if isinstance(sync.get("target_id"), str) else None
+    data_source_id = sync.get("data_source_id")
+    if isinstance(data_source_id, str) and data_source_id:
+        scan_data_source_graph(adapter, data_source_id, cache, graph_id=target_id or _default_graph_id(data_source_id))
+        return
+    page_id = sync.get("page_id")
+    if isinstance(page_id, str) and page_id:
+        scan_page_graph(adapter, page_id, cache, graph_id=target_id or _default_graph_id(page_id))
+        return
+    raise CliInputError("next_action=sync_target_cache requires explicit data_source_id or page_id")
+
+
 def cmd_capture_plan(args: argparse.Namespace) -> int:
     config = ensure_config()
-    cache = CacheStore(config)
+    cache = CacheV2Store(config)
     capture = load_capture_input(args.input)
-    if _plan_needs_schema_refresh(capture, cache):
-        _refresh_target_cache_for_plan(capture, cache, NotionAdapter.from_config(config))
+    preflight = build_capture_preflight(capture, cache)
+    try:
+        sync = scoped_sync_request(preflight)
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from exc
+    if sync is not None:
+        adapter = NotionAdapter.from_config(config)
+        _run_v2_scoped_sync_for_plan(sync, cache, adapter)
+        preflight = build_capture_preflight(capture, cache)
+    try:
+        assert_preflight_allows_plan(preflight)
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from exc
     plan = build_capture_plan(capture, cache)
+    plan.preflight_workflow = preflight.get("workflow") if isinstance(preflight.get("workflow"), dict) else None
     if args.output:
         Path(args.output).write_text(plan.to_json(), encoding="utf-8")
     if args.compact:
@@ -523,24 +761,6 @@ def _is_uncertain_create_error(plan: WritePlan, exc: Exception) -> bool:
     return status is None or (isinstance(status, int) and status >= 500)
 
 
-def _target_id_for_recovery(cache: CacheStore, plan: WritePlan, capture: CaptureInput) -> str | None:
-    alias = cache.find_alias(capture.target_hint)
-    if isinstance(alias, dict) and isinstance(alias.get("target_id"), str):
-        return alias["target_id"]
-    structure = cache.target_structure_for_data_source(plan.target.data_source_id)
-    target = structure.get("target", {}) if isinstance(structure, dict) else {}
-    target_id = target.get("target_id")
-    return target_id if isinstance(target_id, str) else None
-
-
-
-def _page_id_for_recovery(plan: WritePlan, capture: CaptureInput, cache: CacheStore) -> str | None:
-    alias = cache.find_alias(capture.target_hint)
-    if isinstance(alias, dict) and isinstance(alias.get("page_id"), str):
-        return alias["page_id"]
-    return plan.target.page_id
-
-
 
 def _apply_plan_with_verification(
     plan: WritePlan,
@@ -555,53 +775,198 @@ def _apply_plan_with_verification(
 
 
 
-def _recover_stale_cache_and_apply(
-    *,
-    plan_path: Path,
-    plan: WritePlan,
-    cache: CacheStore,
-    adapter: Any,
-    error: Exception,
-) -> dict[str, Any]:
-    if not plan.capture_input:
-        raise error
-    capture = CaptureInput.from_dict(plan.capture_input)
-    page_id = _page_id_for_recovery(plan, capture, cache)
-    target_id = _target_id_for_recovery(cache, plan, capture)
-    if not page_id:
-        raise error
 
-    scan_page_target(
-        adapter,
-        page_id,
-        cache,
-        target_id=target_id,
-        alias=capture.target_hint,
-    )
-    refreshed_plan = build_capture_plan(capture, cache)
-    refreshed_plan.save(plan_path)
-    if refreshed_plan.requires_confirmation:
-        raise CliInputError(
-            f"目标结构已刷新，但新计划需要确认: {refreshed_plan.confirmation_reason or '未说明原因'}"
-        )
-    refreshed_structure = cache.target_structure_for_data_source(refreshed_plan.target.data_source_id)
-    if refreshed_structure is None:
-        raise CliInputError("目标结构已刷新，但仍未找到可写 data_source，请重新选择目标")
-    result = _apply_plan_with_verification(refreshed_plan, refreshed_structure, adapter)
-    result["recovered_from_stale_cache"] = True
-    result["stale_cache_error"] = str(error)
-    return result
+def _target_page_id(target_structure: dict[str, Any]) -> str | None:
+    target = target_structure.get("target")
+    if not isinstance(target, dict):
+        return None
+    page_id = target.get("page_id")
+    return page_id if isinstance(page_id, str) and page_id else None
+
+
+
+def _target_id(target_structure: dict[str, Any]) -> str | None:
+    target = target_structure.get("target")
+    if not isinstance(target, dict):
+        return None
+    target_id = target.get("target_id")
+    return target_id if isinstance(target_id, str) and target_id else None
+
+
+
+def _effective_operations(plan: WritePlan) -> list[dict[str, Any]]:
+    return plan.operations or plan.planned_operations
+
+
+
+def _capture_dict_needs_context_verification(capture_data: dict[str, Any] | None) -> bool:
+    if not isinstance(capture_data, dict):
+        return False
+    if capture_data.get("target_context_hint"):
+        return True
+    scope_hint = capture_data.get("target_scope_hint")
+    if not isinstance(scope_hint, str):
+        return False
+    lowered = scope_hint.casefold()
+    return any(token in lowered for token in ("page", "parent", "child", "under", "context"))
+
+
+
+def _workflow_needs_context_verification(workflow: dict[str, Any] | None) -> bool:
+    if not isinstance(workflow, dict):
+        return False
+    target_resolution = workflow.get("target_resolution")
+    if not isinstance(target_resolution, dict):
+        return False
+    if target_resolution.get("target_context_hint"):
+        return True
+    scope_hint = target_resolution.get("target_scope_hint")
+    if not isinstance(scope_hint, str):
+        return False
+    lowered = scope_hint.casefold()
+    return any(token in lowered for token in ("page", "parent", "child", "under", "context"))
+
+
+
+def _plan_needs_context_verification(plan: WritePlan) -> bool:
+    return _capture_dict_needs_context_verification(plan.capture_input) or _workflow_needs_context_verification(plan.preflight_workflow)
+
+
+
+def _assert_matching_value(label: str, plan_value: str | None, refreshed_value: Any) -> None:
+    if not plan_value:
+        return
+    if not isinstance(refreshed_value, str) or not refreshed_value:
+        raise CliInputError(f"plan_integrity_failed:{label}_missing_after_refresh")
+    if refreshed_value != plan_value:
+        raise CliInputError(f"plan_integrity_failed:{label}_mismatch")
+
+
+
+def _validate_context_integrity(plan: WritePlan, cache: CacheV2Store, target_structure: dict[str, Any]) -> None:
+    if not _plan_needs_context_verification(plan):
+        return
+    if not plan.capture_input:
+        raise CliInputError("plan_integrity_failed:context_capture_input_missing")
+    write_targets = plan.summary.get("write_targets") if isinstance(plan.summary, dict) else None
+    if not isinstance(write_targets, list) or not write_targets:
+        raise CliInputError("plan_integrity_failed:context_write_targets_missing")
+    capture = CaptureInput.from_dict(plan.capture_input)
+    refreshed_preflight = build_capture_preflight(capture, cache)
+    try:
+        assert_preflight_allows_plan(refreshed_preflight)
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from exc
+    workflow = refreshed_preflight.get("workflow")
+    target_resolution = workflow.get("target_resolution") if isinstance(workflow, dict) else None
+    if not isinstance(target_resolution, dict) or target_resolution.get("target_context_verified") is not True:
+        raise CliInputError("plan_integrity_failed:target_context_not_verified")
+    _assert_matching_value("data_source_id", plan.target.data_source_id, target_resolution.get("data_source_id"))
+    _assert_matching_value("page_id", plan.target.page_id, target_resolution.get("page_id"))
+    _assert_matching_value("target_id", _target_id(target_structure), target_resolution.get("target_id"))
+
+
+
+def _v2_target_page_id(graph: dict[str, Any]) -> str | None:
+    root = graph.get("root")
+    if isinstance(root, dict) and root.get("kind") == "page" and isinstance(root.get("id"), str):
+        return root["id"]
+    return None
+
+
+
+def _v2_target_title(graph: dict[str, Any], page_id: str | None) -> str | None:
+    pages = graph.get("pages")
+    page = pages.get(page_id) if isinstance(pages, dict) and page_id else None
+    if not isinstance(page, dict):
+        return None
+    title = page.get("title")
+    return title if isinstance(title, str) and title else None
+
+
+
+def _target_structure_from_v2_graph(graph: dict[str, Any], graph_id: str) -> dict[str, Any]:
+    page_id = _v2_target_page_id(graph)
+    target = {"target_id": graph_id}
+    if page_id:
+        target["page_id"] = page_id
+    title = _v2_target_title(graph, page_id)
+    if title:
+        target["title"] = title
+    data_sources = graph.get("data_sources")
+    return {
+        "target": target,
+        "data_sources": data_sources if isinstance(data_sources, dict) else {},
+    }
+
+
+
+def _validate_v2_view_integrity(plan: WritePlan, graph: dict[str, Any]) -> None:
+    view_id = plan.target.view_id
+    if not view_id:
+        return
+    views = graph.get("views")
+    view = views.get(view_id) if isinstance(views, dict) else None
+    if not isinstance(view, dict):
+        raise CliInputError("plan_integrity_failed:view_missing_in_cache")
+    if view.get("data_source_id") != plan.target.data_source_id:
+        raise CliInputError("plan_integrity_failed:view_data_source_id_mismatch")
+
+
+
+def _validate_v2_plan_integrity(plan: WritePlan, cache: CacheV2Store) -> dict[str, Any]:
+    data_source_id = plan.target.data_source_id
+    if not data_source_id:
+        raise CliInputError("plan_integrity_failed:target_data_source_id_missing")
+    graph_id = plan.target.target_id
+    if not graph_id:
+        raise CliInputError("plan_integrity_failed:target_graph_id_missing")
+    graph = cache.read_graph(graph_id)
+    if graph is None:
+        raise CliInputError(f"未找到 graph_id={graph_id} / data_source_id={data_source_id} 的 v2 graph cache，请先运行 target scan")
+    data_sources = graph.get("data_sources")
+    if not isinstance(data_sources, dict) or data_source_id not in data_sources:
+        raise CliInputError("plan_integrity_failed:target_data_source_not_in_cache")
+    target_structure = _target_structure_from_v2_graph(graph, graph_id)
+    cached_page_id = _target_page_id(target_structure)
+    if plan.target.page_id and cached_page_id and plan.target.page_id != cached_page_id:
+        raise CliInputError("plan_integrity_failed:target_page_id_mismatch")
+    _validate_v2_view_integrity(plan, graph)
+    operations = _effective_operations(plan)
+    if not operations:
+        raise CliInputError("计划没有可执行操作，请重新运行 capture plan 生成可执行计划")
+    for operation in operations:
+        if operation.get("type") != "create_or_update_page":
+            continue
+        if operation.get("data_source_id") != data_source_id:
+            raise CliInputError("plan_integrity_failed:operation_data_source_id_mismatch")
+    _validate_context_integrity(plan, cache, target_structure)
+    return target_structure
+
+
+
+def _validate_plan_integrity(plan: WritePlan, cache: CacheV2Store) -> dict[str, Any]:
+    return _validate_v2_plan_integrity(plan, cache)
 
 
 
 def cmd_capture_apply(args: argparse.Namespace) -> int:
     config = ensure_config()
-    cache = CacheStore(config)
+    cache = CacheV2Store(config)
     plan = load_write_plan(args.plan)
 
-    if plan.requires_confirmation and not args.confirmed:
-        reason = plan.confirmation_reason or "未说明原因"
-        raise CliInputError(f"计划需要确认后才能执行: {reason}. 如已确认，请传入 --confirmed")
+    if not args.confirmed:
+        if plan.requires_confirmation:
+            reason = plan.confirmation_reason or "未说明原因"
+            raise CliInputError(f"计划需要确认后才能执行: {reason}. 如已确认，请传入 --confirmed")
+        raise CliInputError("执行写入必须显式确认，请传入 --confirmed")
+
+    try:
+        assert_plan_workflow_allows_apply(plan.preflight_workflow)
+    except ValueError as exc:
+        raise CliInputError(str(exc)) from exc
+
+    target_structure = _validate_plan_integrity(plan, cache)
 
     if args.confirmed:
         if not plan.operations and plan.planned_operations:
@@ -610,15 +975,6 @@ def cmd_capture_apply(args: argparse.Namespace) -> int:
             plan.asset_operations = plan.planned_asset_operations
         if not plan.completion_operations and plan.planned_completion_operations:
             plan.completion_operations = plan.planned_completion_operations
-
-    if not plan.operations:
-        raise CliInputError("计划没有可执行操作，请重新运行 capture plan 生成可执行计划")
-
-    target_structure = cache.target_structure_for_data_source(plan.target.data_source_id)
-    if target_structure is None:
-        raise CliInputError(
-            f"未找到 data_source_id={plan.target.data_source_id} 的目标结构缓存，请先运行 target scan"
-        )
 
     adapter = NotionAdapter.from_config(config)
     try:
@@ -630,13 +986,7 @@ def cmd_capture_apply(args: argparse.Namespace) -> int:
             ) from exc
         if not _is_stale_cache_error(exc) or not _can_recover_stale_cache(plan):
             raise
-        result = _recover_stale_cache_and_apply(
-            plan_path=Path(args.plan),
-            plan=plan,
-            cache=cache,
-            adapter=adapter,
-            error=exc,
-        )
+        raise CliInputError("v2_stale_cache_recovery_requires_fresh_plan") from exc
     print_json(result)
     return 0
 
@@ -661,6 +1011,10 @@ def build_parser() -> argparse.ArgumentParser:
     cache_subparsers = cache_parser.add_subparsers(dest="cache_command", required=True)
     cache_inspect = cache_subparsers.add_parser("inspect")
     cache_inspect.set_defaults(func=cmd_cache_inspect)
+    cache_reset_v2 = cache_subparsers.add_parser("reset-v2")
+    cache_reset_v2.add_argument("--delete-legacy", action="store_true")
+    cache_reset_v2.add_argument("--confirmed", action="store_true")
+    cache_reset_v2.set_defaults(func=cmd_cache_reset_v2)
 
     target_parser = subparsers.add_parser("target")
     target_subparsers = target_parser.add_subparsers(dest="target_command", required=True)
@@ -688,6 +1042,22 @@ def build_parser() -> argparse.ArgumentParser:
     target_scan.add_argument("--alias")
     target_scan.add_argument("--target-id")
     target_scan.set_defaults(func=cmd_target_scan)
+    target_create_database = target_subparsers.add_parser("create-database")
+    target_create_database.add_argument("--page-id", required=True)
+    target_create_database.add_argument("--title", required=True)
+    target_create_database.add_argument("--schema", required=True)
+    target_create_database.add_argument("--alias")
+    target_create_database.add_argument("--target-id")
+    target_create_database.set_defaults(func=cmd_target_create_database)
+    target_bind_profile = target_subparsers.add_parser("bind-profile")
+    target_bind_profile.add_argument("--alias", required=True)
+    target_bind_profile.add_argument("--graph-id", required=True)
+    target_bind_profile.add_argument("--profile-id", required=True)
+    target_bind_profile.add_argument("--content-type", required=True)
+    target_bind_profile.add_argument("--data-source-id", required=True)
+    target_bind_profile.add_argument("--view-id")
+    target_bind_profile.add_argument("--field", action="append")
+    target_bind_profile.set_defaults(func=cmd_target_bind_profile)
 
     capture_parser = subparsers.add_parser("capture")
     capture_subparsers = capture_parser.add_subparsers(dest="capture_command", required=True)
