@@ -231,6 +231,33 @@ class DataSourceScanAdapter:
         }
 
 
+class NullTitleDataSourceScanAdapter:
+    def retrieve_page(self, page_id):
+        return {"id": page_id, "title": "播客"}
+
+    def list_block_children(self, page_id):
+        return [{"type": "child_database", "id": "db-episodes", "child_database": {"title": "Episodes"}}]
+
+    def retrieve_database(self, database_id):
+        return {
+            "id": database_id,
+            "title": [{"plain_text": "Episodes"}],
+            "data_sources": [{"id": "ds-episodes"}],
+            "properties": {},
+        }
+
+    def retrieve_data_source(self, data_source_id):
+        return {
+            "id": data_source_id,
+            "title": [],
+            "parent": {"type": "database_id", "database_id": "db-episodes"},
+            "properties": {
+                "主题": {"id": "title", "type": "title", "title": {}},
+                "状态": {"id": "state", "type": "select", "select": {"options": []}},
+            },
+        }
+
+
 def test_cache_reset_v2_requires_confirmation(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     write_json(tmp_path / "aliases.json", {"aliases": {"old": {"target_id": "old"}}})
@@ -525,21 +552,68 @@ def test_target_scan_saves_v2_graph_and_alias(tmp_path, monkeypatch, capsys):
 
     assert result == 0
     data = json.loads(capsys.readouterr().out)
-    assert data == {
-        "cache_version": 2,
-        "graph_id": "bookshelf",
-        "graph_file": str(tmp_path / "cache-v2" / "graphs" / "bookshelf.json"),
-        "data_sources": ["Books"],
-        "views": [],
-        "requires_profile_binding": True,
-        "next_action": "target bind-profile",
-    }
+    assert data["cache_version"] == 2
+    assert data["graph_id"] == "bookshelf"
+    assert data["graph_file"] == str(tmp_path / "cache-v2" / "graphs" / "bookshelf.json")
+    assert data["data_sources"] == [
+        {
+            "key": "db-books",
+            "data_source_id": "db-books",
+            "database_id": "db-books",
+            "title": "Books",
+            "schema_hash": "75da98c54ab81242",
+            "schema_fields": ["名称", "封面", "阅读状态"],
+        }
+    ]
+    assert data["views"] == []
+    assert data["requires_profile_binding"] is True
+    assert data["next_action"] == "target bind-profile"
     graph = json.loads((tmp_path / "cache-v2" / "graphs" / "bookshelf.json").read_text(encoding="utf-8"))
     assert graph["root"] == {"kind": "page", "id": "page-books"}
     assert set(graph["data_sources"]) == {"db-books"}
     assert set(graph["data_sources"]["db-books"]["schema"]) == {"名称", "阅读状态", "封面"}
     aliases = json.loads((tmp_path / "cache-v2" / "aliases.json").read_text(encoding="utf-8"))["aliases"]
     assert aliases["书单"] == {"graph_id": "bookshelf", "profile_id": None, "kind": "graph"}
+
+
+def test_target_scan_compact_outputs_data_source_summary(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: ScanAdapter()))
+
+    result = cli.main(["target", "scan", "--page-id", "page-books", "--alias", "书单", "--target-id", "bookshelf", "--compact"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["data_sources"] == [
+        {
+            "key": "db-books",
+            "data_source_id": "db-books",
+            "database_id": "db-books",
+            "title": "Books",
+            "schema_hash": "75da98c54ab81242",
+            "field_count": 3,
+        }
+    ]
+    assert "schema_fields" not in data["data_sources"][0]
+
+
+def test_target_scan_output_includes_data_source_without_title(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: NullTitleDataSourceScanAdapter()))
+
+    result = cli.main(["target", "scan", "--page-id", "page-podcasts", "--alias", "播客", "--target-id", "podcastshelf"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["data_sources"] == [
+        {
+            "key": "ds-episodes",
+            "data_source_id": "ds-episodes",
+            "database_id": "db-episodes",
+            "schema_hash": "da39e43228d0cb14",
+            "schema_fields": ["主题", "状态"],
+        }
+    ]
 
 
 def test_target_create_database_creates_then_scans_v2_graph(tmp_path, monkeypatch, capsys):
@@ -576,17 +650,19 @@ def test_target_create_database_creates_then_scans_v2_graph(tmp_path, monkeypatc
 
     assert result == 0
     data = json.loads(capsys.readouterr().out)
-    assert data == {
-        "cache_version": 2,
-        "graph_id": "fyfy",
-        "graph_file": str(tmp_path / "cache-v2" / "graphs" / "fyfy.json"),
-        "data_sources": ["数据库"],
-        "views": [],
-        "requires_profile_binding": True,
-        "next_action": "target bind-profile",
-        "created_database_id": "db-episodes",
-        "created_database_title": "数据库",
-    }
+    assert data["cache_version"] == 2
+    assert data["graph_id"] == "fyfy"
+    assert data["graph_file"] == str(tmp_path / "cache-v2" / "graphs" / "fyfy.json")
+    assert data["data_sources"][0]["key"] == "ds-episodes"
+    assert data["data_sources"][0]["data_source_id"] == "ds-episodes"
+    assert data["data_sources"][0]["database_id"] == "db-episodes"
+    assert data["data_sources"][0]["title"] == "数据库"
+    assert data["data_sources"][0]["schema_fields"] == ["主题", "内容描述", "完成时间", "状态"]
+    assert data["views"] == []
+    assert data["requires_profile_binding"] is True
+    assert data["next_action"] == "target bind-profile"
+    assert data["created_database_id"] == "db-episodes"
+    assert data["created_database_title"] == "数据库"
     assert adapter.created == [
         {
             "page_id": "page-show",
@@ -696,15 +772,21 @@ def test_target_scan_accepts_data_source_id(tmp_path, monkeypatch, capsys):
 
     assert result == 0
     data = json.loads(capsys.readouterr().out)
-    assert data == {
-        "cache_version": 2,
-        "graph_id": "books-ds",
-        "graph_file": str(tmp_path / "cache-v2" / "graphs" / "books-ds.json"),
-        "data_sources": ["Books"],
-        "views": [],
-        "requires_profile_binding": True,
-        "next_action": "target bind-profile",
-    }
+    assert data["cache_version"] == 2
+    assert data["graph_id"] == "books-ds"
+    assert data["graph_file"] == str(tmp_path / "cache-v2" / "graphs" / "books-ds.json")
+    assert data["data_sources"] == [
+        {
+            "key": "ds-books",
+            "data_source_id": "ds-books",
+            "title": "Books",
+            "schema_hash": "941a679e5f8f3ae5",
+            "schema_fields": ["Cover", "Name", "Status"],
+        }
+    ]
+    assert data["views"] == []
+    assert data["requires_profile_binding"] is True
+    assert data["next_action"] == "target bind-profile"
     graph = json.loads((tmp_path / "cache-v2" / "graphs" / "books-ds.json").read_text(encoding="utf-8"))
     assert graph["root"] == {"kind": "data_source", "id": "ds-books"}
     assert graph["data_sources"]["ds-books"]["title"] == "Books"

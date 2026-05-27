@@ -379,6 +379,123 @@ def _summary_key_fields(parser_profile: dict[str, Any]) -> list[str]:
 
 
 
+def _ambiguous_mapping_candidate_fields(warnings: list[str]) -> set[str]:
+    candidates: set[str] = set()
+    prefix = "ambiguous_field_mapping:"
+    for warning in warnings:
+        if not isinstance(warning, str) or not warning.startswith(prefix):
+            continue
+        parts = warning.split(":", 2)
+        if len(parts) != 3:
+            continue
+        candidates.update(candidate for candidate in parts[2].split(",") if candidate)
+    return candidates
+
+
+
+def _unmapped_writable_schema_fields(
+    schema: dict[str, Any],
+    fields: dict[str, str],
+    ignored_fields: set[str] | None = None,
+) -> dict[str, dict[str, str]]:
+    mapped_targets = {target_field for target_field in fields.values() if isinstance(target_field, str)}
+    ignored = ignored_fields or set()
+    unmapped: dict[str, dict[str, str]] = {}
+    for property_name, property_schema in schema.items():
+        if not isinstance(property_name, str) or not isinstance(property_schema, dict):
+            continue
+        property_type = property_schema.get("type")
+        if property_type not in WRITABLE_PROPERTY_TYPES or property_name in mapped_targets or property_name in ignored:
+            continue
+        unmapped[property_name] = {
+            "type": str(property_type),
+            "value_status": "missing_value",
+            "write_status": "omitted_unmapped",
+        }
+    return unmapped
+
+
+
+def _warning_message(warning: str) -> str:
+    return warning.rsplit(":", 1)[-1] if ":" in warning else warning
+
+
+
+def _warning_detail(warning: str, blocking_warnings: set[str]) -> dict[str, str]:
+    if warning.startswith("unmapped_writable_schema_field:"):
+        return {
+            "code": warning,
+            "severity": "notice",
+            "category": "unmapped_writable_field",
+            "message": _warning_message(warning),
+        }
+    if warning in blocking_warnings:
+        return {
+            "code": warning,
+            "severity": "blocking",
+            "category": "confirmation",
+            "message": _warning_message(warning),
+        }
+    if warning.startswith("summary_content_source_missing:"):
+        return {
+            "code": warning,
+            "severity": "review",
+            "category": "enrichment",
+            "message": _warning_message(warning),
+        }
+    if warning.startswith("ambiguous_field_mapping:"):
+        category = "field_mapping"
+    else:
+        category = "diagnostic"
+    return {
+        "code": warning,
+        "severity": "notice",
+        "category": category,
+        "message": _warning_message(warning),
+    }
+
+
+
+def _warning_details(
+    warnings: list[str],
+    non_blocking_warning_prefixes: list[str] | None = None,
+) -> list[dict[str, str]]:
+    blocking_warnings = set(confirmation_blocking_warnings(warnings, non_blocking_warning_prefixes))
+    return [_warning_detail(warning, blocking_warnings) for warning in warnings]
+
+
+
+def _cli_warning_sections(summary: dict[str, Any], warnings: list[str] | None = None) -> dict[str, list[dict[str, Any]]]:
+    details = summary.get("warning_details")
+    warning_details = details if isinstance(details, list) else _warning_details(warnings or [])
+    sections: dict[str, list[dict[str, Any]]] = {
+        "blocking": [],
+        "unwritten_fields": [],
+        "review": [],
+        "notices": [],
+    }
+    for detail in warning_details:
+        if not isinstance(detail, dict):
+            continue
+        severity = detail.get("severity")
+        category = detail.get("category")
+        if severity == "blocking":
+            sections["blocking"].append(dict(detail))
+        elif severity == "review":
+            sections["review"].append(dict(detail))
+        elif category != "unmapped_writable_field":
+            sections["notices"].append(dict(detail))
+
+    unmapped_fields = summary.get("unmapped_writable_fields")
+    if isinstance(unmapped_fields, dict):
+        for field, field_summary in unmapped_fields.items():
+            if not isinstance(field, str) or not isinstance(field_summary, dict):
+                continue
+            sections["unwritten_fields"].append({"field": field, **field_summary})
+    return sections
+
+
+
 def _trusted_field_sources(parser_profile: dict[str, Any]) -> list[str]:
     return _string_list(parser_profile.get("trusted_field_sources"))
 
@@ -831,6 +948,8 @@ def build_plan_summary(
     relation_completion_summaries: list[dict[str, Any]] | None = None,
     write_targets: list[dict[str, Any]] | None = None,
     enrichment_requirements: list[dict[str, Any]] | None = None,
+    unmapped_writable_fields: dict[str, dict[str, str]] | None = None,
+    non_blocking_warning_prefixes: list[str] | None = None,
 ) -> dict[str, Any]:
     key_fields: dict[str, dict[str, str | None]] = {}
     for key in summary_key_fields or []:
@@ -863,11 +982,14 @@ def build_plan_summary(
         "requires_confirmation": requires_confirmation,
         "confirmation_reason": confirmation_reason,
         "warnings": list(warnings),
+        "warning_details": _warning_details(warnings, non_blocking_warning_prefixes),
     }
     if relation_completion_summaries:
         summary["relation_completions"] = relation_completion_summaries
     if enrichment_requirements:
         summary["enrichment_requirements"] = enrichment_requirements
+    if unmapped_writable_fields:
+        summary["unmapped_writable_fields"] = dict(unmapped_writable_fields)
     return summary
 
 
@@ -892,6 +1014,7 @@ def build_plan_cli_summary(plan: WritePlan) -> dict[str, Any]:
         "target": target,
         "summary": plan.summary,
         "warnings": list(plan.warnings),
+        "warning_sections": _cli_warning_sections(plan.summary, plan.warnings),
         "requires_confirmation": plan.requires_confirmation,
         "confirmation_reason": plan.confirmation_reason,
     }
@@ -1372,6 +1495,15 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore | CacheV2Store) 
         data_source.get("schema", {}),
         asset_mapping,
     )
+    unmapped_writable_fields = _unmapped_writable_schema_fields(
+        data_source_schema if isinstance(data_source_schema, dict) else {},
+        fields if isinstance(fields, dict) else {},
+        _ambiguous_mapping_candidate_fields(warnings),
+    )
+    for property_name in unmapped_writable_fields:
+        warning = f"unmapped_writable_schema_field:{property_name}"
+        if warning not in warnings:
+            warnings.append(warning)
     asset_operations = build_asset_operations(
         cache.config,
         content_type,
@@ -1449,6 +1581,8 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore | CacheV2Store) 
             relation_completion_summaries=completion_summaries,
             write_targets=write_targets,
             enrichment_requirements=enrichment_requirements,
+            unmapped_writable_fields=unmapped_writable_fields,
+            non_blocking_warning_prefixes=non_blocking_warning_prefixes,
         ),
         normalized_record=normalized_record,
         field_mapping=field_mapping,

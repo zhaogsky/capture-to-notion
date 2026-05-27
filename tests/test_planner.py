@@ -10,6 +10,7 @@ import capture_to_notion.planner as planner_module
 from capture_to_notion.planner import (
     build_asset_operations,
     build_capture_plan,
+    build_plan_cli_summary,
     build_plan_field_mapping,
     build_plan_summary,
     extract_labeled_value,
@@ -761,6 +762,19 @@ def test_build_plan_cli_summary_omits_execution_payload():
             "requires_confirmation": False,
         },
         "warnings": ["review_this"],
+        "warning_sections": {
+            "blocking": [
+                {
+                    "code": "review_this",
+                    "severity": "blocking",
+                    "category": "confirmation",
+                    "message": "review_this",
+                }
+            ],
+            "unwritten_fields": [],
+            "review": [],
+            "notices": [],
+        },
         "requires_confirmation": False,
         "confirmation_reason": None,
     }
@@ -2085,6 +2099,7 @@ def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp
         "requires_confirmation": False,
         "confirmation_reason": None,
         "warnings": [],
+        "warning_details": [],
     }
 
 
@@ -2164,6 +2179,15 @@ def test_book_capture_plan_requires_confirmation_for_page_count_mapping_ambiguit
     assert plan.requires_confirmation is True
     assert plan.confirmation_reason == "field_mapping_ambiguous"
     assert plan.warnings == ["ambiguous_field_mapping:page_count:Page Count,Pages"]
+    assert plan.summary["warning_details"] == [
+        {
+            "code": "ambiguous_field_mapping:page_count:Page Count,Pages",
+            "severity": "blocking",
+            "category": "confirmation",
+            "message": "Page Count,Pages",
+        }
+    ]
+    assert build_plan_cli_summary(plan)["warning_sections"]["blocking"] == plan.summary["warning_details"]
     assert plan.operations == []
     assert plan.asset_operations == []
 
@@ -2854,6 +2878,15 @@ def test_podcast_capture_plan_ignores_page_count_only_mapping_ambiguity(tmp_path
     assert plan.requires_confirmation is False
     assert plan.confirmation_reason is None
     assert plan.warnings == ["ambiguous_field_mapping:page_count:Page Count,Pages"]
+    assert plan.summary["warning_details"] == [
+        {
+            "code": "ambiguous_field_mapping:page_count:Page Count,Pages",
+            "severity": "notice",
+            "category": "field_mapping",
+            "message": "Page Count,Pages",
+        }
+    ]
+    assert build_plan_cli_summary(plan)["warning_sections"]["notices"] == plan.summary["warning_details"]
     assert plan.operations == [
         {
             "type": "create_or_update_page",
@@ -4167,3 +4200,168 @@ def test_explicit_title_label_takes_priority_over_chinese_quoted_context():
         "主题：第214期 两部影片的故事\n用户说明：它是《后互联网时代的乱弹》里面的播客。",
         {"labels": {"title": ["主题"]}},
     ) == "第214期 两部影片的故事"
+
+
+
+def test_v2_plan_maps_unbound_schema_field_when_input_uses_same_label(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "graph-podcast",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-podcast",
+            "root": {"kind": "data_source", "id": "ds-podcast"},
+            "data_sources": {
+                "ds-podcast": {
+                    "data_source_id": "ds-podcast",
+                    "schema": {
+                        "主题": {"id": "title", "type": "title", "name": "主题"},
+                        "状态": {"id": "state", "type": "select", "name": "状态", "select": {"options": [{"name": "进行中"}]}},
+                        "内容描述": {"id": "desc", "type": "rich_text", "name": "内容描述"},
+                        "参与人员": {"id": "people", "type": "rich_text", "name": "参与人员"},
+                    },
+                }
+            },
+            "views": {},
+        },
+    )
+    store.write_profile(
+        "profile-podcast",
+        {
+            "cache_version": 2,
+            "profile_id": "profile-podcast",
+            "graph_id": "graph-podcast",
+            "write_profiles": {
+                "podcast_episode": {
+                    "canonical_data_source_id": "ds-podcast",
+                    "field_mapping": {"title": "主题", "state": "状态", "description": "内容描述"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding", "description": "user_binding"},
+                    "parser_profile": {},
+                }
+            },
+        },
+    )
+    store.bind_alias("独树不成林", graph_id="graph-podcast", profile_id="profile-podcast", kind="write_profile")
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "主题：算法时代\n状态：进行中\n内容描述：讨论算法与公共生活。\n参与人员：大卫翁、仲树",
+                "target_hint": "独树不成林",
+                "state": "进行中",
+                "content_type_hint": "podcast_episode",
+            }
+        ),
+        store,
+    )
+
+    assert plan.normalized_record["参与人员"] == "大卫翁、仲树"
+    assert plan.field_mapping["参与人员"] == "参与人员"
+    assert plan.summary["writable_fields"]["参与人员"] == {
+        "target_field": "参与人员",
+        "value_status": "present",
+        "write_status": "planned",
+    }
+    assert "unmapped_writable_schema_field:参与人员" not in plan.warnings
+    assert "unmapped_writable_fields" not in plan.summary
+    assert plan.summary["warning_details"] == []
+    assert build_plan_cli_summary(plan)["warning_sections"] == {
+        "blocking": [],
+        "unwritten_fields": [],
+        "review": [],
+        "notices": [],
+    }
+
+
+
+def test_v2_plan_warns_about_unmapped_writable_schema_fields_without_values(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "graph-podcast",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-podcast",
+            "root": {"kind": "data_source", "id": "ds-podcast"},
+            "data_sources": {
+                "ds-podcast": {
+                    "data_source_id": "ds-podcast",
+                    "schema": {
+                        "主题": {"id": "title", "type": "title", "name": "主题"},
+                        "状态": {"id": "state", "type": "select", "name": "状态", "select": {"options": [{"name": "进行中"}]}},
+                        "内容描述": {"id": "desc", "type": "rich_text", "name": "内容描述"},
+                        "参与人员": {"id": "people", "type": "rich_text", "name": "参与人员"},
+                    },
+                }
+            },
+            "views": {},
+        },
+    )
+    store.write_profile(
+        "profile-podcast",
+        {
+            "cache_version": 2,
+            "profile_id": "profile-podcast",
+            "graph_id": "graph-podcast",
+            "write_profiles": {
+                "podcast_episode": {
+                    "canonical_data_source_id": "ds-podcast",
+                    "field_mapping": {"title": "主题", "state": "状态", "description": "内容描述"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding", "description": "user_binding"},
+                    "parser_profile": {},
+                }
+            },
+        },
+    )
+    store.bind_alias("独树不成林", graph_id="graph-podcast", profile_id="profile-podcast", kind="write_profile")
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "主题：算法时代\n状态：进行中\n内容描述：讨论算法与公共生活。",
+                "target_hint": "独树不成林",
+                "state": "进行中",
+                "content_type_hint": "podcast_episode",
+            }
+        ),
+        store,
+    )
+
+    assert "unmapped_writable_schema_field:参与人员" in plan.warnings
+    assert plan.summary["warning_details"] == [
+        {
+            "code": "unmapped_writable_schema_field:参与人员",
+            "severity": "notice",
+            "category": "unmapped_writable_field",
+            "message": "参与人员",
+        }
+    ]
+    assert plan.summary["unmapped_writable_fields"] == {
+        "参与人员": {
+            "type": "rich_text",
+            "value_status": "missing_value",
+            "write_status": "omitted_unmapped",
+        }
+    }
+    cli_summary = build_plan_cli_summary(plan)
+    assert cli_summary["warnings"] == ["unmapped_writable_schema_field:参与人员"]
+    assert cli_summary["warning_sections"] == {
+        "blocking": [],
+        "unwritten_fields": [
+            {
+                "field": "参与人员",
+                "type": "rich_text",
+                "value_status": "missing_value",
+                "write_status": "omitted_unmapped",
+            }
+        ],
+        "review": [],
+        "notices": [],
+    }

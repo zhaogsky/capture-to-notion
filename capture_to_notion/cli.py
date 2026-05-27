@@ -188,6 +188,7 @@ def _v2_data_source_summaries(graph: dict[str, Any], *, compact: bool) -> list[d
         summary = {
             "key": key,
             "data_source_id": data_source.get("data_source_id"),
+            "database_id": data_source.get("database_id"),
             "title": data_source.get("title"),
             "schema_hash": data_source.get("schema_hash"),
         }
@@ -461,17 +462,19 @@ def _graph_view_names(graph: dict[str, Any]) -> list[str]:
     return [view.get("name") for view in views.values() if isinstance(view, dict) and view.get("name")]
 
 
-def _target_scan_output(config: Any, graph: dict[str, Any]) -> dict[str, Any]:
+def _target_scan_output(config: Any, graph: dict[str, Any], *, compact: bool = False) -> dict[str, Any]:
     graph_id = graph["graph_id"]
-    return {
+    output = {
         "cache_version": 2,
         "graph_id": graph_id,
-        "graph_file": str(config.graphs_v2_dir / f"{graph_id}.json"),
-        "data_sources": _graph_data_source_titles(graph),
+        "data_sources": _v2_data_source_summaries(graph, compact=compact),
         "views": _graph_view_names(graph),
         "requires_profile_binding": True,
         "next_action": "target bind-profile",
     }
+    if not compact:
+        output["graph_file"] = str(config.graphs_v2_dir / f"{graph_id}.json")
+    return output
 
 
 def cmd_target_scan(args: argparse.Namespace) -> int:
@@ -486,7 +489,7 @@ def cmd_target_scan(args: argparse.Namespace) -> int:
         graph = scan_page_graph(adapter, args.page_id, cache, graph_id=graph_id)
     if args.alias:
         cache.bind_alias(args.alias, graph_id=graph_id, profile_id=None, kind="graph")
-    print_json(_target_scan_output(config, graph))
+    print_json(_target_scan_output(config, graph, compact=args.compact))
     return 0
 
 
@@ -1041,6 +1044,7 @@ def build_parser() -> argparse.ArgumentParser:
     target_scan_group.add_argument("--data-source-id")
     target_scan.add_argument("--alias")
     target_scan.add_argument("--target-id")
+    target_scan.add_argument("--compact", action="store_true")
     target_scan.set_defaults(func=cmd_target_scan)
     target_create_database = target_subparsers.add_parser("create-database")
     target_create_database.add_argument("--page-id", required=True)
