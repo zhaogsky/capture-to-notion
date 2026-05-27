@@ -13,6 +13,7 @@ from capture_to_notion.planner import (
     build_plan_field_mapping,
     build_plan_summary,
     extract_labeled_value,
+    extract_title,
     missing_required_fields,
     missing_required_values,
     parser_profile_for,
@@ -4081,3 +4082,88 @@ def test_v2_plan_uses_write_profile_and_view_context(tmp_path, monkeypatch):
     assert write_target["display_view_type"] == "gallery"
     assert write_target["display_view_name"] == "Episodes"
     assert write_target["data_source_id"] == "ds-1"
+
+
+
+def test_v2_plan_uses_existing_page_id_for_primary_update(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "graph-podcast",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-podcast",
+            "root": {"kind": "data_source", "id": "ds-podcast"},
+            "data_sources": {
+                "ds-podcast": {
+                    "data_source_id": "ds-podcast",
+                    "database_id": "db-podcast",
+                    "parent_page_id": "page-program",
+                    "schema": {
+                        "主题": {"id": "title", "type": "title", "name": "主题"},
+                        "状态": {"id": "state", "type": "select", "name": "状态", "select": {"options": [{"name": "已完成"}]}},
+                        "完成时间": {"id": "done", "type": "date", "name": "完成时间"},
+                    },
+                }
+            },
+            "views": {},
+        },
+    )
+    store.write_profile(
+        "profile-podcast",
+        {
+            "cache_version": 2,
+            "profile_id": "profile-podcast",
+            "graph_id": "graph-podcast",
+            "write_profiles": {
+                "podcast_episode": {
+                    "canonical_data_source_id": "ds-podcast",
+                    "field_mapping": {"title": "主题", "state": "状态", "完成时间": "完成时间"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding", "完成时间": "user_binding"},
+                    "parser_profile": {"labels": {"完成时间": ["完成时间"]}},
+                }
+            },
+        },
+    )
+    store.bind_alias("后互联网时代的乱弹", graph_id="graph-podcast", profile_id="profile-podcast", kind="write_profile")
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "主题：第214期 两部影片的故事\n状态：已完成\n完成时间：2026-05-26\n用户说明：它是《后互联网时代的乱弹》里面的播客。",
+                "target_hint": "后互联网时代的乱弹",
+                "state": "已完成",
+                "content_type_hint": "podcast_episode",
+                "existing_page_id": "page-existing-episode",
+            }
+        ),
+        store,
+    )
+
+    assert plan.operations == [
+        {
+            "type": "create_or_update_page",
+            "target_data_source": None,
+            "data_source_id": "ds-podcast",
+            "target_kind": "data_source",
+            "page_id": "page-existing-episode",
+        }
+    ]
+    assert plan.normalized_record["title"] == "第214期 两部影片的故事"
+    assert plan.normalized_record["state"] == "已完成"
+    assert plan.normalized_record["完成时间"] == "2026-05-26"
+    write_target = plan.summary["write_targets"][0]
+    assert write_target["action"] == "update_page"
+    assert write_target["page_id"] == "page-existing-episode"
+    assert write_target["page_id_status"] == "known"
+
+
+
+def test_explicit_title_label_takes_priority_over_chinese_quoted_context():
+    assert extract_title(
+        "主题：第214期 两部影片的故事\n用户说明：它是《后互联网时代的乱弹》里面的播客。",
+        {"labels": {"title": ["主题"]}},
+    ) == "第214期 两部影片的故事"

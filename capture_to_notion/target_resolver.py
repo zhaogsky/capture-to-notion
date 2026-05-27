@@ -585,6 +585,7 @@ def _resolve_v2_capture_target(capture: CaptureInput, cache: CacheV2Store, conte
         "view_name": resolved.get("view_name"),
         "view_type": resolved.get("view_type"),
         "target_kind": resolved.get("target_kind"),
+        "existing_page_id": capture.existing_page_id,
         "context_verification_source": "write_profile",
         "structure": structure,
         "write_profile": resolved,

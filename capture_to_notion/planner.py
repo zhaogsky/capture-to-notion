@@ -123,10 +123,13 @@ def extract_title(raw_input: str, parser_profile: dict[str, Any] | None = None) 
             title = _clean_title_suffix(match.group(1 if match.groups() else 0), parser_profile)
             if title:
                 return title
+    known_labels = _known_parser_labels(parser_profile)
+    labeled_title = extract_labeled_value(raw_input, _parser_labels(parser_profile, "title"), known_labels)
+    if labeled_title:
+        return _clean_title_suffix(labeled_title, parser_profile)
     quoted_title = _extract_chinese_quoted_title(raw_input)
     if quoted_title:
         return _clean_title_suffix(quoted_title, parser_profile)
-    known_labels = _known_parser_labels(parser_profile)
     known_label_pattern = _metadata_label_pattern(known_labels)
     label_suffix = re.search(
         rf"(?:^|{METADATA_DELIMITER_PATTERN})(?:{METADATA_LABEL_PREFIX_PATTERN})(?:{known_label_pattern})\s*{METADATA_ASSIGNMENT_PATTERN}",
@@ -1078,6 +1081,7 @@ def _parser_profile_with_schema_input_labels(
 def _parser_profile_with_mapped_schema_field_labels(
     parser_profile: dict[str, Any],
     fields: dict[str, str],
+    field_sources: dict[str, str],
     schema: dict[str, Any],
 ) -> dict[str, Any]:
     labels = dict(parser_profile.get("labels", {})) if isinstance(parser_profile.get("labels"), dict) else {}
@@ -1085,11 +1089,13 @@ def _parser_profile_with_mapped_schema_field_labels(
     for record_key, target_field in fields.items():
         if not isinstance(record_key, str) or not isinstance(target_field, str):
             continue
-        if record_key != target_field or record_key in labels:
+        if record_key in labels:
+            continue
+        if field_sources.get(record_key) not in {"user_binding", "profile"}:
             continue
         if not isinstance(schema.get(target_field), dict):
             continue
-        schema_input_labels[record_key] = [record_key]
+        schema_input_labels[record_key] = [target_field]
     return _parser_profile_with_schema_input_labels(parser_profile, schema_input_labels)
 
 
@@ -1118,6 +1124,9 @@ def _state_option_names(property_schema: dict[str, Any] | None) -> set[str]:
     if not isinstance(property_schema, dict) or property_schema.get("type") not in {"select", "status"}:
         return set()
     options = property_schema.get("options", [])
+    type_options = property_schema.get(str(property_schema.get("type")))
+    if (not isinstance(options, list) or not options) and isinstance(type_options, dict):
+        options = type_options.get("options", [])
     if not isinstance(options, list):
         return set()
     return {
@@ -1261,6 +1270,7 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore | CacheV2Store) 
     parser_profile = _parser_profile_with_mapped_schema_field_labels(
         parser_profile,
         fields if isinstance(fields, dict) else {},
+        field_sources if isinstance(field_sources, dict) else {},
         data_source_schema if isinstance(data_source_schema, dict) else {},
     )
     if cache_updated:
