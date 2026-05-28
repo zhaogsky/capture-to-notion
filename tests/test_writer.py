@@ -1,5 +1,6 @@
 from capture_to_notion.models import AssetOperation, Target, WritePlan
-from capture_to_notion.writer import NotionWriterError, apply_write_plan, build_plan_properties
+from capture_to_notion.notion_adapter import NotionApiError
+from capture_to_notion.writer import PartialWriteError, NotionWriterError, apply_write_plan, build_plan_properties
 
 
 def make_plan(data_source_id="ds-books"):
@@ -183,16 +184,45 @@ def make_page_parent_plan(blocks):
     )
 
 
+def make_existing_page_plan(blocks):
+    return WritePlan(
+        plan_id="plan-existing-page",
+        content_type="article",
+        target=Target(
+            page_title="知识页",
+            page_id="existing-page",
+            data_source_id=None,
+            confidence="high",
+            source="v2_page_graph",
+            target_kind="existing_page",
+        ),
+        summary={"title": "DeepSeek V4"},
+        normalized_record={"title": "DeepSeek V4"},
+        field_mapping={},
+        operations=[{"type": "append_page_content", "page_id": "existing-page", "body_blocks": blocks}],
+        asset_operations=[],
+        sources=[],
+        warnings=[],
+        requires_confirmation=False,
+        confirmation_reason=None,
+    )
+
+
 class PageParentAdapter:
-    def __init__(self):
+    def __init__(self, fail_on_append_call=None):
         self.created = []
         self.appended = []
+        self.fail_on_append_call = fail_on_append_call
+        self.append_calls = 0
 
     def create_child_page(self, parent_page_id, title, children=None, cover=None):
         self.created.append({"parent_page_id": parent_page_id, "title": title, "children": children or [], "cover": cover})
         return {"id": "created-page", "url": "https://notion.so/created-page"}
 
     def append_block_children(self, block_id, children):
+        self.append_calls += 1
+        if self.fail_on_append_call == self.append_calls:
+            raise NotionApiError("append failed", status=400, code="validation_error")
         self.appended.append({"block_id": block_id, "children": children})
         return {"results": children}
 
@@ -224,6 +254,37 @@ def test_apply_write_plan_appends_remaining_blocks_after_create_limit():
     assert len(adapter.created[0]["children"]) == 100
     assert [len(call["children"]) for call in adapter.appended] == [100, 5]
     assert all(call["block_id"] == "created-page" for call in adapter.appended)
+
+
+def test_apply_write_plan_reports_partial_write_when_child_page_append_fails_after_create():
+    blocks = [paragraph_block(str(index)) for index in range(205)]
+    adapter = PageParentAdapter(fail_on_append_call=1)
+
+    try:
+        apply_write_plan(make_page_parent_plan(blocks), {"pages": {"parent-page": {"title": "知识"}}}, adapter)
+    except PartialWriteError:
+        pass
+    else:
+        raise AssertionError("expected PartialWriteError")
+
+    assert len(adapter.created) == 1
+    assert len(adapter.created[0]["children"]) == 100
+    assert adapter.appended == []
+
+
+def test_apply_write_plan_reports_partial_write_when_existing_page_later_append_fails():
+    blocks = [paragraph_block(str(index)) for index in range(205)]
+    adapter = PageParentAdapter(fail_on_append_call=2)
+
+    try:
+        apply_write_plan(make_existing_page_plan(blocks), {"pages": {"existing-page": {"title": "知识页"}}}, adapter)
+    except PartialWriteError:
+        pass
+    else:
+        raise AssertionError("expected PartialWriteError")
+
+    assert [len(call["children"]) for call in adapter.appended] == [100]
+    assert adapter.appended[0]["block_id"] == "existing-page"
 
 
 

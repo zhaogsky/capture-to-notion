@@ -214,6 +214,12 @@ def _completion_asset_operations(operation: dict[str, Any]) -> list[AssetOperati
     ]
 
 
+def _raise_partial_page_content_write(exc: Exception) -> None:
+    raise PartialWriteError(
+        "写入已部分完成，后续页面内容写入失败；请检查已创建或已追加的内容后重新生成 update 计划再重试"
+    ) from exc
+
+
 def _execute_page_content_operation(operation: dict[str, Any], adapter: Any) -> dict[str, Any]:
     operation_type = operation.get("type")
     body_blocks = operation.get("body_blocks", [])
@@ -227,7 +233,10 @@ def _execute_page_content_operation(operation: dict[str, Any], adapter: Any) -> 
         response_page_id = response.get("id") if isinstance(response, dict) else None
         page_id = response_page_id or operation.get("page_id")
         for batch in batches[1:]:
-            adapter.append_block_children(page_id, batch)
+            try:
+                adapter.append_block_children(page_id, batch)
+            except EXPECTED_NOTION_WRITE_ERRORS as exc:
+                _raise_partial_page_content_write(exc)
         result = {"type": operation_type, "action": CREATE_CHILD_PAGE}
         if page_id is not None:
             result["page_id"] = page_id
@@ -237,8 +246,15 @@ def _execute_page_content_operation(operation: dict[str, Any], adapter: Any) -> 
         return result
 
     page_id = operation["page_id"]
+    has_appended = False
     for batch in batches:
-        adapter.append_block_children(page_id, batch)
+        try:
+            adapter.append_block_children(page_id, batch)
+        except EXPECTED_NOTION_WRITE_ERRORS as exc:
+            if has_appended:
+                _raise_partial_page_content_write(exc)
+            raise
+        has_appended = True
     return {"type": operation_type, "action": APPEND_PAGE_CONTENT, "page_id": page_id}
 
 
