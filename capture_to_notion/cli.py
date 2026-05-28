@@ -666,19 +666,19 @@ def _plain_operation_for_result(plan: WritePlan, operation_result: dict[str, Any
 
 
 def _expected_plain_page_title(plan: WritePlan, operation_result: dict[str, Any], operation: dict[str, Any] | None) -> str | None:
-    for candidate in (operation_result.get("title"), plan.summary.get("title"), operation.get("title") if operation else None):
+    for candidate in (operation.get("title") if operation else None, operation_result.get("title"), plan.summary.get("title")):
         if isinstance(candidate, str) and candidate:
             return candidate
     return None
 
 
 def _expected_plain_page_block_count(plan: WritePlan, operation: dict[str, Any] | None) -> int | None:
-    summary_count = plan.summary.get("body_block_count")
-    if isinstance(summary_count, int):
-        return summary_count
     body_blocks = operation.get("body_blocks") if operation else None
     if isinstance(body_blocks, list):
         return len(body_blocks)
+    summary_count = plan.summary.get("body_block_count")
+    if isinstance(summary_count, int):
+        return summary_count
     return None
 
 

@@ -560,6 +560,82 @@ def test_apply_verification_matches_child_page_result_to_operation_id():
 
 
 
+def test_apply_verification_prefers_matched_child_page_operation_expectations_over_summary():
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {
+                "id": page_id,
+                "object": "page",
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "Second child"}]}},
+            }
+
+        def list_block_children(self, page_id):
+            return [
+                {"type": "heading_2", "heading_2": {"rich_text": [{"plain_text": "Second heading"}]}},
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Second body"}]}},
+            ]
+
+    plan = WritePlan.from_dict(
+        {
+            "plan_id": "plan-page-parent",
+            "content_type": "article",
+            "target": {
+                "page_title": "知识",
+                "page_id": "parent-page",
+                "data_source_id": None,
+                "confidence": "high",
+                "source": "v2_profile",
+                "target_id": "graph-parent",
+                "target_kind": "page_parent",
+                "parent_page_id": "parent-page",
+            },
+            "summary": {"title": "First child", "body_block_count": 1},
+            "normalized_record": {"title": "First child"},
+            "field_mapping": {},
+            "operations": [
+                {
+                    "operation_id": "create_child_page:0",
+                    "type": "create_child_page",
+                    "parent_page_id": "parent-page",
+                    "title": "First child",
+                    "body_blocks": [
+                        {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "First body"}]}}
+                    ],
+                },
+                {
+                    "operation_id": "create_child_page:1",
+                    "type": "create_child_page",
+                    "parent_page_id": "parent-page",
+                    "title": "Second child",
+                    "body_blocks": [
+                        {"type": "heading_2", "heading_2": {"rich_text": [{"plain_text": "Second heading"}]}},
+                        {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Second body"}]}},
+                    ],
+                },
+            ],
+            "asset_operations": [],
+            "sources": [],
+            "warnings": [],
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        }
+    )
+
+    verification = cli._apply_verification_summary(
+        {"results": [{"type": "create_child_page", "operation_id": "create_child_page:1", "page_id": "page-b"}]},
+        Adapter(),
+        plan,
+        {"target": {"page_id": "parent-page"}, "data_sources": {}},
+    )
+
+    assert verification is not None
+    assert verification["verified"] is True
+    assert verification["pages"][0]["checks"]["title"] == {"status": "present"}
+    assert verification["pages"][0]["checks"]["body_blocks"] == {"status": "present", "count": 2}
+    assert verification["warnings"] == []
+
+
+
 def test_capture_apply_requires_confirmation_before_adapter(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
     config = ensure_config()
