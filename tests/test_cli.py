@@ -107,6 +107,29 @@ def seed_book_target(tmp_path):
     )
 
 
+def seed_plain_page_target(tmp_path):
+    config_dir = tmp_path
+    graph_id = "knowledge-page"
+    graph = {
+        "cache_version": 2,
+        "graph_id": graph_id,
+        "root": {"kind": "page", "id": "page-knowledge"},
+        "pages": {"page-knowledge": {"page_id": "page-knowledge", "title": "知识库"}},
+        "data_sources": {},
+        "views": {},
+    }
+    graphs_dir = config_dir / "cache-v2" / "graphs"
+    graphs_dir.mkdir(parents=True, exist_ok=True)
+    write_json(graphs_dir / f"{graph_id}.json", graph)
+    write_json(
+        config_dir / "cache-v2" / "aliases.json",
+        {
+            "cache_version": 2,
+            "aliases": {"知识库": {"graph_id": graph_id, "profile_id": None, "kind": "graph"}},
+        },
+    )
+
+
 def run_cli(args, tmp_path):
     env = {"CAPTURE_TO_NOTION_CONFIG_DIR": str(tmp_path)}
     return subprocess.run(
@@ -306,6 +329,34 @@ def test_capture_plan_compact_stdout_omits_execution_payload(tmp_path):
     assert "asset_operations" not in data
     assert "completion_operations" not in data
     assert "capture_input" not in data
+
+
+
+def test_capture_plan_compact_outputs_page_parent_write_target(tmp_path):
+    seed_plain_page_target(tmp_path)
+    input_file = tmp_path / "capture.json"
+    output_file = tmp_path / "plan.json"
+    write_json(
+        input_file,
+        {
+            "raw_input": "# DeepSeek V4\n\n## Why it matters\n\nLong-context Agent work gets cheaper.",
+            "target_hint": "知识库",
+            "target_scope_hint": "page_parent",
+            "intent_hint": "direct_write",
+            "user_requested_action": "write",
+            "content_type_hint": "article",
+        },
+    )
+
+    result = run_cli(["capture", "plan", "--input", str(input_file), "--output", str(output_file), "--compact"], tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    assert data["target"]["target_kind"] == "page_parent"
+    assert data["summary"]["write_targets"][0]["action"] == "create_child_page"
+    assert data["summary"]["body_block_count"] == 2
+    file_data = json.loads(output_file.read_text(encoding="utf-8"))
+    assert file_data["operations"][0]["type"] == "create_child_page"
 
 
 

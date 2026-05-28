@@ -1390,6 +1390,111 @@ def test_capture_apply_uses_planned_completion_operations_after_confirmation(tmp
 
 
 
+def test_capture_apply_creates_plain_child_page_from_plan(tmp_path, monkeypatch, capsys):
+    class PlainPageAdapter:
+        def __init__(self) -> None:
+            self.created_child_pages: list[tuple[str, str, list[dict[str, Any]]]] = []
+            self.appended: list[tuple[str, list[dict[str, Any]]]] = []
+            self.child_blocks: dict[str, list[dict[str, Any]]] = {}
+
+        def create_child_page(self, parent_page_id: str, title: str, children: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+            blocks = list(children or [])
+            self.created_child_pages.append((parent_page_id, title, blocks))
+            self.child_blocks["page-created"] = blocks
+            return {"id": "page-created", "url": "https://notion.example/page-created"}
+
+        def append_block_children(self, page_id: str, children: list[dict[str, Any]]) -> dict[str, Any]:
+            blocks = list(children)
+            self.appended.append((page_id, blocks))
+            self.child_blocks.setdefault(page_id, []).extend(blocks)
+            return {"results": blocks}
+
+        def retrieve_page(self, page_id: str) -> dict[str, Any]:
+            return {
+                "id": page_id,
+                "object": "page",
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "DeepSeek V4"}]}},
+            }
+
+        def list_block_children(self, page_id: str) -> list[dict[str, Any]]:
+            notion_blocks = []
+            for block in self.child_blocks.get(page_id, []):
+                block_type = block.get("type")
+                payload = block.get(block_type) if isinstance(block_type, str) else None
+                if not isinstance(payload, dict):
+                    notion_blocks.append(block)
+                    continue
+                rich_text = []
+                for item in payload.get("rich_text", []):
+                    text = item.get("text") if isinstance(item, dict) else None
+                    content = text.get("content") if isinstance(text, dict) else None
+                    rich_text.append({**item, "plain_text": content} if isinstance(content, str) else item)
+                notion_blocks.append({**block, block_type: {**payload, "rich_text": rich_text}})
+            return notion_blocks
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
+    config = ensure_config()
+    CacheV2Store(config).write_graph(
+        "graph-knowledge",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-knowledge",
+            "root": {"kind": "page", "id": "page-knowledge"},
+            "pages": {"page-knowledge": {"page_id": "page-knowledge", "title": "知识库"}},
+            "data_sources": {},
+            "views": {},
+        },
+    )
+    body_blocks = build_body_blocks(
+        "# DeepSeek V4\n\n## Why it matters\n\nLong-context Agent work gets cheaper.",
+        title="DeepSeek V4",
+    )
+    plan_path = tmp_path / "plan.json"
+    write_plan_file(
+        plan_path,
+        {
+            "content_type": "article",
+            "target": {
+                "page_title": "知识库",
+                "page_id": "page-knowledge",
+                "data_source_id": None,
+                "confidence": "high",
+                "source": "v2_page_graph",
+                "target_id": "graph-knowledge",
+                "target_kind": "page_parent",
+                "parent_page_id": "page-knowledge",
+            },
+            "summary": {"title": "DeepSeek V4", "body_block_count": len(body_blocks)},
+            "normalized_record": {"title": "DeepSeek V4", "state": "initialized"},
+            "field_mapping": {},
+            "operations": [
+                {
+                    "operation_id": "create_child_page:0",
+                    "type": "create_child_page",
+                    "parent_page_id": "page-knowledge",
+                    "title": "DeepSeek V4",
+                    "body_blocks": body_blocks,
+                }
+            ],
+            "asset_operations": [],
+            "preflight_workflow": ALLOWED_PREFLIGHT_WORKFLOW,
+        },
+    )
+    fake_adapter = PlainPageAdapter()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", AdapterFactoryProbe(fake_adapter))
+
+    exit_code = cli.main(["capture", "apply", "--plan", str(plan_path), "--confirmed"])
+
+    assert exit_code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["applied"] is True
+    assert result["results"][0]["type"] == "create_child_page"
+    assert result["results"][0]["page_id"] == "page-created"
+    assert result["verification"]["verified"] is True
+    assert fake_adapter.created_child_pages == [("page-knowledge", "DeepSeek V4", body_blocks)]
+
+
+
 def test_capture_apply_successful_create_uses_fake_adapter(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))
     config = ensure_config()

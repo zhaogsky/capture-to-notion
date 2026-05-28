@@ -1003,10 +1003,12 @@ def build_plan_cli_summary(plan: WritePlan) -> dict[str, Any]:
         "view_id": plan.target.view_id,
         "view_name": plan.target.view_name,
         "view_type": plan.target.view_type,
+        "target_kind": plan.target.target_kind,
+        "parent_page_id": plan.target.parent_page_id,
         "confidence": plan.target.confidence,
         "source": plan.target.source,
     }
-    for optional_key in ("view_id", "view_name", "view_type"):
+    for optional_key in ("view_id", "view_name", "view_type", "target_kind", "parent_page_id"):
         if target.get(optional_key) is None:
             target.pop(optional_key)
     return {
