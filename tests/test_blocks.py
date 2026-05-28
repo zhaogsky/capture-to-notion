@@ -52,6 +52,16 @@ def test_build_body_blocks_omits_matching_title_line():
     assert block_text(blocks[0]) == "Body"
 
 
+def test_build_body_blocks_converts_single_and_multi_digit_numbered_items():
+    blocks = build_body_blocks("9. ninth item\n10. tenth item", title="Numbered")
+
+    assert [block["type"] for block in blocks] == [
+        "numbered_list_item",
+        "numbered_list_item",
+    ]
+    assert [block_text(block) for block in blocks] == ["ninth item", "tenth item"]
+
+
 def test_build_body_blocks_splits_long_rich_text_chunks():
     blocks = build_body_blocks("x" * 4500, title="Long")
 

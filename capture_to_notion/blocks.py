@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 _MAX_RICH_TEXT_CHARS = 1900
-_NUMBERED_LIST_RE = re.compile(r"^\d\.\s+(.*)$")
+_NUMBERED_LIST_RE = re.compile(r"^\d+\.\s+(.*)$")
 
 
 def build_body_blocks(raw_input: str, *, title: str) -> list[dict[str, Any]]:
