@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.config import AppConfig
@@ -959,6 +961,53 @@ def test_preflight_routes_scanned_page_only_target_to_capture_plan(tmp_path, mon
     assert preflight["target"]["status"] == "v2_page_parent_ready"
     assert preflight["workflow"]["planning"]["next_action"] == "capture_plan"
     assert preflight["safe_actions"] == [{"action": "capture_plan", "reason": "v2_page_parent_ready"}]
+
+
+@pytest.mark.parametrize("content_type_hint", ["book", "podcast", "podcast_episode"])
+def test_preflight_does_not_route_incompatible_page_only_targets_to_capture_plan(
+    tmp_path,
+    monkeypatch,
+    content_type_hint,
+):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.config import ensure_config
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "ai-knowledge",
+        {
+            "cache_version": 2,
+            "graph_id": "ai-knowledge",
+            "root": {"kind": "page", "id": "page-knowledge"},
+            "pages": {"page-knowledge": {"page_id": "page-knowledge", "title": "知识", "kind": "page"}},
+            "blocks": {},
+            "databases": {},
+            "data_sources": {},
+            "views": {},
+        },
+    )
+    store.bind_alias("AI/知识", graph_id="ai-knowledge", profile_id=None, kind="graph")
+
+    preflight = build_capture_preflight(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "标题：DeepSeek V4\n\nBody",
+                "target_hint": "AI/知识",
+                "content_type_hint": content_type_hint,
+                "intent_hint": "direct_write",
+                "input_shape_hint": "plain_text",
+                "target_scope_hint": "page_parent",
+                "user_requested_action": "write",
+            }
+        ),
+        store,
+    )
+
+    assert preflight["target"].get("status") != "v2_page_parent_ready"
+    assert preflight["workflow"]["planning"]["next_action"] != "capture_plan"
+    assert {action["action"] for action in preflight["safe_actions"]} == {"scan_target"}
 
 
 

@@ -6,6 +6,7 @@ from capture_to_notion.cache import CacheStore
 from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.classifier import classify_content_type
 from capture_to_notion.models import CaptureInput
+from capture_to_notion.planner import _plain_page_capture_compatible
 from capture_to_notion.structure_analyzer import analyze_target_structure
 from capture_to_notion.target_resolver import resolve_capture_target
 
@@ -138,8 +139,11 @@ def _v2_page_parent_ready_target(
     capture: CaptureInput,
     cache: CacheStore | CacheV2Store,
     resolution: dict[str, Any],
+    content_type: str,
 ) -> dict[str, str] | None:
     if not isinstance(cache, CacheV2Store) or not _is_page_parent_direct_write(capture):
+        return None
+    if not _plain_page_capture_compatible(capture, content_type):
         return None
     if resolution.get("status") != "write_profile_missing":
         return None
@@ -239,7 +243,7 @@ def build_capture_preflight(capture: CaptureInput, cache: CacheStore | CacheV2St
     preflight["target"] = _target_from_resolution(resolution, capture.target_hint)
     status = resolution.get("status")
 
-    page_parent_target = _v2_page_parent_ready_target(capture, cache, resolution)
+    page_parent_target = _v2_page_parent_ready_target(capture, cache, resolution, preflight["content_type"])
     if page_parent_target is not None:
         ready_target = {**page_parent_target, "status": "v2_page_parent_ready", "source": "v2_alias"}
         preflight["target"].update(ready_target)
