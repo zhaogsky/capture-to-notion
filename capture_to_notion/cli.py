@@ -674,9 +674,9 @@ def _expected_plain_page_title(plan: WritePlan, operation_result: dict[str, Any]
 
 def _expected_plain_page_block_count(plan: WritePlan, operation: dict[str, Any] | None) -> int | None:
     body_blocks = operation.get("body_blocks") if operation else None
-    summary_count = plan.summary.get("body_block_count")
-    if isinstance(body_blocks, list) and (body_blocks or not isinstance(summary_count, int)):
+    if isinstance(body_blocks, list):
         return len(body_blocks)
+    summary_count = plan.summary.get("body_block_count")
     if isinstance(summary_count, int):
         return summary_count
     return None

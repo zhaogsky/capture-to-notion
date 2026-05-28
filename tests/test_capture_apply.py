@@ -439,7 +439,6 @@ def test_apply_verification_uses_plain_page_checks_for_child_page_results():
                     "type": "create_child_page",
                     "parent_page_id": "parent-page",
                     "title": "DeepSeek V4",
-                    "body_blocks": [],
                 }
             ],
             "asset_operations": [],
@@ -833,6 +832,76 @@ def test_apply_verification_prefers_matched_child_page_operation_expectations_ov
     assert verification["verified"] is True
     assert verification["pages"][0]["checks"]["title"] == {"status": "present"}
     assert verification["pages"][0]["checks"]["body_blocks"] == {"status": "present", "count": 2}
+    assert verification["warnings"] == []
+
+
+
+def test_apply_verification_honors_empty_matched_child_page_body_blocks_over_summary():
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {
+                "id": page_id,
+                "object": "page",
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "Title only child"}]}},
+            }
+
+        def list_block_children(self, page_id):
+            return []
+
+    plan = WritePlan.from_dict(
+        {
+            "plan_id": "plan-page-parent",
+            "content_type": "article",
+            "target": {
+                "page_title": "知识",
+                "page_id": "parent-page",
+                "data_source_id": None,
+                "confidence": "high",
+                "source": "v2_profile",
+                "target_id": "graph-parent",
+                "target_kind": "page_parent",
+                "parent_page_id": "parent-page",
+            },
+            "summary": {"title": "Fallback title", "body_block_count": 3},
+            "normalized_record": {"title": "Fallback title"},
+            "field_mapping": {},
+            "operations": [
+                {
+                    "operation_id": "create_child_page:0",
+                    "type": "create_child_page",
+                    "parent_page_id": "parent-page",
+                    "title": "Body child",
+                    "body_blocks": [
+                        {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Body sample"}]}}
+                    ],
+                },
+                {
+                    "operation_id": "create_child_page:1",
+                    "type": "create_child_page",
+                    "parent_page_id": "parent-page",
+                    "title": "Title only child",
+                    "body_blocks": [],
+                },
+            ],
+            "asset_operations": [],
+            "sources": [],
+            "warnings": [],
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        }
+    )
+
+    verification = cli._apply_verification_summary(
+        {"results": [{"type": "create_child_page", "operation_id": "create_child_page:1", "page_id": "page-b"}]},
+        Adapter(),
+        plan,
+        {"target": {"page_id": "parent-page"}, "data_sources": {}},
+    )
+
+    assert verification is not None
+    assert verification["verified"] is True
+    assert verification["pages"][0]["checks"]["title"] == {"status": "present"}
+    assert verification["pages"][0]["checks"]["body_blocks"] == {"status": "present", "count": 0}
     assert verification["warnings"] == []
 
 
