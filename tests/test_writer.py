@@ -244,6 +244,28 @@ def test_apply_write_plan_creates_child_page_with_first_100_blocks():
     assert adapter.appended == []
 
 
+def test_apply_write_plan_rejects_child_page_without_valid_title_before_adapter_call():
+    invalid_titles = [None, 123, ""]
+
+    for invalid_title in invalid_titles:
+        plan = make_page_parent_plan([])
+        adapter = PageParentAdapter()
+        if invalid_title is None:
+            del plan.operations[0]["title"]
+        else:
+            plan.operations[0]["title"] = invalid_title
+
+        try:
+            apply_write_plan(plan, {"pages": {"parent-page": {"title": "知识"}}}, adapter)
+        except NotionWriterError as exc:
+            assert "title" in str(exc)
+        else:
+            raise AssertionError("expected NotionWriterError")
+
+        assert adapter.created == []
+        assert adapter.appended == []
+
+
 def test_apply_write_plan_appends_remaining_blocks_after_create_limit():
     blocks = [paragraph_block(str(index)) for index in range(205)]
     adapter = PageParentAdapter()

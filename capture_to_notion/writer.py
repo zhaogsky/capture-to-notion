@@ -156,6 +156,9 @@ def _validate_write_operations(plan: WritePlan) -> None:
                 raise NotionWriterError(
                     "Operation parent_page_id does not match plan target parent_page_id"
                 )
+            operation_title = operation.get("title")
+            if not isinstance(operation_title, str) or not operation_title:
+                raise NotionWriterError("CREATE_CHILD_PAGE operation title must be a non-empty string")
             continue
 
         if operation_type == APPEND_PAGE_CONTENT:
@@ -227,7 +230,7 @@ def _execute_page_content_operation(operation: dict[str, Any], adapter: Any) -> 
 
     if operation_type == CREATE_CHILD_PAGE:
         parent_page_id = operation["parent_page_id"]
-        title = operation.get("title") or "Untitled"
+        title = operation["title"]
         first_batch = batches[0] if batches else []
         response = adapter.create_child_page(parent_page_id, title, children=first_batch)
         response_page_id = response.get("id") if isinstance(response, dict) else None
