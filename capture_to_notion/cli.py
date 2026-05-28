@@ -462,15 +462,31 @@ def _graph_view_names(graph: dict[str, Any]) -> list[str]:
     return [view.get("name") for view in views.values() if isinstance(view, dict) and view.get("name")]
 
 
+def _target_capabilities(graph: dict[str, Any]) -> dict[str, bool]:
+    root = graph.get("root") if isinstance(graph.get("root"), dict) else {}
+    data_sources = graph.get("data_sources") if isinstance(graph.get("data_sources"), dict) else {}
+    databases = graph.get("databases") if isinstance(graph.get("databases"), dict) else {}
+    views = graph.get("views") if isinstance(graph.get("views"), dict) else {}
+    return {
+        "page_parent": root.get("kind") == "page",
+        "data_source": bool(data_sources),
+        "database_container": bool(databases),
+        "view_context": bool(views),
+    }
+
+
 def _target_scan_output(config: Any, graph: dict[str, Any], *, compact: bool = False) -> dict[str, Any]:
     graph_id = graph["graph_id"]
+    target_capabilities = _target_capabilities(graph)
+    has_data_source = target_capabilities["data_source"]
     output = {
         "cache_version": 2,
         "graph_id": graph_id,
         "data_sources": _v2_data_source_summaries(graph, compact=compact),
         "views": _graph_view_names(graph),
-        "requires_profile_binding": True,
-        "next_action": "target bind-profile",
+        "target_capabilities": target_capabilities,
+        "requires_profile_binding": has_data_source,
+        "next_action": "target bind-profile" if has_data_source else "capture preflight",
     }
     if not compact:
         output["graph_file"] = str(config.graphs_v2_dir / f"{graph_id}.json")

@@ -261,6 +261,14 @@ class ScanAdapter:
         }
 
 
+class PageOnlyScanAdapter:
+    def retrieve_page(self, page_id):
+        return {"id": page_id, "title": "AI/知识"}
+
+    def list_block_children(self, page_id):
+        return [{"type": "paragraph", "id": "block-1", "paragraph": {}}]
+
+
 class PodcastCompletionDateScanAdapter:
     def retrieve_page(self, page_id):
         return {"id": page_id, "title": "独树不成林"}
@@ -703,6 +711,34 @@ def test_target_scan_compact_outputs_data_source_summary(tmp_path, monkeypatch, 
         }
     ]
     assert "schema_fields" not in data["data_sources"][0]
+
+
+def test_target_scan_page_only_reports_page_parent_capability(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: PageOnlyScanAdapter()))
+
+    result = cli.main([
+        "target",
+        "scan",
+        "--page-id",
+        "page-knowledge",
+        "--alias",
+        "AI/知识",
+        "--target-id",
+        "ai-knowledge",
+        "--compact",
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["graph_id"] == "ai-knowledge"
+    assert data["target_capabilities"] == {
+        "page_parent": True,
+        "data_source": False,
+        "database_container": False,
+        "view_context": False,
+    }
+    assert data["next_action"] == "capture preflight"
 
 
 def test_target_scan_output_includes_data_source_without_title(tmp_path, monkeypatch, capsys):

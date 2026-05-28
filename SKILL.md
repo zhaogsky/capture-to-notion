@@ -24,7 +24,12 @@ A v2 target consists of:
 - a write profile: content type to canonical data source/view plus field mappings;
 - an alias: user-facing name to graph/profile.
 
-Writes always go to a data source. Views are display context and are validated when present.
+Notion object roles are generic and distinct:
+- Page parent writes create ordinary child pages and store body content as blocks.
+- Data source writes create/update structured pages conforming to schema.
+- Database objects are containers used to discover data sources; writes do not create rows directly under databases.
+- Block objects carry page body content; created via page creation or append-block operations.
+- View objects are display/query context; not write parents.
 
 ## Summary Preprocessing
 
@@ -93,6 +98,7 @@ Default to the lowest-token deterministic path.
 
 1. Apply Summary Preprocessing when the request requires it.
 2. Skill AI first parses the user's intent and input shape before planning. Decide whether the user wants direct write, target recommendation,补充信息, or URL-related enrichment advice.
+   - Before forcing `scan_target` or `target bind-profile`, distinguish structured database entries from ordinary child pages. If an already-scanned page-only target is intended for saving an article, note, or plain text, route toward page-parent `capture_plan` rather than requiring profile binding.
 3. Parse the user's request into `input.json`.
 4. Include:
    - `raw_input`: the user's content, or the summarized content when Summary Preprocessing applied.
