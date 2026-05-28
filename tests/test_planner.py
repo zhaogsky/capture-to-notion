@@ -710,6 +710,39 @@ def test_write_plan_serializes_summary_near_review_inputs():
     assert WritePlan.from_dict(data).to_dict() == data
 
 
+def test_write_plan_serializes_page_parent_target_kind():
+    plan = WritePlan(
+        plan_id="plan-page-1",
+        content_type="article",
+        target=Target(
+            page_title="知识",
+            page_id="parent-page",
+            data_source_id=None,
+            confidence="high",
+            source="v2_page_graph",
+            target_kind="page_parent",
+            parent_page_id="parent-page",
+        ),
+        summary={"title": "DeepSeek V4"},
+        normalized_record={"title": "DeepSeek V4"},
+        field_mapping={},
+        operations=[{"type": "create_child_page", "parent_page_id": "parent-page", "title": "DeepSeek V4", "body_blocks": []}],
+        asset_operations=[],
+        sources=[],
+        warnings=[],
+        requires_confirmation=False,
+        confirmation_reason=None,
+    )
+
+    data = plan.to_dict()
+
+    assert data["target"]["target_kind"] == "page_parent"
+    assert data["target"]["parent_page_id"] == "parent-page"
+    assert WritePlan.from_dict(data).target.target_kind == "page_parent"
+    assert WritePlan.from_dict(data).target.parent_page_id == "parent-page"
+
+
+
 def test_build_plan_cli_summary_omits_execution_payload():
     plan = WritePlan(
         plan_id="20260512-demo",

@@ -76,6 +76,8 @@ class Target:
     view_name: str | None = None
     view_type: str | None = None
     display_page_id: str | None = None
+    target_kind: str | None = None
+    parent_page_id: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Target":
@@ -90,6 +92,8 @@ class Target:
             view_name=data.get("view_name"),
             view_type=data.get("view_type"),
             display_page_id=data.get("display_page_id"),
+            target_kind=data.get("target_kind"),
+            parent_page_id=data.get("parent_page_id"),
         )
 
 
@@ -174,7 +178,7 @@ class WritePlan:
             if operation.get("record_key") == "cover":
                 operation.pop("record_key")
         target = asdict(self.target)
-        for key in ("target_id", "view_id", "view_name", "view_type", "display_page_id"):
+        for key in ("target_id", "view_id", "view_name", "view_type", "display_page_id", "target_kind", "parent_page_id"):
             if target.get(key) is None:
                 target.pop(key)
         data = {
