@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from capture_to_notion.assets import plan_cover_asset
+from capture_to_notion.blocks import build_body_blocks
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.config import AppConfig
@@ -1291,6 +1292,137 @@ def _normalized_record_for_capture(
     )
 
 
+PAGE_PARENT_COMPATIBLE_HINTS = {"article", "note", "plain_text", "text", "unknown", None}
+PAGE_PARENT_INCOMPATIBLE_HINTS = {"book", "podcast", "podcast_episode"}
+
+
+def _plain_page_capture_compatible(capture: CaptureInput, content_type: str) -> bool:
+    hint = capture.content_type_hint
+    normalized_hint = hint.casefold() if isinstance(hint, str) else None
+    normalized_content_type = content_type.casefold() if isinstance(content_type, str) else None
+    if normalized_hint in PAGE_PARENT_INCOMPATIBLE_HINTS or normalized_content_type in PAGE_PARENT_INCOMPATIBLE_HINTS:
+        return False
+    if normalized_hint in PAGE_PARENT_COMPATIBLE_HINTS or normalized_content_type in PAGE_PARENT_COMPATIBLE_HINTS:
+        return True
+    return capture.input_shape_hint in {"plain_text", "markdown", None}
+
+
+def _extract_plain_page_title(raw_input: str) -> str:
+    labeled = re.search(r"^\s*(?:标题|Title)\s*[:：]\s*(.+?)\s*$", raw_input, flags=re.IGNORECASE | re.MULTILINE)
+    if labeled:
+        title = labeled.group(1).strip()
+        if title:
+            return title[:80]
+    heading = re.search(r"^\s*#\s+(.+?)\s*$", raw_input, flags=re.MULTILINE)
+    if heading:
+        title = heading.group(1).strip()
+        if title:
+            return title[:80]
+    for line in raw_input.splitlines():
+        title = line.strip()
+        if title:
+            return title[:80]
+    return "Untitled"
+
+
+def _v2_root_page_title(graph: dict[str, Any], page_id: str) -> str | None:
+    pages = graph.get("pages") if isinstance(graph.get("pages"), dict) else {}
+    page = pages.get(page_id)
+    if not isinstance(page, dict):
+        return None
+    title = page.get("title")
+    return title if isinstance(title, str) and title else None
+
+
+def _v2_page_parent_plan(
+    capture: CaptureInput,
+    cache: CacheV2Store,
+    content_type: str,
+    states_config: dict[str, Any] | None = None,
+) -> WritePlan | None:
+    if not _plain_page_capture_compatible(capture, content_type):
+        return None
+    alias_name = capture.target_hint
+    if not isinstance(alias_name, str) or not alias_name:
+        return None
+    alias = cache.find_alias(alias_name)
+    if not isinstance(alias, dict):
+        return None
+    graph_id = alias.get("graph_id")
+    graph = cache.read_graph(graph_id) if isinstance(graph_id, str) else None
+    if not isinstance(graph, dict):
+        return None
+    root = graph.get("root") if isinstance(graph.get("root"), dict) else {}
+    parent_page_id = root.get("id") if root.get("kind") == "page" else None
+    data_sources = graph.get("data_sources") if isinstance(graph.get("data_sources"), dict) else {}
+    if not isinstance(parent_page_id, str) or not parent_page_id or data_sources:
+        return None
+
+    title = _extract_plain_page_title(capture.raw_input)
+    body_blocks = build_body_blocks(capture.raw_input, title=title)
+    target_page = _v2_root_page_title(graph, parent_page_id)
+    operation = {
+        "type": "create_child_page",
+        "parent_page_id": parent_page_id,
+        "title": title,
+        "body_blocks": body_blocks,
+    }
+    normalized_record = {"title": title, "state": normalize_state(capture.state, states_config)}
+    write_targets = [
+        {
+            "type": "primary_page",
+            "action": "create_child_page",
+            "title": title,
+            "target_page": target_page,
+            "parent_page_id": parent_page_id,
+            "target_kind": "page_parent",
+            "page_id": None,
+            "page_id_status": "pending_after_apply",
+            "context_verification_source": "v2_page_graph",
+        }
+    ]
+    summary = build_plan_summary(
+        content_type=content_type,
+        target_page=target_page,
+        target_data_source=None,
+        normalized_record=normalized_record,
+        field_mapping={},
+        schema_fields={},
+        asset_operations=[],
+        requires_confirmation=False,
+        confirmation_reason=None,
+        warnings=[],
+        write_targets=write_targets,
+    )
+    summary["body_block_count"] = len(body_blocks)
+    plan = WritePlan(
+        plan_id=plan_id_for(capture),
+        content_type=content_type,
+        target=Target(
+            page_title=target_page,
+            page_id=parent_page_id,
+            data_source_id=None,
+            confidence="high",
+            source="v2_page_graph",
+            target_id=graph_id,
+            target_kind="page_parent",
+            parent_page_id=parent_page_id,
+        ),
+        summary=summary,
+        normalized_record=normalized_record,
+        field_mapping={},
+        operations=[operation],
+        asset_operations=[],
+        sources=[],
+        warnings=[],
+        requires_confirmation=False,
+        confirmation_reason=None,
+        capture_input=capture.to_dict(),
+    )
+    cache.write_plan(plan.plan_id, plan.to_dict())
+    return plan
+
+
 def _shell_arg(value: str) -> str:
     if value and all(ch.isalnum() or ch in "@%+=:,./-" for ch in value):
         return value
@@ -1337,6 +1469,10 @@ def unresolved_plan(
 def build_capture_plan(capture: CaptureInput, cache: CacheStore | CacheV2Store) -> WritePlan:
     content_type = classify_content_type(capture)
     states_config = cache.read_json(cache.config.states_file, {"states": {}})
+    if isinstance(cache, CacheV2Store):
+        page_parent_plan = _v2_page_parent_plan(capture, cache, content_type, states_config)
+        if page_parent_plan is not None:
+            return page_parent_plan
     config_data = cache.read_json(cache.config.config_file, {})
     default_parser_profile = _parser_profile_default_from_config(config_data, content_type)
     resolution = resolve_capture_target(capture, cache, content_type)

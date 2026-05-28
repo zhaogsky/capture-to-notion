@@ -710,6 +710,66 @@ def test_write_plan_serializes_summary_near_review_inputs():
     assert WritePlan.from_dict(data).to_dict() == data
 
 
+def test_v2_plan_creates_child_page_when_target_is_plain_page(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "ai-knowledge",
+        {
+            "cache_version": 2,
+            "graph_id": "ai-knowledge",
+            "root": {"kind": "page", "id": "page-knowledge"},
+            "pages": {"page-knowledge": {"page_id": "page-knowledge", "title": "知识", "kind": "page"}},
+            "blocks": {},
+            "databases": {},
+            "data_sources": {},
+            "views": {},
+        },
+    )
+    store.bind_alias("AI/知识", graph_id="ai-knowledge", profile_id=None, kind="graph")
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "标题：DeepSeek V4\n\n## Why it matters\n\nLong-context Agent work gets cheaper.",
+                "target_hint": "AI/知识",
+                "content_type_hint": "article",
+                "intent_hint": "direct_write",
+                "input_shape_hint": "plain_text",
+                "target_scope_hint": "page_parent",
+                "user_requested_action": "write",
+            }
+        ),
+        store,
+    )
+
+    assert plan.target.target_kind == "page_parent"
+    assert plan.target.parent_page_id == "page-knowledge"
+    assert plan.target.data_source_id is None
+    assert plan.operations[0]["type"] == "create_child_page"
+    assert plan.operations[0]["parent_page_id"] == "page-knowledge"
+    assert plan.operations[0]["title"] == "DeepSeek V4"
+    assert [block["type"] for block in plan.operations[0]["body_blocks"]] == ["heading_2", "paragraph"]
+    assert plan.summary["write_targets"] == [
+        {
+            "type": "primary_page",
+            "action": "create_child_page",
+            "title": "DeepSeek V4",
+            "target_page": "知识",
+            "parent_page_id": "page-knowledge",
+            "target_kind": "page_parent",
+            "page_id": None,
+            "page_id_status": "pending_after_apply",
+            "context_verification_source": "v2_page_graph",
+        }
+    ]
+    assert plan.summary["body_block_count"] == 2
+
+
+
 def test_write_plan_serializes_page_parent_target_kind():
     plan = WritePlan(
         plan_id="plan-page-1",
