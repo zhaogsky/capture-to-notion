@@ -323,6 +323,9 @@ class NotionAdapter:
                 return results
             start_cursor = response.get("next_cursor")
 
+    def append_block_children(self, block_id: str, children: list[dict[str, Any]]) -> dict[str, Any]:
+        return self._call(self.client.blocks.children.append, block_id=block_id, children=children)
+
     def _normalize_cover(self, cover: Any, cover_source_url: str | None = None) -> Any:
         if isinstance(cover, dict) and cover.get("type") == "file_upload":
             if not cover_source_url:
@@ -342,6 +345,27 @@ class NotionAdapter:
             "parent": {"data_source_id": data_source_id},
             "properties": properties,
         }
+        if icon is not None:
+            kwargs["icon"] = icon
+        if cover is not None:
+            kwargs["cover"] = self._normalize_cover(cover, cover_source_url)
+        return self._call(self.client.pages.create, **kwargs)
+
+    def create_child_page(
+        self,
+        parent_page_id: str,
+        title: str,
+        children: list[dict[str, Any]] | None = None,
+        icon: Any = None,
+        cover: Any = None,
+        cover_source_url: str | None = None,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
+            "parent": {"page_id": parent_page_id},
+            "properties": {"title": {"title": [{"type": "text", "text": {"content": title}}]}},
+        }
+        if children:
+            kwargs["children"] = children
         if icon is not None:
             kwargs["icon"] = icon
         if cover is not None:

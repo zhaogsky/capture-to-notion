@@ -366,6 +366,58 @@ def test_create_page_uses_data_source_parent():
     ]
 
 
+def test_create_child_page_uses_page_parent_and_title_property():
+    calls = []
+
+    class Pages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return {"id": "page-created", "url": "https://notion.so/page-created"}
+
+    class Client:
+        pages = Pages()
+
+    adapter = NotionAdapter(Client())
+
+    result = adapter.create_child_page(
+        "parent-page",
+        "DeepSeek V4",
+        children=[{"object": "block", "type": "paragraph", "paragraph": {"rich_text": []}}],
+    )
+
+    assert result["id"] == "page-created"
+    assert calls == [
+        {
+            "parent": {"page_id": "parent-page"},
+            "properties": {"title": {"title": [{"type": "text", "text": {"content": "DeepSeek V4"}}]}},
+            "children": [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": []}}],
+        }
+    ]
+
+
+def test_append_block_children_calls_blocks_children_append():
+    calls = []
+
+    class Children:
+        def append(self, **kwargs):
+            calls.append(kwargs)
+            return {"results": kwargs["children"]}
+
+    class Blocks:
+        children = Children()
+
+    class Client:
+        blocks = Blocks()
+
+    adapter = NotionAdapter(Client())
+    children = [{"object": "block", "type": "paragraph", "paragraph": {"rich_text": []}}]
+
+    result = adapter.append_block_children("page-created", children)
+
+    assert result == {"results": children}
+    assert calls == [{"block_id": "page-created", "children": children}]
+
+
 def test_create_database_uses_initial_data_source_properties():
     client = FakeClient()
     adapter = NotionAdapter(client)
