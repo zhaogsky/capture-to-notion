@@ -28,7 +28,7 @@ from capture_to_notion.notion_adapter import (
 from capture_to_notion.planner import build_capture_plan, build_plan_cli_summary
 from capture_to_notion.preflight import build_capture_preflight, build_capture_preflight_summary
 from capture_to_notion.scanner import scan_data_source_graph, scan_page_graph
-from capture_to_notion.verifier import url_is_accessible, verify_capture_page
+from capture_to_notion.verifier import url_is_accessible, verify_capture_page, verify_plain_page
 from capture_to_notion.workflow_guard import assert_plan_workflow_allows_apply, assert_preflight_allows_plan, scoped_sync_request
 from capture_to_notion.writer import NotionWriterError, apply_write_plan
 
@@ -646,6 +646,57 @@ def _append_verification_page(
         pages.append(_inaccessible_verification_page(page_id))
 
 
+def _plain_operation_for_result(plan: WritePlan, operation_result: dict[str, Any]) -> dict[str, Any] | None:
+    page_id = operation_result.get("page_id")
+    for operation in plan.operations:
+        if operation.get("type") != "create_child_page":
+            continue
+        operation_page_id = operation.get("page_id")
+        if isinstance(operation_page_id, str) and isinstance(page_id, str) and operation_page_id != page_id:
+            continue
+        return operation
+    return None
+
+
+def _expected_plain_page_title(plan: WritePlan, operation_result: dict[str, Any], operation: dict[str, Any] | None) -> str | None:
+    for candidate in (operation_result.get("title"), plan.summary.get("title"), operation.get("title") if operation else None):
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
+
+def _expected_plain_page_block_count(plan: WritePlan, operation: dict[str, Any] | None) -> int | None:
+    summary_count = plan.summary.get("body_block_count")
+    if isinstance(summary_count, int):
+        return summary_count
+    body_blocks = operation.get("body_blocks") if operation else None
+    if isinstance(body_blocks, list):
+        return len(body_blocks)
+    return None
+
+
+def _append_plain_verification_page(
+    pages: list[dict[str, Any]],
+    *,
+    page_id: str,
+    adapter: Any,
+    plan: WritePlan,
+    operation_result: dict[str, Any],
+) -> None:
+    operation = _plain_operation_for_result(plan, operation_result)
+    try:
+        pages.append(
+            verify_plain_page(
+                page_id,
+                adapter,
+                expected_title=_expected_plain_page_title(plan, operation_result, operation),
+                expected_block_count=_expected_plain_page_block_count(plan, operation),
+            )
+        )
+    except (NotionApiError, NotionAuthError, NotionNotFoundError, NotionPermissionError, NotionRateLimitError):
+        pages.append(_inaccessible_verification_page(page_id))
+
+
 def _completion_operation_for_result(
     plan: WritePlan,
     operation_result: dict[str, Any],
@@ -689,6 +740,15 @@ def _apply_verification_summary(
             continue
         page_id = operation_result.get("page_id")
         if isinstance(page_id, str) and page_id:
+            if operation_result.get("type") == "create_child_page":
+                _append_plain_verification_page(
+                    pages,
+                    page_id=page_id,
+                    adapter=adapter,
+                    plan=plan,
+                    operation_result=operation_result,
+                )
+                continue
             _append_verification_page(
                 pages,
                 page_id=page_id,

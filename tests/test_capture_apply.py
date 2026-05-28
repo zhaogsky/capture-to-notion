@@ -12,7 +12,7 @@ from capture_to_notion.cache import CacheStore
 from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.config import ensure_config
 from capture_to_notion.models import WritePlan
-from capture_to_notion.verifier import verify_capture_page
+from capture_to_notion.verifier import verify_capture_page, verify_plain_page
 
 
 def test_write_plan_from_dict_serializes_legacy_plan_with_default_summary():
@@ -284,6 +284,115 @@ def verify_book_page(fake_adapter: FakeAdapter, url_checker=lambda url: True) ->
         schema=BOOK_SCHEMA,
         checks=BOOK_CHECKS,
     )
+
+
+def test_verify_plain_page_checks_title_and_body_blocks():
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {
+                "id": page_id,
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "DeepSeek V4"}]}},
+            }
+
+        def list_block_children(self, page_id):
+            return [
+                {"type": "heading_2", "heading_2": {"rich_text": [{"plain_text": "Why it matters"}]}},
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Long-context Agent work gets cheaper."}]}},
+            ]
+
+    result = verify_plain_page(
+        "page-created",
+        Adapter(),
+        expected_title="DeepSeek V4",
+        expected_block_count=2,
+        expected_text_samples=["Why it matters", "Long-context Agent work gets cheaper."],
+    )
+
+    assert result == {
+        "page_id": "page-created",
+        "verified": True,
+        "checks": {
+            "page": {"status": "present"},
+            "title": {"status": "present"},
+            "body_blocks": {"status": "present", "count": 2},
+            "body_text_samples": {"status": "present"},
+        },
+        "warnings": [],
+    }
+
+def test_apply_verification_uses_plain_page_checks_for_child_page_results():
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {
+                "id": page_id,
+                "object": "page",
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "DeepSeek V4"}]}},
+            }
+
+        def list_block_children(self, page_id):
+            return [
+                {"type": "heading_2", "heading_2": {"rich_text": [{"plain_text": "Why it matters"}]}},
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Long-context Agent work gets cheaper."}]}},
+            ]
+
+    plan = WritePlan.from_dict(
+        {
+            "plan_id": "plan-page-parent",
+            "content_type": "article",
+            "target": {
+                "page_title": "知识",
+                "page_id": "parent-page",
+                "data_source_id": None,
+                "confidence": "high",
+                "source": "v2_profile",
+                "target_id": "graph-parent",
+                "target_kind": "page_parent",
+                "parent_page_id": "parent-page",
+            },
+            "summary": {"title": "DeepSeek V4", "body_block_count": 2},
+            "normalized_record": {"title": "DeepSeek V4"},
+            "field_mapping": {},
+            "operations": [
+                {
+                    "type": "create_child_page",
+                    "parent_page_id": "parent-page",
+                    "title": "DeepSeek V4",
+                    "body_blocks": [],
+                }
+            ],
+            "asset_operations": [],
+            "sources": [],
+            "warnings": [],
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        }
+    )
+
+    verification = cli._apply_verification_summary(
+        {"results": [{"type": "create_child_page", "page_id": "page-created"}]},
+        Adapter(),
+        plan,
+        {"target": {"page_id": "parent-page"}, "data_sources": {}},
+    )
+
+    assert verification == {
+        "verified": True,
+        "pages": [
+            {
+                "page_id": "page-created",
+                "verified": True,
+                "checks": {
+                    "page": {"status": "present"},
+                    "title": {"status": "present"},
+                    "body_blocks": {"status": "present", "count": 2},
+                    "body_text_samples": {"status": "present"},
+                },
+                "warnings": [],
+            }
+        ],
+        "warnings": [],
+    }
+
 
 def test_capture_apply_requires_confirmation_before_adapter(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path / "config"))

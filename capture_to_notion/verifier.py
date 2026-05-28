@@ -117,6 +117,84 @@ def _verification_checks(
     return result
 
 
+def _plain_text_from_rich_text(items: list[dict[str, Any]] | None) -> str:
+    if not isinstance(items, list):
+        return ""
+    return "".join(item.get("plain_text", "") for item in items if isinstance(item, dict))
+
+
+def _plain_page_title(page: dict[str, Any]) -> str:
+    properties = page.get("properties")
+    if not isinstance(properties, dict):
+        return ""
+    preferred = properties.get("title")
+    if isinstance(preferred, dict) and preferred.get("type") == "title":
+        return _plain_text_from_rich_text(preferred.get("title"))
+    for property_data in properties.values():
+        if isinstance(property_data, dict) and property_data.get("type") == "title":
+            return _plain_text_from_rich_text(property_data.get("title"))
+    return ""
+
+
+def _block_text(block: dict[str, Any]) -> str:
+    block_type = block.get("type")
+    if not isinstance(block_type, str):
+        return ""
+    payload = block.get(block_type)
+    if not isinstance(payload, dict):
+        return ""
+    return _plain_text_from_rich_text(payload.get("rich_text"))
+
+
+def verify_plain_page(
+    page_id: str,
+    adapter: Any,
+    *,
+    expected_title: str | None = None,
+    expected_block_count: int | None = None,
+    expected_text_samples: list[str] | None = None,
+) -> dict[str, Any]:
+    try:
+        page = adapter.retrieve_page(page_id)
+    except NotionNotFoundError:
+        checks = {
+            "page": {"status": "missing"},
+            "title": {"status": "missing"},
+            "body_blocks": {"status": "missing", "count": 0},
+            "body_text_samples": {"status": "missing"},
+        }
+        return {"page_id": page_id, "verified": False, "checks": checks, "warnings": ["missing:page"]}
+
+    blocks = adapter.list_block_children(page_id)
+    if not isinstance(blocks, list):
+        blocks = []
+    body_text = "\n".join(_block_text(block) for block in blocks if isinstance(block, dict))
+    warnings: list[str] = []
+
+    title = _plain_page_title(page)
+    title_present = bool(title) and (expected_title is None or title == expected_title)
+    if not title_present:
+        warnings.append("title_mismatch")
+
+    required_block_count = expected_block_count if expected_block_count is not None else 1
+    blocks_present = len(blocks) >= required_block_count
+    if not blocks_present:
+        warnings.append("body_blocks_missing")
+
+    samples = expected_text_samples or []
+    samples_present = all(sample in body_text for sample in samples)
+    if not samples_present:
+        warnings.append("body_text_samples_missing")
+
+    checks = {
+        "page": {"status": "present"},
+        "title": {"status": "present" if title_present else "missing"},
+        "body_blocks": {"status": "present" if blocks_present else "missing", "count": len(blocks)},
+        "body_text_samples": {"status": "present" if samples_present else "missing"},
+    }
+    return {"page_id": page_id, "verified": not warnings, "checks": checks, "warnings": warnings}
+
+
 def verify_capture_page(
     page_id: str,
     adapter: Any,
