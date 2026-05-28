@@ -4,13 +4,16 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from capture_to_notion.assets import execute_asset_operations
+from capture_to_notion.blocks import split_block_batches
 from capture_to_notion.models import AssetOperation, WritePlan
 from capture_to_notion.notion_adapter import NotionApiError, NotionNotFoundError, NotionRateLimitError
 from capture_to_notion.relations import resolve_record_relations
 from capture_to_notion.schema import build_properties
 
 
+APPEND_PAGE_CONTENT = "append_page_content"
 COMPLETE_RELATION_PAGE = "complete_relation_page"
+CREATE_CHILD_PAGE = "create_child_page"
 CREATE_OR_UPDATE_PAGE = "create_or_update_page"
 EXPECTED_NOTION_WRITE_ERRORS = (NotionApiError, NotionNotFoundError, NotionRateLimitError)
 
@@ -106,9 +109,18 @@ def build_plan_properties(plan: WritePlan, target_structure: dict[str, Any]) -> 
 
 def _validate_plan_target(plan: WritePlan, target_structure: dict[str, Any]) -> None:
     data_source_id = plan.target.data_source_id
-    if not data_source_id:
+    target_kind = plan.target.target_kind
+    if data_source_id:
+        _data_source_schema(target_structure, data_source_id)
+    elif target_kind == "page_parent":
+        if not (plan.target.parent_page_id or plan.target.page_id):
+            raise NotionWriterError("Plan page_parent target is missing parent_page_id or page_id")
+    elif target_kind == "existing_page":
+        if not plan.target.page_id:
+            raise NotionWriterError("Plan existing_page target is missing page_id")
+    else:
         raise NotionWriterError("Plan target is missing data_source_id")
-    _data_source_schema(target_structure, data_source_id)
+
     target = target_structure.get("target")
     cached_page_id = target.get("page_id") if isinstance(target, dict) else None
     if (
@@ -122,17 +134,39 @@ def _validate_plan_target(plan: WritePlan, target_structure: dict[str, Any]) -> 
 
 
 
+def _operation_parent_page_id(plan: WritePlan) -> str | None:
+    return plan.target.parent_page_id or plan.target.page_id
+
+
+
 def _validate_write_operations(plan: WritePlan) -> None:
     for operation in plan.operations:
         operation_type = operation.get("type")
-        if operation_type != CREATE_OR_UPDATE_PAGE:
-            raise NotionWriterError(f"Unsupported write operation type: {operation_type}")
+        if operation_type == CREATE_OR_UPDATE_PAGE:
+            operation_data_source_id = operation.get("data_source_id")
+            if operation_data_source_id != plan.target.data_source_id:
+                raise NotionWriterError(
+                    "Operation data_source_id does not match plan target data_source_id"
+                )
+            continue
 
-        operation_data_source_id = operation.get("data_source_id")
-        if operation_data_source_id != plan.target.data_source_id:
-            raise NotionWriterError(
-                "Operation data_source_id does not match plan target data_source_id"
-            )
+        if operation_type == CREATE_CHILD_PAGE:
+            operation_parent_page_id = operation.get("parent_page_id")
+            if operation_parent_page_id != _operation_parent_page_id(plan):
+                raise NotionWriterError(
+                    "Operation parent_page_id does not match plan target parent_page_id"
+                )
+            continue
+
+        if operation_type == APPEND_PAGE_CONTENT:
+            operation_page_id = operation.get("page_id")
+            if operation_page_id != plan.target.page_id:
+                raise NotionWriterError(
+                    "Operation page_id does not match plan target page_id"
+                )
+            continue
+
+        raise NotionWriterError(f"Unsupported write operation type: {operation_type}")
 
 
 def _resolved_page_ids(value: Any) -> tuple[list[str], bool]:
@@ -178,6 +212,35 @@ def _completion_asset_operations(operation: dict[str, Any]) -> list[AssetOperati
         for item in asset_operations
         if isinstance(item, (AssetOperation, dict))
     ]
+
+
+def _execute_page_content_operation(operation: dict[str, Any], adapter: Any) -> dict[str, Any]:
+    operation_type = operation.get("type")
+    body_blocks = operation.get("body_blocks", [])
+    batches = split_block_batches(body_blocks) if body_blocks else []
+
+    if operation_type == CREATE_CHILD_PAGE:
+        parent_page_id = operation["parent_page_id"]
+        title = operation.get("title") or "Untitled"
+        first_batch = batches[0] if batches else []
+        response = adapter.create_child_page(parent_page_id, title, children=first_batch)
+        response_page_id = response.get("id") if isinstance(response, dict) else None
+        page_id = response_page_id or operation.get("page_id")
+        for batch in batches[1:]:
+            adapter.append_block_children(page_id, batch)
+        result = {"type": operation_type, "action": CREATE_CHILD_PAGE}
+        if page_id is not None:
+            result["page_id"] = page_id
+        response_url = response.get("url") if isinstance(response, dict) else None
+        if response_url is not None:
+            result["url"] = response_url
+        return result
+
+    page_id = operation["page_id"]
+    for batch in batches:
+        adapter.append_block_children(page_id, batch)
+    return {"type": operation_type, "action": APPEND_PAGE_CONTENT, "page_id": page_id}
+
 
 
 def _execute_completion_operations(
@@ -260,34 +323,47 @@ def apply_write_plan(
 
     _validate_plan_target(plan, target_structure)
     _validate_write_operations(plan)
-    schema = _plan_schema(plan, target_structure)
-
-    working_record, relation_warnings = resolve_record_relations(
-        dict(plan.normalized_record),
-        plan.field_mapping,
-        target_structure,
-        adapter,
+    has_data_source_operation = any(
+        operation.get("type") == CREATE_OR_UPDATE_PAGE for operation in plan.operations
     )
-    properties = _build_record_properties(working_record, plan, target_structure, schema)
-    if not properties and not _has_writable_asset_property(plan, schema):
-        raise NotionWriterError("Plan produced no properties to write")
 
-    working_record, asset_results, asset_warnings = execute_asset_operations(
-        working_record,
-        plan.asset_operations,
-        adapter,
-        downloader=downloader,
-    )
-    properties = _build_record_properties(working_record, plan, target_structure, schema)
-    if not properties:
-        raise NotionWriterError("Plan produced no properties to write")
+    working_record = dict(plan.normalized_record)
+    relation_warnings: list[str] = []
+    asset_results: list[dict[str, Any]] = []
+    asset_warnings: list[str] = []
+    properties: dict[str, Any] = {}
+    if has_data_source_operation:
+        schema = _plan_schema(plan, target_structure)
+        working_record, relation_warnings = resolve_record_relations(
+            working_record,
+            plan.field_mapping,
+            target_structure,
+            adapter,
+        )
+        properties = _build_record_properties(working_record, plan, target_structure, schema)
+        if not properties and not _has_writable_asset_property(plan, schema):
+            raise NotionWriterError("Plan produced no properties to write")
+
+        working_record, asset_results, asset_warnings = execute_asset_operations(
+            working_record,
+            plan.asset_operations,
+            adapter,
+            downloader=downloader,
+        )
+        properties = _build_record_properties(working_record, plan, target_structure, schema)
+        if not properties:
+            raise NotionWriterError("Plan produced no properties to write")
 
     page_cover = _page_cover_for_plan(plan)
     results: list[dict[str, Any]] = []
     for operation in plan.operations:
         operation_type = operation.get("type")
-        page_id = operation.get("page_id")
         try:
+            if operation_type in {CREATE_CHILD_PAGE, APPEND_PAGE_CONTENT}:
+                results.append(_execute_page_content_operation(operation, adapter))
+                continue
+
+            page_id = operation.get("page_id")
             if page_id:
                 response = (
                     adapter.update_page(page_id, properties, cover=page_cover)

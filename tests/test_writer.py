@@ -158,6 +158,75 @@ def test_apply_write_plan_rejects_target_page_id_mismatch():
 
 
 
+def make_page_parent_plan(blocks):
+    return WritePlan(
+        plan_id="plan-page-parent",
+        content_type="article",
+        target=Target(
+            page_title="知识",
+            page_id="parent-page",
+            data_source_id=None,
+            confidence="high",
+            source="v2_page_graph",
+            target_kind="page_parent",
+            parent_page_id="parent-page",
+        ),
+        summary={"title": "DeepSeek V4"},
+        normalized_record={"title": "DeepSeek V4"},
+        field_mapping={},
+        operations=[{"type": "create_child_page", "parent_page_id": "parent-page", "title": "DeepSeek V4", "body_blocks": blocks}],
+        asset_operations=[],
+        sources=[],
+        warnings=[],
+        requires_confirmation=False,
+        confirmation_reason=None,
+    )
+
+
+class PageParentAdapter:
+    def __init__(self):
+        self.created = []
+        self.appended = []
+
+    def create_child_page(self, parent_page_id, title, children=None, cover=None):
+        self.created.append({"parent_page_id": parent_page_id, "title": title, "children": children or [], "cover": cover})
+        return {"id": "created-page", "url": "https://notion.so/created-page"}
+
+    def append_block_children(self, block_id, children):
+        self.appended.append({"block_id": block_id, "children": children})
+        return {"results": children}
+
+
+def paragraph_block(text):
+    return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
+
+def test_apply_write_plan_creates_child_page_with_first_100_blocks():
+    blocks = [paragraph_block(str(index)) for index in range(3)]
+    adapter = PageParentAdapter()
+
+    result = apply_write_plan(make_page_parent_plan(blocks), {"pages": {"parent-page": {"title": "知识"}}}, adapter)
+
+    assert result["results"] == [{"type": "create_child_page", "action": "create_child_page", "page_id": "created-page", "url": "https://notion.so/created-page"}]
+    assert adapter.created[0]["parent_page_id"] == "parent-page"
+    assert adapter.created[0]["title"] == "DeepSeek V4"
+    assert adapter.created[0]["children"] == blocks
+    assert adapter.appended == []
+
+
+def test_apply_write_plan_appends_remaining_blocks_after_create_limit():
+    blocks = [paragraph_block(str(index)) for index in range(205)]
+    adapter = PageParentAdapter()
+
+    result = apply_write_plan(make_page_parent_plan(blocks), {"pages": {"parent-page": {"title": "知识"}}}, adapter)
+
+    assert result["results"][0]["page_id"] == "created-page"
+    assert len(adapter.created[0]["children"]) == 100
+    assert [len(call["children"]) for call in adapter.appended] == [100, 5]
+    assert all(call["block_id"] == "created-page" for call in adapter.appended)
+
+
+
 def test_apply_write_plan_creates_page_with_built_properties():
     plan = make_plan()
     plan.warnings = ["check title"]
