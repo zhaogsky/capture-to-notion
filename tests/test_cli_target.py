@@ -1,8 +1,12 @@
 import json
 
 from capture_to_notion import cli
-from capture_to_notion.models import Target, WritePlan
+from capture_to_notion.cache_v2 import CacheV2Store
+from capture_to_notion.config import ensure_config
+from capture_to_notion.models import CaptureInput, Target, WritePlan
 from capture_to_notion.notion_adapter import NotionAuthError
+from capture_to_notion.planner import build_capture_plan
+from capture_to_notion.preflight import build_capture_preflight
 
 
 def write_json(path, data):
@@ -67,6 +71,46 @@ def test_validate_plan_integrity_accepts_page_parent_without_data_source():
         make_page_parent_write_plan(),
         FakeGraphCache({"knowledge-root": graph}),
     )
+
+    assert target_structure["target"]["target_id"] == "knowledge-root"
+    assert target_structure["target"]["page_id"] == "page-knowledge"
+    assert target_structure["data_sources"] == {}
+
+
+def test_validate_plan_integrity_accepts_real_page_parent_preflight_plan(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "knowledge-root",
+        {
+            "cache_version": 2,
+            "graph_id": "knowledge-root",
+            "root": {"kind": "page", "id": "page-knowledge"},
+            "pages": {"page-knowledge": {"page_id": "page-knowledge", "title": "Knowledge", "kind": "page"}},
+            "blocks": {},
+            "databases": {},
+            "data_sources": {},
+            "views": {},
+        },
+    )
+    store.bind_alias("Knowledge", graph_id="knowledge-root", profile_id=None, kind="graph")
+    capture = CaptureInput.from_dict(
+        {
+            "raw_input": "标题：CLI validation note\n\nHello",
+            "target_hint": "Knowledge",
+            "content_type_hint": "article",
+            "intent_hint": "direct_write",
+            "input_shape_hint": "plain_text",
+            "target_scope_hint": "page_parent",
+            "user_requested_action": "write",
+        }
+    )
+    preflight = build_capture_preflight(capture, store)
+    plan = build_capture_plan(capture, store)
+    plan.preflight_workflow = preflight["workflow"]
+
+    target_structure = cli._validate_plan_integrity(plan, store)
 
     assert target_structure["target"]["target_id"] == "knowledge-root"
     assert target_structure["target"]["page_id"] == "page-knowledge"

@@ -161,7 +161,13 @@ def _v2_page_parent_ready_target(
     page_id = root.get("id") if root.get("kind") == "page" else None
     if not isinstance(page_id, str) or data_sources:
         return None
-    return {"alias": alias_name, "target_id": graph_id, "page_id": page_id}
+    return {
+        "alias": alias_name,
+        "target_id": graph_id,
+        "page_id": page_id,
+        "target_context_verified": True,
+        "context_verification_source": "v2_page_graph",
+    }
 
 
 def _target_from_resolution(resolution: dict[str, Any], hint: str | None = None) -> dict[str, Any]:
