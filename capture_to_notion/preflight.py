@@ -126,6 +126,40 @@ def _is_workflow_confirmed(capture: CaptureInput, confirmation: str) -> bool:
     return confirmation in capture.workflow_confirmations
 
 
+def _is_page_parent_direct_write(capture: CaptureInput) -> bool:
+    return (
+        capture.target_scope_hint == "page_parent"
+        and capture.intent_hint == "direct_write"
+        and capture.user_requested_action == "write"
+    )
+
+
+def _v2_page_parent_ready_target(
+    capture: CaptureInput,
+    cache: CacheStore | CacheV2Store,
+    resolution: dict[str, Any],
+) -> dict[str, str] | None:
+    if not isinstance(cache, CacheV2Store) or not _is_page_parent_direct_write(capture):
+        return None
+    if resolution.get("status") != "write_profile_missing":
+        return None
+
+    alias_name = resolution.get("alias") if isinstance(resolution.get("alias"), str) else capture.target_hint
+    alias = cache.find_alias(alias_name)
+    if not isinstance(alias, dict) or alias.get("kind") != "graph":
+        return None
+    graph_id = alias.get("graph_id")
+    graph = cache.read_graph(graph_id) if isinstance(graph_id, str) else None
+    if not isinstance(graph, dict):
+        return None
+    root = graph.get("root") if isinstance(graph.get("root"), dict) else {}
+    data_sources = graph.get("data_sources") if isinstance(graph.get("data_sources"), dict) else {}
+    page_id = root.get("id") if root.get("kind") == "page" else None
+    if not isinstance(page_id, str) or data_sources:
+        return None
+    return {"alias": alias_name, "target_id": graph_id, "page_id": page_id}
+
+
 def _target_from_resolution(resolution: dict[str, Any], hint: str | None = None) -> dict[str, Any]:
     target = {
         "hint": hint,
@@ -204,6 +238,15 @@ def build_capture_preflight(capture: CaptureInput, cache: CacheStore | CacheV2St
     _set_workflow_resolution(preflight, capture, resolution)
     preflight["target"] = _target_from_resolution(resolution, capture.target_hint)
     status = resolution.get("status")
+
+    page_parent_target = _v2_page_parent_ready_target(capture, cache, resolution)
+    if page_parent_target is not None:
+        ready_target = {**page_parent_target, "status": "v2_page_parent_ready", "source": "v2_alias"}
+        preflight["target"].update(ready_target)
+        preflight["workflow"].setdefault("target_resolution", {}).update(ready_target)
+        preflight["safe_actions"].append(_action("capture_plan", "v2_page_parent_ready"))
+        _set_planning(preflight, "allowed", "capture_plan", "v2_page_parent_ready")
+        return preflight
 
     if status == "target_missing":
         preflight["target"] = _target_from_resolution(resolution)
