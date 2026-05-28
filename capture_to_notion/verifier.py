@@ -165,6 +165,16 @@ def verify_plain_page(
         }
         return {"page_id": page_id, "verified": False, "checks": checks, "warnings": ["missing:page"]}
 
+    page_object = page.get("object")
+    if page_object is not None and page_object != "page":
+        checks = {
+            "page": {"status": "mismatch", "object": page_object},
+            "title": {"status": "missing"},
+            "body_blocks": {"status": "missing", "count": 0},
+            "body_text_samples": {"status": "missing"},
+        }
+        return {"page_id": page_id, "verified": False, "checks": checks, "warnings": ["page_object_mismatch"]}
+
     blocks = adapter.list_block_children(page_id)
     if not isinstance(blocks, list):
         blocks = []

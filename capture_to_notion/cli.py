@@ -675,6 +675,34 @@ def _expected_plain_page_block_count(plan: WritePlan, operation: dict[str, Any] 
     return None
 
 
+def _collect_plain_text_samples(value: Any, samples: list[str], *, limit: int = 3) -> None:
+    if len(samples) >= limit:
+        return
+    if isinstance(value, dict):
+        plain_text = value.get("plain_text")
+        if isinstance(plain_text, str) and plain_text.strip():
+            samples.append(plain_text)
+            return
+        for child in value.values():
+            _collect_plain_text_samples(child, samples, limit=limit)
+            if len(samples) >= limit:
+                return
+    elif isinstance(value, list):
+        for item in value:
+            _collect_plain_text_samples(item, samples, limit=limit)
+            if len(samples) >= limit:
+                return
+
+
+def _expected_plain_page_text_samples(operation: dict[str, Any] | None) -> list[str] | None:
+    body_blocks = operation.get("body_blocks") if operation else None
+    if not isinstance(body_blocks, list):
+        return None
+    samples: list[str] = []
+    _collect_plain_text_samples(body_blocks, samples)
+    return samples or None
+
+
 def _append_plain_verification_page(
     pages: list[dict[str, Any]],
     *,
@@ -691,6 +719,7 @@ def _append_plain_verification_page(
                 adapter,
                 expected_title=_expected_plain_page_title(plan, operation_result, operation),
                 expected_block_count=_expected_plain_page_block_count(plan, operation),
+                expected_text_samples=_expected_plain_page_text_samples(operation),
             )
         )
     except (NotionApiError, NotionAuthError, NotionNotFoundError, NotionPermissionError, NotionRateLimitError):

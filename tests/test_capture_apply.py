@@ -320,6 +320,24 @@ def test_verify_plain_page_checks_title_and_body_blocks():
         "warnings": [],
     }
 
+def test_verify_plain_page_rejects_non_page_objects():
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {"id": page_id, "object": "database", "properties": {}}
+
+        def list_block_children(self, page_id):
+            return [
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Not a page."}]}}
+            ]
+
+    result = verify_plain_page("not-a-page", Adapter(), expected_title="DeepSeek V4")
+
+    assert result["verified"] is False
+    assert result["checks"]["page"]["status"] != "present"
+    assert "page_object_mismatch" in result["warnings"]
+
+
+
 def test_apply_verification_uses_plain_page_checks_for_child_page_results():
     class Adapter:
         def retrieve_page(self, page_id):
@@ -392,6 +410,75 @@ def test_apply_verification_uses_plain_page_checks_for_child_page_results():
         ],
         "warnings": [],
     }
+
+
+def test_apply_verification_passes_body_block_text_samples_for_child_pages():
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {
+                "id": page_id,
+                "object": "page",
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "DeepSeek V4"}]}},
+            }
+
+        def list_block_children(self, page_id):
+            return [
+                {"type": "heading_2", "heading_2": {"rich_text": [{"plain_text": "Different heading"}]}},
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Different body."}]}},
+            ]
+
+    plan = WritePlan.from_dict(
+        {
+            "plan_id": "plan-page-parent",
+            "content_type": "article",
+            "target": {
+                "page_title": "知识",
+                "page_id": "parent-page",
+                "data_source_id": None,
+                "confidence": "high",
+                "source": "v2_profile",
+                "target_id": "graph-parent",
+                "target_kind": "page_parent",
+                "parent_page_id": "parent-page",
+            },
+            "summary": {"title": "DeepSeek V4", "body_block_count": 2},
+            "normalized_record": {"title": "DeepSeek V4"},
+            "field_mapping": {},
+            "operations": [
+                {
+                    "type": "create_child_page",
+                    "parent_page_id": "parent-page",
+                    "title": "DeepSeek V4",
+                    "body_blocks": [
+                        {"type": "heading_2", "heading_2": {"rich_text": [{"plain_text": "Why it matters"}]}},
+                        {
+                            "type": "paragraph",
+                            "paragraph": {"rich_text": [{"plain_text": "Long-context Agent work gets cheaper."}]},
+                        },
+                    ],
+                }
+            ],
+            "asset_operations": [],
+            "sources": [],
+            "warnings": [],
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        }
+    )
+
+    verification = cli._apply_verification_summary(
+        {"results": [{"type": "create_child_page", "page_id": "page-created"}]},
+        Adapter(),
+        plan,
+        {"target": {"page_id": "parent-page"}, "data_sources": {}},
+    )
+
+    assert verification is not None
+    assert verification["verified"] is False
+    assert verification["pages"][0]["checks"]["body_text_samples"]["status"] == "missing"
+    assert "body_text_samples_missing" in verification["pages"][0]["warnings"]
+    assert "body_text_samples_missing" in verification["warnings"]
+
 
 
 def test_capture_apply_requires_confirmation_before_adapter(tmp_path, monkeypatch, capsys):
