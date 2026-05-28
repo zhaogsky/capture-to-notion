@@ -35,11 +35,35 @@ Notion object roles are generic and distinct:
 
 If the user asks to summarize, extract, condense,整理, 归纳, 提炼, or save a long transcript/article/notes after summarizing, summarize before building the capture input.
 
-1. If a currently available `/summarize` skill can handle the source, use it first.
-2. If `/summarize` is unavailable, cannot handle the source, or only documents a missing local CLI/backend, use the current AI session to summarize instead of blocking the workflow.
-3. If neither `/summarize` nor the current AI session can access enough source content to summarize, ask the user to provide transcript/full text or confirm saving only link/metadata.
-4. Use the summary as the main captured content or as a notes/summary candidate in `raw_input`, and include a source marker such as `summary_source: summarize_skill` or `summary_source: ai_fallback` in the input when useful for plan review.
-5. Continue with the normal capture planning flow after summarization.
+1. Use the current AI session with the built-in summary prompt by default. Do not require a separate `/summarize` skill, local CLI, or external summarization dependency for normal daily use.
+2. Treat `/summarize` or other external parsing/summarization tools as optional enhancements only when the user explicitly requests them, the current AI session cannot access enough source content, the source needs specialized extraction such as long PDF/webpage/audio/video transcript parsing, or the user confirms the extra parsing step.
+3. If enough source content is available in the conversation, summarize it directly and use the summary as the main captured content or as a notes/summary candidate in `raw_input`.
+4. If only URL metadata, page intro, SEO description, or show notes are available, do not present the result as a full-content summary. Ask the user to provide transcript/full text, or ask whether to proceed with a limited metadata-based summary.
+5. Include a source marker in `raw_input` or plan-review text when useful, such as `summary_source: user_provided_full_text`, `summary_source: ai_fallback`, `summary_source: metadata_only`, or `summary_source: page_intro_and_show_notes`.
+6. Continue with the normal capture planning flow after summarization.
+
+## Built-in Summary Prompt
+
+When summary preprocessing is needed and enough source content is available in the current conversation, use this general-purpose summary prompt before building the capture input:
+
+```markdown
+你是一个严谨的信息总结助手。
+
+请基于我提供的内容，生成一份中文总结。
+
+要求：
+
+1. 忠于来源内容，不要编造来源中没有的信息。
+2. 根据内容类型选择合适的总结方式，不要机械套用固定模板。
+3. 如果内容中有重要的人物、时间、地点、产品、数字、事件、案例、结论或行动项，请在总结中自然保留。
+4. 如果来源内容不完整，例如只有标题、简介、片段、Show Notes、网页摘要或元数据，请明确说明总结依据和限制。
+5. 如果来源中存在不确定、推测或缺失的信息，不要把它写成确定事实。
+6. 总结要清楚、完整、有层次，适合后续保存到知识库或继续处理。
+
+输出：
+
+请直接详细总结内容。必要时可以使用小标题或项目符号，但不要为了格式而强行拆分。
+```
 
 ## Summary-Like Target Fields
 
@@ -48,10 +72,11 @@ A target/profile may mark mapped fields as summary-like with `summary_fields` an
 When a summary-like field is planned:
 
 1. Prefer a real content source: transcript, full article text, audio/video content, full show notes, or another source representing the body content.
-2. Do not use page-visible metadata such as title, SEO description, or a short platform intro as a content summary.
-3. If a content source is available, use a currently available `/summarize` skill first; if `/summarize` is unavailable or unusable, use the current AI session to summarize the content.
-4. If no content source is available, do not write the summary-like field. Present the plan's `enrichment_requirements` and ask the user to provide a transcript/content source or confirm accepting metadata instead.
-5. Keep this profile-driven: do not hardcode a Notion property name, page title, platform name, or content type in runtime logic.
+2. If the content source is available in the current conversation, use the built-in summary prompt directly.
+3. Do not use page-visible metadata such as title, SEO description, or a short platform intro as a full-content summary.
+4. If only limited metadata, page intro, or show notes are available, the summary-like field may be written only as a limited summary with the source limitation clearly marked for plan review.
+5. If no acceptable source is available for the target's expected summary quality, do not write the summary-like field. Present the plan's `enrichment_requirements` and ask the user to provide transcript/content source or confirm accepting a limited metadata-based summary.
+6. Keep this profile-driven: do not hardcode a Notion property name, page title, platform name, or content type in runtime logic.
 
 ## Preflight-First Workflow Gate
 

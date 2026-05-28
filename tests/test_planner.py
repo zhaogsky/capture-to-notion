@@ -2582,6 +2582,30 @@ def test_extract_labeled_value_preserves_chinese_periods_in_long_structured_fiel
     assert extract_labeled_value(raw_input, ["内容描述"], known_labels) == "第一句。第二句"
 
 
+def test_extract_labeled_value_preserves_pipe_inside_long_text_value():
+    raw_input = (
+        "内容描述：本期《半拿铁 | 商业沉浮录》讲述前湖北首富、"
+        "东星航空创始人兰世立跌宕起伏的商业人生。\n"
+        "参与人员：潇磊、刘飞"
+    )
+
+    value = extract_labeled_value(
+        raw_input,
+        ["内容描述"],
+        known_labels=["主题", "状态", "内容描述", "参与人员"],
+    )
+
+    assert value == "本期《半拿铁 | 商业沉浮录》讲述前湖北首富、东星航空创始人兰世立跌宕起伏的商业人生"
+
+
+def test_extract_labeled_value_treats_pipe_before_known_label_as_boundary():
+    raw_input = "主题：No.203 ✈️ “不死鸟”兰世立 | 状态：未开始 | 参与人员：潇磊、刘飞"
+    known_labels = ["主题", "状态", "参与人员"]
+
+    assert extract_labeled_value(raw_input, ["主题"], known_labels) == "No.203 ✈️ “不死鸟”兰世立"
+    assert extract_labeled_value(raw_input, ["状态"], known_labels) == "未开始"
+
+
 def test_extract_labeled_value_stops_at_chinese_period_before_known_label():
     raw_input = "完成时间改成 2026-05-25。页面信息：节目名=罗永浩的十字路口"
     known_labels = ["完成时间", "页面信息", "节目名"]
@@ -4372,7 +4396,7 @@ def test_v2_plan_maps_unbound_schema_field_when_input_uses_same_label(tmp_path, 
 
 
 
-def test_v2_plan_warns_about_unmapped_writable_schema_fields_without_values(tmp_path, monkeypatch):
+def test_v2_plan_reports_unmapped_writable_schema_fields_as_unwritten_only(tmp_path, monkeypatch):
     from capture_to_notion.cache_v2 import CacheV2Store
 
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
@@ -4428,15 +4452,9 @@ def test_v2_plan_warns_about_unmapped_writable_schema_fields_without_values(tmp_
         store,
     )
 
-    assert "unmapped_writable_schema_field:参与人员" in plan.warnings
-    assert plan.summary["warning_details"] == [
-        {
-            "code": "unmapped_writable_schema_field:参与人员",
-            "severity": "notice",
-            "category": "unmapped_writable_field",
-            "message": "参与人员",
-        }
-    ]
+    assert "unmapped_writable_schema_field:参与人员" not in plan.warnings
+    assert plan.summary["warnings"] == []
+    assert plan.summary["warning_details"] == []
     assert plan.summary["unmapped_writable_fields"] == {
         "参与人员": {
             "type": "rich_text",
@@ -4445,7 +4463,7 @@ def test_v2_plan_warns_about_unmapped_writable_schema_fields_without_values(tmp_
         }
     }
     cli_summary = build_plan_cli_summary(plan)
-    assert cli_summary["warnings"] == ["unmapped_writable_schema_field:参与人员"]
+    assert cli_summary["warnings"] == []
     assert cli_summary["warning_sections"] == {
         "blocking": [],
         "unwritten_fields": [

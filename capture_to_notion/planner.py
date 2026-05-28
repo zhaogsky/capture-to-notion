@@ -22,7 +22,7 @@ METADATA_DELIMITER_PATTERN = r"[\s,，;；|｜]"
 METADATA_COLON_PATTERN = r"[:：]"
 METADATA_ASSIGNMENT_PATTERN = rf"(?:{METADATA_COLON_PATTERN}|=|改成|设为|更新为|调整为|变更为)"
 METADATA_LABEL_PREFIX_PATTERN = r"(?:然后|并且|同时|并|把|将)?"
-METADATA_VALUE_TERMINATOR_PATTERN = r"[\r\n;；|｜]"
+METADATA_VALUE_TERMINATOR_PATTERN = r"[\r\n;；]"
 
 
 def _string_list(value: Any) -> list[str]:
@@ -1639,10 +1639,6 @@ def build_capture_plan(capture: CaptureInput, cache: CacheStore | CacheV2Store) 
         fields if isinstance(fields, dict) else {},
         _ambiguous_mapping_candidate_fields(warnings),
     )
-    for property_name in unmapped_writable_fields:
-        warning = f"unmapped_writable_schema_field:{property_name}"
-        if warning not in warnings:
-            warnings.append(warning)
     asset_operations = build_asset_operations(
         cache.config,
         content_type,
