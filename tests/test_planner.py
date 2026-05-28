@@ -749,6 +749,7 @@ def test_v2_plan_creates_child_page_when_target_is_plain_page(tmp_path, monkeypa
     assert plan.target.target_kind == "page_parent"
     assert plan.target.parent_page_id == "page-knowledge"
     assert plan.target.data_source_id is None
+    assert plan.operations[0]["operation_id"] == "create_child_page:0"
     assert plan.operations[0]["type"] == "create_child_page"
     assert plan.operations[0]["parent_page_id"] == "page-knowledge"
     assert plan.operations[0]["title"] == "DeepSeek V4"

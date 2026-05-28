@@ -244,6 +244,18 @@ def test_apply_write_plan_creates_child_page_with_first_100_blocks():
     assert adapter.appended == []
 
 
+
+def test_apply_write_plan_returns_create_child_page_operation_id():
+    blocks = [paragraph_block("tracked body")]
+    plan = make_page_parent_plan(blocks)
+    plan.operations[0]["operation_id"] = "create_child_page:0"
+    adapter = PageParentAdapter()
+
+    result = apply_write_plan(plan, {"pages": {"parent-page": {"title": "知识"}}}, adapter)
+
+    assert result["results"][0]["operation_id"] == "create_child_page:0"
+
+
 def test_apply_write_plan_rejects_child_page_without_valid_title_before_adapter_call():
     invalid_titles = [None, 123, ""]
 

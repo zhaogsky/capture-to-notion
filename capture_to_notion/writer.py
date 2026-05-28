@@ -241,6 +241,9 @@ def _execute_page_content_operation(operation: dict[str, Any], adapter: Any) -> 
             except EXPECTED_NOTION_WRITE_ERRORS as exc:
                 _raise_partial_page_content_write(exc)
         result = {"type": operation_type, "action": CREATE_CHILD_PAGE}
+        operation_id = operation.get("operation_id")
+        if isinstance(operation_id, str) and operation_id:
+            result["operation_id"] = operation_id
         if page_id is not None:
             result["page_id"] = page_id
         response_url = response.get("url") if isinstance(response, dict) else None

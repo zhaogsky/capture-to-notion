@@ -1362,6 +1362,7 @@ def _v2_page_parent_plan(
     body_blocks = build_body_blocks(capture.raw_input, title=title)
     target_page = _v2_root_page_title(graph, parent_page_id)
     operation = {
+        "operation_id": "create_child_page:0",
         "type": "create_child_page",
         "parent_page_id": parent_page_id,
         "title": title,

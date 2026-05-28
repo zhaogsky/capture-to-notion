@@ -647,6 +647,13 @@ def _append_verification_page(
 
 
 def _plain_operation_for_result(plan: WritePlan, operation_result: dict[str, Any]) -> dict[str, Any] | None:
+    result_operation_id = operation_result.get("operation_id")
+    if isinstance(result_operation_id, str) and result_operation_id:
+        for operation in plan.operations:
+            if operation.get("type") == "create_child_page" and operation.get("operation_id") == result_operation_id:
+                return operation
+        return None
+
     page_id = operation_result.get("page_id")
     for operation in plan.operations:
         if operation.get("type") != "create_child_page":
