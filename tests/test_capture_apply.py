@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from capture_to_notion import assets, cli, verifier
+from capture_to_notion.blocks import build_body_blocks
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.config import ensure_config
@@ -456,6 +457,72 @@ def test_apply_verification_passes_body_block_text_samples_for_child_pages():
                             "paragraph": {"rich_text": [{"plain_text": "Long-context Agent work gets cheaper."}]},
                         },
                     ],
+                }
+            ],
+            "asset_operations": [],
+            "sources": [],
+            "warnings": [],
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        }
+    )
+
+    verification = cli._apply_verification_summary(
+        {"results": [{"type": "create_child_page", "page_id": "page-created"}]},
+        Adapter(),
+        plan,
+        {"target": {"page_id": "parent-page"}, "data_sources": {}},
+    )
+
+    assert verification is not None
+    assert verification["verified"] is False
+    assert verification["pages"][0]["checks"]["body_text_samples"]["status"] == "missing"
+    assert "body_text_samples_missing" in verification["pages"][0]["warnings"]
+    assert "body_text_samples_missing" in verification["warnings"]
+
+
+def test_apply_verification_extracts_write_payload_text_samples_for_child_pages():
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {
+                "id": page_id,
+                "object": "page",
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "DeepSeek V4"}]}},
+            }
+
+        def list_block_children(self, page_id):
+            return [
+                {"type": "heading_2", "heading_2": {"rich_text": [{"plain_text": "Different heading"}]}},
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Different body."}]}},
+            ]
+
+    body_blocks = build_body_blocks(
+        "# DeepSeek V4\n\n## Why it matters\n\nLong-context Agent work gets cheaper.",
+        title="DeepSeek V4",
+    )
+    plan = WritePlan.from_dict(
+        {
+            "plan_id": "plan-page-parent",
+            "content_type": "article",
+            "target": {
+                "page_title": "知识",
+                "page_id": "parent-page",
+                "data_source_id": None,
+                "confidence": "high",
+                "source": "v2_profile",
+                "target_id": "graph-parent",
+                "target_kind": "page_parent",
+                "parent_page_id": "parent-page",
+            },
+            "summary": {"title": "DeepSeek V4", "body_block_count": len(body_blocks)},
+            "normalized_record": {"title": "DeepSeek V4"},
+            "field_mapping": {},
+            "operations": [
+                {
+                    "type": "create_child_page",
+                    "parent_page_id": "parent-page",
+                    "title": "DeepSeek V4",
+                    "body_blocks": body_blocks,
                 }
             ],
             "asset_operations": [],

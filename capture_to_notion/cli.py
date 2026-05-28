@@ -690,6 +690,12 @@ def _collect_plain_text_samples(value: Any, samples: list[str], *, limit: int = 
         if isinstance(plain_text, str) and plain_text.strip():
             samples.append(plain_text)
             return
+        text_payload = value.get("text")
+        if isinstance(text_payload, dict):
+            content = text_payload.get("content")
+            if isinstance(content, str) and content.strip():
+                samples.append(content)
+                return
         for child in value.values():
             _collect_plain_text_samples(child, samples, limit=limit)
             if len(samples) >= limit:
