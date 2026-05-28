@@ -674,9 +674,9 @@ def _expected_plain_page_title(plan: WritePlan, operation_result: dict[str, Any]
 
 def _expected_plain_page_block_count(plan: WritePlan, operation: dict[str, Any] | None) -> int | None:
     body_blocks = operation.get("body_blocks") if operation else None
-    if isinstance(body_blocks, list):
-        return len(body_blocks)
     summary_count = plan.summary.get("body_block_count")
+    if isinstance(body_blocks, list) and (body_blocks or not isinstance(summary_count, int)):
+        return len(body_blocks)
     if isinstance(summary_count, int):
         return summary_count
     return None
@@ -733,6 +733,7 @@ def _append_plain_verification_page(
                 expected_title=_expected_plain_page_title(plan, operation_result, operation),
                 expected_block_count=_expected_plain_page_block_count(plan, operation),
                 expected_text_samples=_expected_plain_page_text_samples(operation),
+                block_count_mode="exact",
             )
         )
     except (NotionApiError, NotionAuthError, NotionNotFoundError, NotionPermissionError, NotionRateLimitError):

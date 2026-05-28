@@ -321,6 +321,69 @@ def test_verify_plain_page_checks_title_and_body_blocks():
         "warnings": [],
     }
 
+def test_verify_plain_page_exact_block_count_rejects_extra_blocks():
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {
+                "id": page_id,
+                "object": "page",
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "DeepSeek V4"}]}},
+            }
+
+        def list_block_children(self, page_id):
+            return [
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "First"}]}},
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Second"}]}},
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Duplicate"}]}},
+            ]
+
+    result = verify_plain_page(
+        "page-created",
+        Adapter(),
+        expected_title="DeepSeek V4",
+        expected_block_count=2,
+        block_count_mode="exact",
+    )
+
+    assert result["verified"] is False
+    assert result["checks"]["body_blocks"] == {
+        "status": "mismatch",
+        "count": 3,
+        "expected_count": 2,
+        "mode": "exact",
+    }
+    assert "body_blocks_count_mismatch" in result["warnings"]
+
+
+def test_verify_plain_page_at_least_block_count_allows_extra_blocks():
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {
+                "id": page_id,
+                "object": "page",
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "DeepSeek V4"}]}},
+            }
+
+        def list_block_children(self, page_id):
+            return [
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "First"}]}},
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Second"}]}},
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Existing content"}]}},
+            ]
+
+    result = verify_plain_page(
+        "page-created",
+        Adapter(),
+        expected_title="DeepSeek V4",
+        expected_block_count=2,
+        block_count_mode="at_least",
+    )
+
+    assert result["verified"] is True
+    assert result["checks"]["body_blocks"] == {"status": "present", "count": 3}
+    assert result["warnings"] == []
+
+
 def test_verify_plain_page_rejects_non_page_objects():
     class Adapter:
         def retrieve_page(self, page_id):
@@ -411,6 +474,77 @@ def test_apply_verification_uses_plain_page_checks_for_child_page_results():
         ],
         "warnings": [],
     }
+
+
+def test_apply_verification_uses_exact_block_count_for_child_page_results():
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {
+                "id": page_id,
+                "object": "page",
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "DeepSeek V4"}]}},
+            }
+
+        def list_block_children(self, page_id):
+            return [
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "First"}]}},
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Second"}]}},
+                {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Duplicated append"}]}},
+            ]
+
+    plan = WritePlan.from_dict(
+        {
+            "plan_id": "plan-page-parent",
+            "content_type": "article",
+            "target": {
+                "page_title": "知识",
+                "page_id": "parent-page",
+                "data_source_id": None,
+                "confidence": "high",
+                "source": "v2_profile",
+                "target_id": "graph-parent",
+                "target_kind": "page_parent",
+                "parent_page_id": "parent-page",
+            },
+            "summary": {"title": "DeepSeek V4", "body_block_count": 2},
+            "normalized_record": {"title": "DeepSeek V4"},
+            "field_mapping": {},
+            "operations": [
+                {
+                    "type": "create_child_page",
+                    "parent_page_id": "parent-page",
+                    "title": "DeepSeek V4",
+                    "body_blocks": [
+                        {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "First"}]}},
+                        {"type": "paragraph", "paragraph": {"rich_text": [{"plain_text": "Second"}]}},
+                    ],
+                }
+            ],
+            "asset_operations": [],
+            "sources": [],
+            "warnings": [],
+            "requires_confirmation": False,
+            "confirmation_reason": None,
+        }
+    )
+
+    verification = cli._apply_verification_summary(
+        {"results": [{"type": "create_child_page", "page_id": "page-created"}]},
+        Adapter(),
+        plan,
+        {"target": {"page_id": "parent-page"}, "data_sources": {}},
+    )
+
+    assert verification is not None
+    assert verification["verified"] is False
+    assert verification["pages"][0]["checks"]["body_blocks"] == {
+        "status": "mismatch",
+        "count": 3,
+        "expected_count": 2,
+        "mode": "exact",
+    }
+    assert "body_blocks_count_mismatch" in verification["pages"][0]["warnings"]
+    assert "body_blocks_count_mismatch" in verification["warnings"]
 
 
 def test_apply_verification_passes_body_block_text_samples_for_child_pages():

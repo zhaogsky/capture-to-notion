@@ -3,7 +3,7 @@ from __future__ import annotations
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from capture_to_notion.notion_adapter import NotionNotFoundError
 from capture_to_notion.schema import cover_url_from_page, file_urls_from_property, property_has_value
@@ -153,6 +153,7 @@ def verify_plain_page(
     expected_title: str | None = None,
     expected_block_count: int | None = None,
     expected_text_samples: list[str] | None = None,
+    block_count_mode: Literal["at_least", "exact"] = "at_least",
 ) -> dict[str, Any]:
     try:
         page = adapter.retrieve_page(page_id)
@@ -187,9 +188,22 @@ def verify_plain_page(
         warnings.append("title_mismatch")
 
     required_block_count = expected_block_count if expected_block_count is not None else 1
-    blocks_present = len(blocks) >= required_block_count
+    block_count = len(blocks)
+    if block_count_mode == "exact":
+        blocks_present = block_count == required_block_count
+        block_warning = "body_blocks_count_mismatch"
+        body_blocks_check = {
+            "status": "present" if blocks_present else "mismatch",
+            "count": block_count,
+        }
+        if not blocks_present:
+            body_blocks_check.update({"expected_count": required_block_count, "mode": "exact"})
+    else:
+        blocks_present = block_count >= required_block_count
+        block_warning = "body_blocks_missing"
+        body_blocks_check = {"status": "present" if blocks_present else "missing", "count": block_count}
     if not blocks_present:
-        warnings.append("body_blocks_missing")
+        warnings.append(block_warning)
 
     samples = expected_text_samples or []
     samples_present = all(sample in body_text for sample in samples)
@@ -199,7 +213,7 @@ def verify_plain_page(
     checks = {
         "page": {"status": "present"},
         "title": {"status": "present" if title_present else "missing"},
-        "body_blocks": {"status": "present" if blocks_present else "missing", "count": len(blocks)},
+        "body_blocks": body_blocks_check,
         "body_text_samples": {"status": "present" if samples_present else "missing"},
     }
     return {"page_id": page_id, "verified": not warnings, "checks": checks, "warnings": warnings}
