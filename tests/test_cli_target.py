@@ -1,12 +1,76 @@
 import json
 
 from capture_to_notion import cli
+from capture_to_notion.models import Target, WritePlan
 from capture_to_notion.notion_adapter import NotionAuthError
 
 
 def write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+class FakeGraphCache:
+    def __init__(self, graphs):
+        self.graphs = graphs
+
+    def read_graph(self, graph_id):
+        return self.graphs.get(graph_id)
+
+
+def make_page_parent_write_plan():
+    return WritePlan(
+        plan_id="plan-page-parent",
+        content_type="article",
+        target=Target(
+            page_title="Knowledge",
+            page_id="page-knowledge",
+            data_source_id=None,
+            confidence="high",
+            source="v2_page_graph",
+            target_id="knowledge-root",
+            target_kind="page_parent",
+            parent_page_id="page-knowledge",
+        ),
+        summary={"title": "CLI validation note"},
+        normalized_record={"title": "CLI validation note", "body": "Hello"},
+        field_mapping={},
+        operations=[
+            {
+                "type": "create_child_page",
+                "parent_page_id": "page-knowledge",
+                "title": "CLI validation note",
+                "body_blocks": [{"type": "paragraph", "text": "Hello"}],
+            }
+        ],
+        asset_operations=[],
+        sources=[],
+        warnings=[],
+        requires_confirmation=False,
+        confirmation_reason=None,
+    )
+
+
+def test_validate_plan_integrity_accepts_page_parent_without_data_source():
+    graph = {
+        "cache_version": 2,
+        "graph_id": "knowledge-root",
+        "root": {"kind": "page", "id": "page-knowledge"},
+        "pages": {"page-knowledge": {"page_id": "page-knowledge", "title": "Knowledge"}},
+        "blocks": {},
+        "databases": {},
+        "data_sources": {},
+        "views": {},
+    }
+
+    target_structure = cli._validate_plan_integrity(
+        make_page_parent_write_plan(),
+        FakeGraphCache({"knowledge-root": graph}),
+    )
+
+    assert target_structure["target"]["target_id"] == "knowledge-root"
+    assert target_structure["target"]["page_id"] == "page-knowledge"
+    assert target_structure["data_sources"] == {}
 
 
 def seed_cached_books_target(root):

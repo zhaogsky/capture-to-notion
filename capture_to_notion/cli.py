@@ -917,7 +917,41 @@ def _validate_v2_view_integrity(plan: WritePlan, graph: dict[str, Any]) -> None:
 
 
 
+def _validate_v2_page_parent_plan_integrity(plan: WritePlan, cache: CacheV2Store) -> dict[str, Any]:
+    graph_id = plan.target.target_id
+    if not graph_id:
+        raise CliInputError("plan_integrity_failed:target_graph_id_missing")
+    graph = cache.read_graph(graph_id)
+    if graph is None:
+        raise CliInputError(f"未找到 graph_id={graph_id} 的 v2 graph cache，请先运行 target scan")
+    cached_page_id = _v2_target_page_id(graph)
+    if not cached_page_id:
+        raise CliInputError("plan_integrity_failed:target_page_not_in_cache")
+    target_page_id = plan.target.parent_page_id or plan.target.page_id
+    if not target_page_id:
+        raise CliInputError("plan_integrity_failed:target_page_id_missing")
+    if target_page_id != cached_page_id:
+        raise CliInputError("plan_integrity_failed:target_page_id_mismatch")
+    data_sources = graph.get("data_sources")
+    if isinstance(data_sources, dict) and data_sources:
+        raise CliInputError("plan_integrity_failed:page_parent_graph_has_data_sources")
+    target_structure = _target_structure_from_v2_graph(graph, graph_id)
+    operations = _effective_operations(plan)
+    if not operations:
+        raise CliInputError("计划没有可执行操作，请重新运行 capture plan 生成可执行计划")
+    for operation in operations:
+        if operation.get("type") != "create_child_page":
+            continue
+        if operation.get("parent_page_id") != target_page_id:
+            raise CliInputError("plan_integrity_failed:operation_parent_page_id_mismatch")
+    _validate_context_integrity(plan, cache, target_structure)
+    return target_structure
+
+
+
 def _validate_v2_plan_integrity(plan: WritePlan, cache: CacheV2Store) -> dict[str, Any]:
+    if plan.target.target_kind == "page_parent":
+        return _validate_v2_page_parent_plan_integrity(plan, cache)
     data_source_id = plan.target.data_source_id
     if not data_source_id:
         raise CliInputError("plan_integrity_failed:target_data_source_id_missing")
