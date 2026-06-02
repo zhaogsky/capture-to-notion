@@ -45,6 +45,37 @@ class CacheV2Store:
         data["graph_id"] = graph_id
         self.write_json(self.graph_path(graph_id), data)
 
+    def iter_graphs(self) -> list[dict[str, Any]]:
+        if not self.config.graphs_v2_dir.exists():
+            return []
+        graphs: list[dict[str, Any]] = []
+        for path in sorted(self.config.graphs_v2_dir.glob("*.json")):
+            data = self.read_json(path, {})
+            if data.get("cache_version") == 2:
+                graphs.append(data)
+        return graphs
+
+    def find_graph_data_source(self, data_source_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        for graph in self.iter_graphs():
+            data_sources = graph.get("data_sources")
+            if not isinstance(data_sources, dict):
+                continue
+            data_source = data_sources.get(data_source_id)
+            if isinstance(data_source, dict):
+                return graph, data_source
+        return None
+
+    def find_graph_data_source_by_database(self, database_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for graph in self.iter_graphs():
+            data_sources = graph.get("data_sources")
+            if not isinstance(data_sources, dict):
+                continue
+            for data_source in data_sources.values():
+                if isinstance(data_source, dict) and data_source.get("database_id") == database_id:
+                    matches.append((graph, data_source))
+        return matches[0] if len(matches) == 1 else None
+
     def read_profile(self, profile_id: str) -> dict[str, Any] | None:
         data = self.read_json(self.profile_path(profile_id), {})
         if data.get("cache_version") != 2:

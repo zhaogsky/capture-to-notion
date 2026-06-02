@@ -24,6 +24,9 @@ class FakeClient:
         self.data_source_query_calls = []
         self.create_page_calls = []
         self.create_database_calls = []
+        self.update_database_calls = []
+        self.create_data_source_calls = []
+        self.list_data_source_templates_calls = []
         self.update_data_source_calls = []
         self.update_page_calls = []
         self.view_list_calls = []
@@ -31,22 +34,55 @@ class FakeClient:
         self.view_create_calls = []
         self.view_update_calls = []
         self.view_delete_calls = []
+        self.user_list_calls = []
         self.file_upload_create_calls = []
         self.file_upload_send_calls = []
         self.file_upload_send_payloads = []
+        self.file_upload_retrieve_calls = []
+        self.file_upload_list_calls = []
+        self.file_upload_complete_calls = []
         self.database = {"id": "db-1", "object": "database"}
         self.pages = types.SimpleNamespace(retrieve=self.retrieve_page, update=self.update_page, create=self.create_page)
-        self.databases = types.SimpleNamespace(retrieve=self.retrieve_database, query=self.query_database, create=self.create_database)
-        self.data_sources = types.SimpleNamespace(retrieve=self.retrieve_data_source, query=self.query_data_source, update=self.update_data_source)
-        self.views = types.SimpleNamespace(
-            list=self.list_views,
-            retrieve=self.retrieve_view,
-            create=self.create_view,
-            update=self.update_view,
-            delete=self.delete_view,
+        self.databases = types.SimpleNamespace(
+            retrieve=self.retrieve_database,
+            query=self.query_database,
+            create=self.create_database,
+            update=self.update_database,
         )
+        self.data_sources = types.SimpleNamespace(
+            retrieve=self.retrieve_data_source,
+            query=self.query_data_source,
+            create=self.create_data_source,
+            update=self.update_data_source,
+            list_templates=self.list_data_source_templates,
+        )
+        self.request_calls = []
         self.blocks = types.SimpleNamespace(children=types.SimpleNamespace(list=self.list_block_children))
-        self.file_uploads = types.SimpleNamespace(create=self.create_file_upload, send=self.send_file_upload)
+        self.file_uploads = types.SimpleNamespace(
+            create=self.create_file_upload,
+            send=self.send_file_upload,
+            retrieve=self.retrieve_file_upload,
+            list=self.list_file_uploads,
+            complete=self.complete_file_upload,
+        )
+        self.users = types.SimpleNamespace(list=self.list_users)
+
+    def list_users(self, **kwargs):
+        self.user_list_calls.append(kwargs)
+        if kwargs.get("start_cursor") == "cursor-2":
+            return {
+                "results": [
+                    {"id": "user-2", "name": "Alex Kim", "type": "person", "person": {"email": "alex.kim@example.com"}},
+                ],
+                "has_more": False,
+            }
+        return {
+            "results": [
+                {"id": "user-1", "name": "Ada Lovelace", "type": "person", "person": {"email": "ada@example.com"}},
+            ],
+            "has_more": True,
+            "next_cursor": "cursor-2",
+        }
 
     def search(self, **kwargs):
         self.search_calls.append(kwargs)
@@ -94,29 +130,37 @@ class FakeClient:
         self.create_database_calls.append(kwargs)
         return {"id": "created-database"}
 
+    def update_database(self, **kwargs):
+        self.update_database_calls.append(kwargs)
+        return {"id": kwargs["database_id"], **{key: value for key, value in kwargs.items() if key != "database_id"}}
+
+    def create_data_source(self, **kwargs):
+        self.create_data_source_calls.append(kwargs)
+        return {"id": "created-data-source", **kwargs}
+
+    def list_data_source_templates(self, **kwargs):
+        self.list_data_source_templates_calls.append(kwargs)
+        return {"results": [{"id": "template-1"}, {"id": "template-2"}]}
+
     def update_data_source(self, **kwargs):
         self.update_data_source_calls.append(kwargs)
         return {"id": kwargs["data_source_id"], "properties": kwargs.get("properties", {})}
 
-    def list_views(self, **kwargs):
-        self.view_list_calls.append(kwargs)
-        return {"results": [{"object": "view", "id": "view-1"}], "has_more": False}
-
-    def retrieve_view(self, **kwargs):
-        self.view_retrieve_calls.append(kwargs)
-        return {"object": "view", "id": kwargs["view_id"], "type": "gallery"}
-
-    def create_view(self, **kwargs):
-        self.view_create_calls.append(kwargs)
-        return {"object": "view", "id": "created-view", **kwargs}
-
-    def update_view(self, **kwargs):
-        self.view_update_calls.append(kwargs)
-        return {"object": "view", "id": kwargs["view_id"]}
-
-    def delete_view(self, **kwargs):
-        self.view_delete_calls.append(kwargs)
-        return {"object": "view", "id": kwargs["view_id"], "in_trash": True}
+    def request(self, path, method, query=None, body=None):
+        self.request_calls.append({"path": path, "method": method, "query": query, "body": body})
+        if path == "/views" and method == "GET":
+            if query and query.get("start_cursor") == "cursor-2":
+                return {"results": [{"object": "view", "id": "view-2"}], "has_more": False}
+            return {"results": [{"object": "view", "id": "view-1"}], "has_more": True, "next_cursor": "cursor-2"}
+        if path == "/views/view-1" and method == "GET":
+            return {"object": "view", "id": "view-1", "type": "gallery"}
+        if path == "/views" and method == "POST":
+            return {"object": "view", "id": "created-view", **(body or {})}
+        if path == "/views/view-1" and method == "PATCH":
+            return {"object": "view", "id": "view-1", **(body or {})}
+        if path == "/views/view-1" and method == "DELETE":
+            return {"object": "view", "id": "view-1", "in_trash": True}
+        raise AssertionError(f"unexpected request: {method} {path}")
 
     def create_file_upload(self, **kwargs):
         self.file_upload_create_calls.append(kwargs)
@@ -133,6 +177,18 @@ class FakeClient:
         else:
             self.file_upload_send_payloads.append(file_arg.read())
         return {"ok": True}
+
+    def retrieve_file_upload(self, **kwargs):
+        self.file_upload_retrieve_calls.append(kwargs)
+        return {"id": kwargs["file_upload_id"], "status": "uploaded"}
+
+    def list_file_uploads(self, **kwargs):
+        self.file_upload_list_calls.append(kwargs)
+        return {"results": [{"id": "upload-1"}, {"id": "upload-2"}]}
+
+    def complete_file_upload(self, **kwargs):
+        self.file_upload_complete_calls.append(kwargs)
+        return {"id": kwargs["file_upload_id"], "status": "complete"}
 
 
 def write_config(tmp_path, env_token_name="CUSTOM_NOTION_TOKEN"):
@@ -174,6 +230,32 @@ def test_notion_token_missing_raises_clear_auth_error(tmp_path, monkeypatch):
 
     with pytest.raises(NotionAuthError, match="CUSTOM_NOTION_TOKEN"):
         notion_token(config)
+
+
+def test_notion_adapter_lists_users_across_pages():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    users = adapter.list_users()
+
+    assert users == [
+        {"id": "user-1", "name": "Ada Lovelace", "type": "person", "person": {"email": "ada@example.com"}},
+        {"id": "user-2", "name": "Alex Kim", "type": "person", "person": {"email": "alex.kim@example.com"}},
+    ]
+    assert client.user_list_calls == [{}, {"start_cursor": "cursor-2"}]
+
+
+
+def test_notion_adapter_search_users_filters_by_email_or_name_case_insensitive():
+    adapter = NotionAdapter(FakeClient())
+
+    assert adapter.search_users("ADA@EXAMPLE.COM") == [
+        {"id": "user-1", "name": "Ada Lovelace", "type": "person", "person": {"email": "ada@example.com"}}
+    ]
+    assert adapter.search_users("alex") == [
+        {"id": "user-2", "name": "Alex Kim", "type": "person", "person": {"email": "alex.kim@example.com"}}
+    ]
+
 
 
 def test_from_config_constructs_official_sdk_client_with_token(tmp_path, monkeypatch):
@@ -281,7 +363,9 @@ def test_search_includes_parent_path_when_parent_pages_are_available():
 
     adapter = NotionAdapter(ParentPathClient())
 
-    assert adapter.search("书单")[0]["parent_path"] == "工具 / 模板"
+    result = adapter.search("书单")[0]
+    assert result["parent_path"] == "工具 / 模板"
+    assert result["path"] == "工具 / 模板 / 书单"
 
 
 def test_search_can_skip_parent_path_resolution():
@@ -351,6 +435,46 @@ def test_retrieve_data_source_delegates_to_sdk_client():
     }
 
 
+def test_query_data_source_paginates_all_results_and_sends_start_cursor():
+    class PaginatedDataSourceClient(FakeClient):
+        def query_data_source(self, **kwargs):
+            self.data_source_query_calls.append(kwargs)
+            if kwargs.get("start_cursor") == "cursor-2":
+                return {"results": [{"id": "row-2"}], "has_more": False}
+            return {"results": [{"id": "row-1"}], "has_more": True, "next_cursor": "cursor-2"}
+
+    client = PaginatedDataSourceClient()
+    adapter = NotionAdapter(client)
+    filters = {"property": "Status", "status": {"equals": "Active"}}
+
+    assert adapter.query_data_source("ds-1", filters=filters) == [{"id": "row-1"}, {"id": "row-2"}]
+    assert client.data_source_query_calls == [
+        {"data_source_id": "ds-1", "filter": filters},
+        {"data_source_id": "ds-1", "filter": filters, "start_cursor": "cursor-2"},
+    ]
+
+
+
+def test_query_database_paginates_all_results_and_sends_start_cursor():
+    class PaginatedDatabaseClient(FakeClient):
+        def query_database(self, **kwargs):
+            self.query_calls.append(kwargs)
+            if kwargs.get("start_cursor") == "cursor-2":
+                return {"results": [{"id": "row-2"}], "has_more": False}
+            return {"results": [{"id": "row-1"}], "has_more": True, "next_cursor": "cursor-2"}
+
+    client = PaginatedDatabaseClient()
+    adapter = NotionAdapter(client)
+    filters = {"property": "Status", "status": {"equals": "Active"}}
+
+    assert adapter.query_database("db-1", filters=filters) == [{"id": "row-1"}, {"id": "row-2"}]
+    assert client.query_calls == [
+        {"database_id": "db-1", "filter": filters},
+        {"database_id": "db-1", "filter": filters, "start_cursor": "cursor-2"},
+    ]
+
+
+
 def test_create_page_uses_data_source_parent():
     client = FakeClient()
     adapter = NotionAdapter(client)
@@ -418,6 +542,113 @@ def test_append_block_children_calls_blocks_children_append():
     assert calls == [{"block_id": "page-created", "children": children}]
 
 
+def test_retrieve_block_delegates_exact_kwargs_and_returns_response():
+    calls = []
+
+    class Blocks:
+        def retrieve(self, **kwargs):
+            calls.append(kwargs)
+            return {"object": "block", "id": kwargs["block_id"]}
+
+    class Client:
+        blocks = Blocks()
+
+    result = NotionAdapter(Client()).retrieve_block("block-1")
+
+    assert result == {"object": "block", "id": "block-1"}
+    assert calls == [{"block_id": "block-1"}]
+
+
+def test_update_block_delegates_exact_kwargs_and_returns_response():
+    calls = []
+
+    class Blocks:
+        def update(self, **kwargs):
+            calls.append(kwargs)
+            return {"object": "block", "id": kwargs["block_id"], "archived": kwargs.get("archived")}
+
+    class Client:
+        blocks = Blocks()
+
+    payload = {"archived": True, "paragraph": {"rich_text": []}}
+    result = NotionAdapter(Client()).update_block("block-1", **payload)
+
+    assert result == {"object": "block", "id": "block-1", "archived": True}
+    assert calls == [{"block_id": "block-1", **payload}]
+
+
+def test_delete_block_delegates_exact_kwargs_and_returns_response():
+    calls = []
+
+    class Blocks:
+        def delete(self, **kwargs):
+            calls.append(kwargs)
+            return {"object": "block", "id": kwargs["block_id"], "archived": True}
+
+    class Client:
+        blocks = Blocks()
+
+    result = NotionAdapter(Client()).delete_block("block-1")
+
+    assert result == {"object": "block", "id": "block-1", "archived": True}
+    assert calls == [{"block_id": "block-1"}]
+
+
+def test_move_page_delegates_exact_kwargs_and_returns_response():
+    calls = []
+
+    class Pages:
+        def move(self, **kwargs):
+            calls.append(kwargs)
+            return {"object": "page", "id": kwargs["page_id"], "parent": kwargs["parent"]}
+
+    class Client:
+        pages = Pages()
+
+    parent = {"page_id": "parent-page"}
+    result = NotionAdapter(Client()).move_page("page-1", parent)
+
+    assert result == {"object": "page", "id": "page-1", "parent": parent}
+    assert calls == [{"page_id": "page-1", "parent": parent}]
+
+
+def test_archive_page_moves_page_to_trash():
+    calls = []
+
+    class Pages:
+        def update(self, **kwargs):
+            calls.append(kwargs)
+            return {"object": "page", "id": kwargs["page_id"], "in_trash": kwargs["in_trash"]}
+
+    class Client:
+        pages = Pages()
+
+    result = NotionAdapter(Client()).archive_page("page-1")
+
+    assert result == {"object": "page", "id": "page-1", "in_trash": True}
+    assert calls == [{"page_id": "page-1", "in_trash": True}]
+
+
+def test_retrieve_page_property_delegates_exact_kwargs_and_returns_response():
+    calls = []
+
+    class Properties:
+        def retrieve(self, **kwargs):
+            calls.append(kwargs)
+            return {"object": "property_item", "id": kwargs["property_id"]}
+
+    class Pages:
+        properties = Properties()
+
+    class Client:
+        pages = Pages()
+
+    result = NotionAdapter(Client()).retrieve_page_property("page-1", "prop-1")
+
+    assert result == {"object": "property_item", "id": "prop-1"}
+    assert calls == [{"page_id": "page-1", "property_id": "prop-1"}]
+
+
 def test_create_database_uses_initial_data_source_properties():
     client = FakeClient()
     adapter = NotionAdapter(client)
@@ -447,6 +678,320 @@ def test_create_database_uses_initial_data_source_properties():
     ]
 
 
+def test_create_database_creates_views_with_created_data_source_id():
+    class DatabaseWithDataSourceClient(FakeClient):
+        def create_database(self, **kwargs):
+            self.create_database_calls.append(kwargs)
+            return {
+                "id": "created-database",
+                "data_sources": [{"id": "created-data-source"}],
+            }
+
+        def retrieve_data_source(self, data_source_id):
+            raise AssertionError("retrieve_data_source should not be called without source_schema metadata")
+
+    client = DatabaseWithDataSourceClient()
+    adapter = NotionAdapter(client)
+
+    result = adapter.create_database(
+        "page-show",
+        "数据库",
+        {"主题": {"type": "title", "title": {}}},
+        views=[
+            {
+                "name": "画廊",
+                "type": "gallery",
+                "filter": {"property": "状态", "status": {"equals": "在读"}},
+                "sorts": [{"property": "主题", "direction": "ascending"}],
+            },
+            {
+                "name": "表格",
+                "type": "table",
+            },
+        ],
+    )
+
+    assert result["id"] == "created-database"
+    assert result["created_views"] == [
+        {
+            "object": "view",
+            "id": "created-view",
+            "data_source_id": "created-data-source",
+            "database_id": "created-database",
+            "name": "画廊",
+            "type": "gallery",
+            "filter": {"property": "状态", "status": {"equals": "在读"}},
+            "sorts": [{"property": "主题", "direction": "ascending"}],
+        },
+        {
+            "object": "view",
+            "id": "created-view",
+            "data_source_id": "created-data-source",
+            "database_id": "created-database",
+            "name": "表格",
+            "type": "table",
+        },
+    ]
+    assert client.request_calls == [
+        {
+            "path": "/views",
+            "method": "POST",
+            "query": None,
+            "body": {
+                "data_source_id": "created-data-source",
+                "database_id": "created-database",
+                "name": "画廊",
+                "type": "gallery",
+                "filter": {"property": "状态", "status": {"equals": "在读"}},
+                "sorts": [{"property": "主题", "direction": "ascending"}],
+            },
+        },
+        {
+            "path": "/views",
+            "method": "POST",
+            "query": None,
+            "body": {
+                "data_source_id": "created-data-source",
+                "database_id": "created-database",
+                "name": "表格",
+                "type": "table",
+            },
+        },
+    ]
+
+
+def test_create_database_ignores_cloned_view_parent_scopes_when_creating_views():
+    class DatabaseWithDataSourceClient(FakeClient):
+        def create_database(self, **kwargs):
+            self.create_database_calls.append(kwargs)
+            return {
+                "id": "new-database",
+                "data_sources": [{"id": "new-data-source"}],
+            }
+
+    client = DatabaseWithDataSourceClient()
+    adapter = NotionAdapter(client)
+
+    result = adapter.create_database(
+        "page-show",
+        "数据库",
+        {"主题": {"type": "title", "title": {}}},
+        views=[
+            {
+                "name": "克隆视图",
+                "type": "gallery",
+                "view_id": "old-view",
+                "create_database": {"parent": {"page_id": "old-page"}},
+                "configuration": {"gallery": {"card_preview": "cover"}},
+            }
+        ],
+    )
+
+    assert result["created_views"] == [
+        {
+            "object": "view",
+            "id": "created-view",
+            "data_source_id": "new-data-source",
+            "database_id": "new-database",
+            "name": "克隆视图",
+            "type": "gallery",
+            "configuration": {"gallery": {"card_preview": "cover"}},
+        }
+    ]
+    assert client.request_calls == [
+        {
+            "path": "/views",
+            "method": "POST",
+            "query": None,
+            "body": {
+                "data_source_id": "new-data-source",
+                "database_id": "new-database",
+                "name": "克隆视图",
+                "type": "gallery",
+                "configuration": {"gallery": {"card_preview": "cover"}},
+            },
+        }
+    ]
+
+
+def test_create_database_remaps_view_property_references_using_retrieved_data_source_schema():
+    class DatabaseWithDataSourceClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.retrieve_data_source_calls = []
+
+        def create_database(self, **kwargs):
+            self.create_database_calls.append(kwargs)
+            return {
+                "id": "new-database",
+                "data_sources": [{"id": "new-data-source"}],
+            }
+
+        def retrieve_data_source(self, data_source_id):
+            self.retrieve_data_source_calls.append(data_source_id)
+            return {
+                "id": data_source_id,
+                "object": "data_source",
+                "properties": {
+                    "日期": {"id": "dst-date", "type": "date", "date": {}},
+                    "状态": {"id": "dst-status", "type": "status", "status": {}},
+                },
+            }
+
+    client = DatabaseWithDataSourceClient()
+    adapter = NotionAdapter(client)
+
+    adapter.create_database(
+        "page-show",
+        "数据库",
+        {
+            "日期": {"type": "date", "date": {}},
+            "状态": {"type": "status", "status": {}},
+        },
+        views=[
+            {
+                "name": "克隆视图",
+                "type": "timeline",
+                "_source_schema": {
+                    "日期": {"id": "src-date", "type": "date"},
+                    "状态": {"id": "src-status", "type": "status"},
+                },
+                "warnings": [{"code": "old_warning"}],
+                "view_id": "old-view",
+                "create_database": {"parent": {"page_id": "old-page"}},
+                "configuration": {
+                    "timeline": {"date_property_id": "src-date", "end_date_property_id": "src-date"},
+                    "group_by": {"property_id": "src-status"},
+                },
+                "sorts": [{"property": "src-status", "direction": "ascending"}],
+                "filter": {"property": "src-date", "date": {"is_not_empty": True}},
+            }
+        ],
+    )
+
+    assert client.retrieve_data_source_calls == ["new-data-source"]
+    assert client.request_calls == [
+        {
+            "path": "/views",
+            "method": "POST",
+            "query": None,
+            "body": {
+                "data_source_id": "new-data-source",
+                "database_id": "new-database",
+                "name": "克隆视图",
+                "type": "timeline",
+                "filter": {"property": "dst-date", "date": {"is_not_empty": True}},
+                "sorts": [{"property": "dst-status", "direction": "ascending"}],
+                "configuration": {
+                    "timeline": {"date_property_id": "dst-date", "end_date_property_id": "dst-date"},
+                    "group_by": {"property_id": "dst-status"},
+                },
+            },
+        }
+    ]
+
+
+def test_create_database_falls_back_to_valid_private_source_schema_for_view_remap():
+    class DatabaseWithDataSourceClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.retrieve_data_source_calls = []
+
+        def create_database(self, **kwargs):
+            self.create_database_calls.append(kwargs)
+            return {
+                "id": "new-database",
+                "data_sources": [{"id": "new-data-source"}],
+            }
+
+        def retrieve_data_source(self, data_source_id):
+            self.retrieve_data_source_calls.append(data_source_id)
+            return {
+                "id": data_source_id,
+                "object": "data_source",
+                "properties": {
+                    "状态": {"id": "dst-status", "type": "status", "status": {}},
+                },
+            }
+
+    client = DatabaseWithDataSourceClient()
+    adapter = NotionAdapter(client)
+
+    adapter.create_database(
+        "page-show",
+        "数据库",
+        {"状态": {"type": "status", "status": {}}},
+        views=[
+            {
+                "name": "克隆视图",
+                "type": "board",
+                "source_schema": None,
+                "_source_schema": {
+                    "状态": {"id": "src-status", "type": "status"},
+                },
+                "configuration": {
+                    "board": {},
+                    "group_by": {"property_id": "src-status"},
+                },
+            }
+        ],
+    )
+
+    assert client.retrieve_data_source_calls == ["new-data-source"]
+    assert client.request_calls == [
+        {
+            "path": "/views",
+            "method": "POST",
+            "query": None,
+            "body": {
+                "data_source_id": "new-data-source",
+                "database_id": "new-database",
+                "name": "克隆视图",
+                "type": "board",
+                "configuration": {
+                    "board": {},
+                    "group_by": {"property_id": "dst-status"},
+                },
+            },
+        }
+    ]
+
+
+def test_create_data_source_converts_title_and_delegates_to_sdk_client():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+    parent = {"type": "page_id", "page_id": "page-show"}
+    properties = {"主题": {"type": "title", "title": {}}}
+
+    result = adapter.create_data_source(parent, "资料库", properties)
+
+    rich_title = [{"type": "text", "text": {"content": "资料库"}}]
+    assert result == {"id": "created-data-source", "parent": parent, "title": rich_title, "properties": properties}
+    assert client.create_data_source_calls == [
+        {"parent": parent, "title": rich_title, "properties": properties}
+    ]
+
+
+def test_list_data_source_templates_returns_results_from_sdk_client():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    result = adapter.list_data_source_templates("ds-episodes")
+
+    assert result == [{"id": "template-1"}, {"id": "template-2"}]
+    assert client.list_data_source_templates_calls == [{"data_source_id": "ds-episodes"}]
+
+
+def test_update_database_delegates_payload_to_sdk_client():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+    payload = {"title": [{"type": "text", "text": {"content": "新标题"}}], "is_inline": True}
+
+    result = adapter.update_database("db-episodes", **payload)
+
+    assert result == {"id": "db-episodes", **payload}
+    assert client.update_database_calls == [{"database_id": "db-episodes", **payload}]
+
 
 def test_update_data_source_delegates_properties_to_sdk_client():
     client = FakeClient()
@@ -460,23 +1005,145 @@ def test_update_data_source_delegates_properties_to_sdk_client():
     ]
 
 
-def test_views_api_methods_delegate_to_sdk():
+def test_file_upload_management_methods_delegate_to_sdk_client():
     client = FakeClient()
     adapter = NotionAdapter(client)
 
-    assert adapter.list_views(data_source_id="ds-1") == [{"object": "view", "id": "view-1"}]
+    assert adapter.retrieve_file_upload("upload-1") == {"id": "upload-1", "status": "uploaded"}
+    assert adapter.list_file_uploads() == [{"id": "upload-1"}, {"id": "upload-2"}]
+    assert adapter.complete_file_upload("upload-1") == {"id": "upload-1", "status": "complete"}
+    assert client.file_upload_retrieve_calls == [{"file_upload_id": "upload-1"}]
+    assert client.file_upload_list_calls == [{}]
+    assert client.file_upload_complete_calls == [{"file_upload_id": "upload-1"}]
+
+
+def test_views_api_methods_use_client_request_without_sdk_views_namespace():
+    client = FakeClient()
+    assert not hasattr(client, "views")
+    adapter = NotionAdapter(client)
+
+    assert adapter.list_views(data_source_id="ds-1") == [
+        {"object": "view", "id": "view-1"},
+        {"object": "view", "id": "view-2"},
+    ]
     assert adapter.retrieve_view("view-1")["type"] == "gallery"
-    assert adapter.create_view(data_source_id="ds-1", database_id="db-1", name="Episodes", view_type="gallery")["id"] == "created-view"
-    assert adapter.update_view("view-1", name="New name")["id"] == "view-1"
+    created = adapter.create_view(
+        data_source_id="ds-1",
+        database_id="db-1",
+        name="Episodes",
+        view_type="gallery",
+        filter={"property": "Status", "status": {"equals": "Active"}},
+        sorts=[{"property": "Name", "direction": "ascending"}],
+        quick_filters={"status": ["Active"]},
+        configuration={"gallery": {"card_preview": "cover"}},
+    )
+    assert created["id"] == "created-view"
+    assert adapter.update_view("view-1", name="New name") == {"object": "view", "id": "view-1", "name": "New name"}
     assert adapter.delete_view("view-1")["in_trash"] is True
 
-    assert client.view_list_calls == [{"data_source_id": "ds-1"}]
-    assert client.view_retrieve_calls == [{"view_id": "view-1"}]
-    assert client.view_create_calls == [
-        {"data_source_id": "ds-1", "database_id": "db-1", "name": "Episodes", "type": "gallery"}
+    assert client.request_calls == [
+        {"path": "/views", "method": "GET", "query": {"data_source_id": "ds-1"}, "body": None},
+        {
+            "path": "/views",
+            "method": "GET",
+            "query": {"data_source_id": "ds-1", "start_cursor": "cursor-2"},
+            "body": None,
+        },
+        {"path": "/views/view-1", "method": "GET", "query": None, "body": None},
+        {
+            "path": "/views",
+            "method": "POST",
+            "query": None,
+            "body": {
+                "data_source_id": "ds-1",
+                "name": "Episodes",
+                "type": "gallery",
+                "database_id": "db-1",
+                "filter": {"property": "Status", "status": {"equals": "Active"}},
+                "sorts": [{"property": "Name", "direction": "ascending"}],
+                "quick_filters": {"status": ["Active"]},
+                "configuration": {"gallery": {"card_preview": "cover"}},
+            },
+        },
+        {"path": "/views/view-1", "method": "PATCH", "query": None, "body": {"name": "New name"}},
+        {"path": "/views/view-1", "method": "DELETE", "query": None, "body": None},
     ]
-    assert client.view_update_calls == [{"view_id": "view-1", "name": "New name"}]
-    assert client.view_delete_calls == [{"view_id": "view-1"}]
+
+
+def test_list_views_rejects_empty_data_source_id_when_database_id_is_provided():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    with pytest.raises(NotionApiError):
+        adapter.list_views(data_source_id="", database_id="db-1")
+
+    assert client.request_calls == []
+
+
+def test_list_views_rejects_empty_data_source_id_without_sending_request():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    with pytest.raises(NotionApiError):
+        adapter.list_views(data_source_id="")
+
+    assert client.request_calls == []
+
+
+def test_create_view_ignores_empty_database_id_when_view_id_parent_is_provided():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    adapter.create_view(
+        data_source_id="ds-1",
+        database_id="",
+        view_id="view-1",
+        name="View",
+        view_type="table",
+    )
+
+    assert client.request_calls == [
+        {
+            "path": "/views",
+            "method": "POST",
+            "query": None,
+            "body": {"data_source_id": "ds-1", "name": "View", "type": "table", "view_id": "view-1"},
+        }
+    ]
+
+
+def test_create_view_treats_empty_create_database_as_provided_and_sends_it():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    adapter.create_view(data_source_id="ds-1", create_database={}, name="View", view_type="table")
+
+    assert client.request_calls == [
+        {
+            "path": "/views",
+            "method": "POST",
+            "query": None,
+            "body": {"data_source_id": "ds-1", "name": "View", "type": "table", "create_database": {}},
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"data_source_id": "", "name": "View", "view_type": "table"},
+        {"data_source_id": "ds-1", "name": "", "view_type": "table"},
+        {"data_source_id": "ds-1", "name": "View", "view_type": ""},
+    ],
+)
+def test_create_view_rejects_empty_required_fields_without_sending_request(kwargs):
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    with pytest.raises(NotionApiError):
+        adapter.create_view(database_id="db-1", **kwargs)
+
+    assert client.request_calls == []
 
 
 def test_create_page_converts_file_upload_cover_to_external_url():
@@ -563,6 +1230,95 @@ def test_query_database_title_exact_uses_database_data_source_and_queries_by_dat
     assert client.query_calls == []
 
 
+def test_query_database_title_exact_uses_explicit_data_source_id():
+    client = FakeClient()
+    client.database = {
+        "object": "database",
+        "data_sources": [{"id": "ds-first"}],
+        "properties": {"Legacy": {"type": "title", "title": {}}},
+    }
+
+    def retrieve_data_source(data_source_id):
+        return {
+            "id": data_source_id,
+            "object": "data_source",
+            "properties": {
+                "作者名称": {"type": "title", "title": {}},
+                "备注": {"type": "rich_text", "rich_text": {}},
+            },
+        }
+
+    client.retrieve_data_source = retrieve_data_source
+    client.data_sources = types.SimpleNamespace(
+        retrieve=client.retrieve_data_source,
+        query=client.query_data_source,
+    )
+    adapter = NotionAdapter(client)
+
+    assert adapter.query_database_title_exact("db-authors", "刘慈欣", data_source_id="ds-authors") == [{"id": "row-1"}]
+    assert client.data_source_query_calls == [
+        {
+            "data_source_id": "ds-authors",
+            "filter": {"property": "作者名称", "title": {"equals": "刘慈欣"}},
+        }
+    ]
+    assert client.query_calls == []
+
+
+
+def test_create_relation_target_page_uses_database_data_source_title_property():
+    client = FakeClient()
+    client.database = {
+        "object": "database",
+        "data_sources": [{"id": "ds-authors"}],
+        "properties": {"Legacy": {"type": "rich_text"}},
+    }
+
+    def retrieve_data_source(data_source_id):
+        return {
+            "id": data_source_id,
+            "object": "data_source",
+            "properties": {
+                "Name": {"type": "title", "title": {}},
+                "简介": {"type": "rich_text", "rich_text": {}},
+            },
+        }
+
+    client.retrieve_data_source = retrieve_data_source
+    client.data_sources = types.SimpleNamespace(
+        retrieve=client.retrieve_data_source,
+        query=client.query_data_source,
+        create=client.create_data_source,
+        update=client.update_data_source,
+        list_templates=client.list_data_source_templates,
+    )
+    adapter = NotionAdapter(client)
+
+    assert adapter.create_relation_target_page("db-authors", "刘慈欣") == {"id": "created-page", "url": "https://example.com/created-page"}
+    assert client.create_page_calls == [
+        {
+            "parent": {"data_source_id": "ds-authors"},
+            "properties": {"Name": {"title": [{"text": {"content": "刘慈欣"}}]}},
+        }
+    ]
+
+
+
+def test_create_relation_target_page_uses_explicit_data_source_id():
+    client = FakeClient()
+    adapter = NotionAdapter(client)
+
+    adapter.create_relation_target_page("db-authors", "刘慈欣", data_source_id="ds-authors")
+
+    assert client.create_page_calls == [
+        {
+            "parent": {"data_source_id": "ds-authors"},
+            "properties": {"名称": {"title": [{"text": {"content": "刘慈欣"}}]}},
+        }
+    ]
+
+
+
 def test_update_page_converts_file_upload_cover_to_external_url():
     client = FakeClient()
     adapter = NotionAdapter(client)
@@ -607,6 +1363,7 @@ def test_upload_file_creates_single_part_upload_sends_file_and_returns_file_uplo
     assert uploaded == {
         "type": "file_upload",
         "name": "封面.jpg",
+        "mime_type": "image/jpeg",
         "file_upload": {"id": "upload-1"},
     }
 
@@ -619,14 +1376,14 @@ def test_upload_file_for_property_delegates_to_upload_file(tmp_path, monkeypatch
 
     def fake_upload_file(path, name, mime_type):
         calls.append((path, name, mime_type))
-        return {"type": "file_upload", "name": name, "file_upload": {"id": "upload-2"}}
+        return {"type": "file_upload", "name": name, "mime_type": mime_type, "file_upload": {"id": "upload-2"}}
 
     monkeypatch.setattr(adapter, "upload_file", fake_upload_file)
 
     uploaded = adapter.upload_file_for_property(file_path, "cover.jpg", "image/jpeg")
 
     assert calls == [(file_path, "cover.jpg", "image/jpeg")]
-    assert uploaded == {"type": "file_upload", "name": "cover.jpg", "file_upload": {"id": "upload-2"}}
+    assert uploaded == {"type": "file_upload", "name": "cover.jpg", "mime_type": "image/jpeg", "file_upload": {"id": "upload-2"}}
 
 
 @pytest.mark.parametrize(

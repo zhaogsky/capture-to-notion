@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from capture_to_notion.config import AppConfig
+from capture_to_notion.view_utils import remap_view_property_references
 
 
 class NotionApiError(Exception):
@@ -69,6 +70,14 @@ def notion_api_version(config: AppConfig) -> str:
     data = _config_data(config)
     version = data.get("notion", {}).get("api_version")
     return str(version) if version else "2026-03-11"
+
+
+def _view_source_schema(view: dict[str, Any]) -> dict[str, Any] | None:
+    for key in ("source_schema", "_source_schema"):
+        source_schema = view.get(key)
+        if isinstance(source_schema, dict):
+            return source_schema
+    return None
 
 
 def _plain_text(value: Any) -> str | None:
@@ -159,6 +168,34 @@ class NotionAdapter:
         except Exception as exc:
             raise _convert_api_error(exc) from exc
 
+    def _query_all(self, func: Callable[..., dict[str, Any]], **kwargs: Any) -> list[dict[str, Any]]:
+        results: list[dict[str, Any]] = []
+        start_cursor: str | None = None
+        while True:
+            page_kwargs = dict(kwargs)
+            if start_cursor:
+                page_kwargs["start_cursor"] = start_cursor
+            response = self._call(func, **page_kwargs)
+            results.extend(response.get("results", []))
+            if not response.get("has_more"):
+                return results
+            start_cursor = response.get("next_cursor")
+
+    def _request(
+        self,
+        path: str,
+        method: str,
+        *,
+        query: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return self.client.request(path, method, query=query, body=body)
+        except (NotionAuthError, NotionPermissionError, NotionNotFoundError, NotionRateLimitError, NotionApiError):
+            raise
+        except Exception as exc:
+            raise _convert_api_error(exc) from exc
+
     def search(
         self,
         query: str,
@@ -174,32 +211,68 @@ class NotionAdapter:
             for result in response.get("results", [])
         ]
 
+    def get_current_user(self) -> dict[str, Any]:
+        return self._call(self.client.users.me)
+
+    def list_users(self) -> list[dict[str, Any]]:
+        return self._query_all(self.client.users.list)
+
+    def search_users(self, query: str) -> list[dict[str, Any]]:
+        normalized_query = query.casefold()
+        return [
+            user
+            for user in self.list_users()
+            if normalized_query in str(user.get("name", "")).casefold()
+            or normalized_query in str(user.get("person", {}).get("email", "")).casefold()
+        ]
+
     def retrieve_page(self, page_id: str) -> dict[str, Any]:
         return self._call(self.client.pages.retrieve, page_id=page_id)
+
+    def archive_page(self, page_id: str) -> dict[str, Any]:
+        return self._call(self.client.pages.update, page_id=page_id, in_trash=True)
+
+    def move_page(self, page_id: str, parent: dict[str, Any]) -> dict[str, Any]:
+        return self._call(self.client.pages.move, page_id=page_id, parent=parent)
+
+    def retrieve_page_property(self, page_id: str, property_id: str) -> dict[str, Any]:
+        return self._call(self.client.pages.properties.retrieve, page_id=page_id, property_id=property_id)
 
     def retrieve_database(self, database_id: str) -> dict[str, Any]:
         return self._call(self.client.databases.retrieve, database_id=database_id)
 
+    def update_database(self, database_id: str, **payload: Any) -> dict[str, Any]:
+        return self._call(self.client.databases.update, database_id=database_id, **payload)
+
     def retrieve_data_source(self, data_source_id: str) -> dict[str, Any]:
         return self._call(self.client.data_sources.retrieve, data_source_id=data_source_id)
+
+    def create_data_source(self, parent: dict[str, Any], title: str, properties: dict[str, Any]) -> dict[str, Any]:
+        rich_title = [{"type": "text", "text": {"content": title}}]
+        return self._call(self.client.data_sources.create, parent=parent, title=rich_title, properties=properties)
+
+    def list_data_source_templates(self, data_source_id: str) -> list[dict[str, Any]]:
+        response = self._call(self.client.data_sources.list_templates, data_source_id=data_source_id)
+        return response.get("results", [])
 
     def query_database(self, database_id: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         kwargs: dict[str, Any] = {"database_id": database_id}
         if filters is not None:
             kwargs["filter"] = filters
-        response = self._call(self.client.databases.query, **kwargs)
-        return response.get("results", [])
+        return self._query_all(self.client.databases.query, **kwargs)
 
     def query_data_source(self, data_source_id: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         kwargs: dict[str, Any] = {"data_source_id": data_source_id}
         if filters is not None:
             kwargs["filter"] = filters
-        response = self._call(self.client.data_sources.query, **kwargs)
-        return response.get("results", [])
+        return self._query_all(self.client.data_sources.query, **kwargs)
 
-    def query_database_title_exact(self, database_id: str, title: str) -> list[dict[str, Any]]:
-        database = self.retrieve_database(database_id)
-        data_source_id = _first_data_source_id(database)
+    def query_database_title_exact(
+        self,
+        database_id: str,
+        title: str,
+        data_source_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         if data_source_id:
             data_source = self.retrieve_data_source(data_source_id)
             properties = data_source.get("properties", {})
@@ -210,6 +283,21 @@ class NotionAdapter:
                 raise NotionApiError(f"Data source has no title property: {data_source_id}")
             return self.query_data_source(
                 data_source_id,
+                filters={"property": title_property_name, "title": {"equals": title}},
+            )
+
+        database = self.retrieve_database(database_id)
+        target_data_source_id = _first_data_source_id(database)
+        if target_data_source_id:
+            data_source = self.retrieve_data_source(target_data_source_id)
+            properties = data_source.get("properties", {})
+            if not isinstance(properties, dict):
+                properties = {}
+            title_property_name = _find_title_property_name(properties)
+            if title_property_name is None:
+                raise NotionApiError(f"Data source has no title property: {target_data_source_id}")
+            return self.query_data_source(
+                target_data_source_id,
                 filters={"property": title_property_name, "title": {"equals": title}},
             )
 
@@ -224,6 +312,32 @@ class NotionAdapter:
             filters={"property": title_property_name, "title": {"equals": title}},
         )
 
+    def create_relation_target_page(
+        self,
+        database_id: str,
+        title: str,
+        data_source_id: str | None = None,
+        extra_properties: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        target_data_source_id = data_source_id
+        if target_data_source_id is None:
+            database = self.retrieve_database(database_id)
+            target_data_source_id = _first_data_source_id(database)
+        if target_data_source_id is None:
+            raise NotionApiError(f"Database has no data source: {database_id}")
+
+        data_source = self.retrieve_data_source(target_data_source_id)
+        properties = data_source.get("properties", {})
+        if not isinstance(properties, dict):
+            properties = {}
+        title_property_name = _find_title_property_name(properties)
+        if title_property_name is None:
+            raise NotionApiError(f"Data source has no title property: {target_data_source_id}")
+
+        page_properties = dict(extra_properties or {})
+        page_properties[title_property_name] = {"title": [{"text": {"content": title}}]}
+        return self.create_page(target_data_source_id, page_properties)
+
     def upload_file(self, path: Path, name: str, mime_type: str) -> dict[str, Any]:
         upload = self._call(
             self.client.file_uploads.create,
@@ -237,38 +351,108 @@ class NotionAdapter:
         return {
             "type": "file_upload",
             "name": name,
+            "mime_type": mime_type,
             "file_upload": {"id": upload_id},
         }
 
     def upload_file_for_property(self, path: Path, name: str, mime_type: str) -> dict[str, Any] | None:
         return self.upload_file(path, name, mime_type)
 
-    def create_database(self, page_id: str, title: str, properties: dict[str, Any]) -> dict[str, Any]:
+    def retrieve_file_upload(self, file_upload_id: str) -> dict[str, Any]:
+        return self._call(self.client.file_uploads.retrieve, file_upload_id=file_upload_id)
+
+    def list_file_uploads(self) -> list[dict[str, Any]]:
+        response = self._call(self.client.file_uploads.list)
+        return response.get("results", [])
+
+    def complete_file_upload(self, file_upload_id: str) -> dict[str, Any]:
+        return self._call(self.client.file_uploads.complete, file_upload_id=file_upload_id)
+
+    def create_database(
+        self,
+        page_id: str,
+        title: str,
+        properties: dict[str, Any],
+        views: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         rich_title = [{"type": "text", "text": {"content": title}}]
-        return self._call(
+        database = self._call(
             self.client.databases.create,
             parent={"type": "page_id", "page_id": page_id},
             title=rich_title,
             initial_data_source={"title": rich_title, "properties": properties},
         )
+        if views:
+            data_sources = database.get("data_sources")
+            data_source_id = None
+            if isinstance(data_sources, list) and data_sources and isinstance(data_sources[0], dict):
+                data_source_id = data_sources[0].get("id")
+            if not isinstance(data_source_id, str) or not data_source_id:
+                raise NotionApiError("create_database response missing data_sources[0].id for view creation")
+            database_id = database.get("id")
+            if not isinstance(database_id, str) or not database_id:
+                raise NotionApiError("create_database response missing id for view creation")
+            target_properties = properties
+            views_need_remap = any(
+                _view_source_schema(view) is not None
+                for view in views
+            )
+            if views_need_remap:
+                data_source = self.retrieve_data_source(data_source_id)
+                retrieved_properties = data_source.get("properties")
+                target_properties = retrieved_properties if isinstance(retrieved_properties, dict) else {}
+            created_views = []
+            for view in views:
+                source_schema = _view_source_schema(view)
+                view_for_create = (
+                    remap_view_property_references(view, source_schema, target_properties)
+                    if source_schema is not None
+                    else view
+                )
+                created_views.append(
+                    self.create_view(
+                        data_source_id=data_source_id,
+                        database_id=database_id,
+                        name=view_for_create["name"],
+                        view_type=view_for_create["type"],
+                        filter=view_for_create.get("filter"),
+                        sorts=view_for_create.get("sorts"),
+                        quick_filters=view_for_create.get("quick_filters"),
+                        configuration=view_for_create.get("configuration"),
+                    )
+                )
+            database["created_views"] = created_views
+        return database
 
     def update_data_source(self, data_source_id: str, properties: dict[str, Any]) -> dict[str, Any]:
         return self._call(self.client.data_sources.update, data_source_id=data_source_id, properties=properties)
 
     def list_views(self, data_source_id: str | None = None, database_id: str | None = None) -> list[dict[str, Any]]:
+        if data_source_id == "" or database_id == "":
+            raise NotionApiError("list_views requires non-empty database_id or data_source_id")
         scopes = [scope for scope in (database_id, data_source_id) if scope]
         if len(scopes) != 1:
             raise NotionApiError("list_views requires exactly one of database_id or data_source_id")
-        kwargs: dict[str, Any] = {}
-        if data_source_id is not None:
-            kwargs["data_source_id"] = data_source_id
-        if database_id is not None:
-            kwargs["database_id"] = database_id
-        response = self._call(self.client.views.list, **kwargs)
-        return response.get("results", [])
+        query: dict[str, Any] = {}
+        if data_source_id:
+            query["data_source_id"] = data_source_id
+        if database_id:
+            query["database_id"] = database_id
+
+        results: list[dict[str, Any]] = []
+        start_cursor: str | None = None
+        while True:
+            page_query = dict(query)
+            if start_cursor:
+                page_query["start_cursor"] = start_cursor
+            response = self._request("/views", "GET", query=page_query)
+            results.extend(response.get("results", []))
+            if not response.get("has_more"):
+                return results
+            start_cursor = response.get("next_cursor")
 
     def retrieve_view(self, view_id: str) -> dict[str, Any]:
-        return self._call(self.client.views.retrieve, view_id=view_id)
+        return self._request(f"/views/{view_id}", "GET")
 
     def create_view(
         self,
@@ -284,31 +468,54 @@ class NotionAdapter:
         quick_filters: dict[str, Any] | None = None,
         configuration: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        parent_scopes = [scope for scope in (database_id, view_id, create_database) if scope]
+        if not data_source_id:
+            raise NotionApiError("create_view requires non-empty data_source_id")
+        if not name:
+            raise NotionApiError("create_view requires non-empty name")
+        if not view_type:
+            raise NotionApiError("create_view requires non-empty view_type")
+        parent_scopes = [
+            scope
+            for scope in (
+                database_id if database_id else None,
+                view_id if view_id else None,
+                create_database if create_database is not None else None,
+            )
+            if scope is not None
+        ]
         if len(parent_scopes) != 1:
             raise NotionApiError("create_view requires exactly one of database_id, view_id, or create_database")
-        kwargs: dict[str, Any] = {"data_source_id": data_source_id, "name": name, "type": view_type}
-        if database_id is not None:
-            kwargs["database_id"] = database_id
-        if view_id is not None:
-            kwargs["view_id"] = view_id
+        body: dict[str, Any] = {"data_source_id": data_source_id, "name": name, "type": view_type}
+        if database_id:
+            body["database_id"] = database_id
+        if view_id:
+            body["view_id"] = view_id
         if create_database is not None:
-            kwargs["create_database"] = create_database
+            body["create_database"] = create_database
         if filter is not None:
-            kwargs["filter"] = filter
+            body["filter"] = filter
         if sorts is not None:
-            kwargs["sorts"] = sorts
+            body["sorts"] = sorts
         if quick_filters is not None:
-            kwargs["quick_filters"] = quick_filters
+            body["quick_filters"] = quick_filters
         if configuration is not None:
-            kwargs["configuration"] = configuration
-        return self._call(self.client.views.create, **kwargs)
+            body["configuration"] = configuration
+        return self._request("/views", "POST", body=body)
 
     def update_view(self, view_id: str, **options: Any) -> dict[str, Any]:
-        return self._call(self.client.views.update, view_id=view_id, **options)
+        return self._request(f"/views/{view_id}", "PATCH", body=options)
 
     def delete_view(self, view_id: str) -> dict[str, Any]:
-        return self._call(self.client.views.delete, view_id=view_id)
+        return self._request(f"/views/{view_id}", "DELETE")
+
+    def retrieve_block(self, block_id: str) -> dict[str, Any]:
+        return self._call(self.client.blocks.retrieve, block_id=block_id)
+
+    def update_block(self, block_id: str, **payload: Any) -> dict[str, Any]:
+        return self._call(self.client.blocks.update, block_id=block_id, **payload)
+
+    def delete_block(self, block_id: str) -> dict[str, Any]:
+        return self._call(self.client.blocks.delete, block_id=block_id)
 
     def list_block_children(self, block_id: str) -> list[dict[str, Any]]:
         results: list[dict[str, Any]] = []
@@ -384,9 +591,9 @@ class NotionAdapter:
             kwargs["cover"] = self._normalize_cover(cover, cover_source_url)
         return self._call(self.client.pages.update, **kwargs)
 
-    def _parent_path(self, parent: dict[str, Any] | None) -> str | None:
+    def _parent_path_info(self, parent: dict[str, Any] | None) -> dict[str, Any]:
         if not isinstance(parent, dict):
-            return None
+            return {"path": None, "path_complete": False}
 
         labels: list[str] = []
         seen: set[str] = set()
@@ -394,7 +601,7 @@ class NotionAdapter:
         while isinstance(current, dict):
             parent_type = current.get("type")
             if parent_type == "workspace":
-                return " / ".join(reversed(labels)) if labels else "工作区顶层"
+                return {"path": " / ".join(reversed(labels)) if labels else "工作区顶层", "path_complete": True}
             if parent_type == "page_id":
                 parent_id = current.get("page_id")
                 if not parent_id or parent_id in seen:
@@ -415,7 +622,11 @@ class NotionAdapter:
                 continue
             break
 
-        return " / ".join(reversed(labels)) if labels else None
+        return {"path": " / ".join(reversed(labels)) if labels else None, "path_complete": False}
+
+    def _parent_path(self, parent: dict[str, Any] | None) -> str | None:
+        path = self._parent_path_info(parent).get("path")
+        return path if isinstance(path, str) else None
 
     def _simplify_search_result(self, result: dict[str, Any], include_parent_path: bool = True) -> dict[str, Any]:
         simplified = {
@@ -426,7 +637,11 @@ class NotionAdapter:
             "last_edited_time": result.get("last_edited_time"),
         }
         if include_parent_path:
-            parent_path = self._parent_path(result.get("parent"))
-            if parent_path:
+            parent_path_info = self._parent_path_info(result.get("parent"))
+            parent_path = parent_path_info.get("path")
+            if isinstance(parent_path, str) and parent_path:
                 simplified["parent_path"] = parent_path
+                title = simplified.get("title")
+                simplified["path"] = f"{parent_path} / {title}" if title else parent_path
+                simplified["path_complete"] = bool(parent_path_info.get("path_complete"))
         return simplified

@@ -157,7 +157,7 @@ def test_golden_initialized_book_plan_has_core_fields_and_cover_asset(tmp_path, 
     assert plan.target.data_source_id == "ds-books"
     assert plan.normalized_record["title"] == "可能性的艺术"
     assert plan.normalized_record["author"] == "刘瑜"
-    assert plan.normalized_record["state"] == "initialized"
+    assert plan.normalized_record["state"] == "想读"
     assert plan.field_mapping == {
         "title": "名称",
         "state": "阅读状态",
@@ -186,7 +186,7 @@ def test_golden_completed_book_plan_maps_completed_state(tmp_path, monkeypatch):
     plan = build_capture_plan(capture, CacheStore(config))
 
     assert plan.normalized_record["title"] == "可能性的艺术"
-    assert plan.normalized_record["state"] == "completed"
+    assert plan.normalized_record["state"] == "已读"
     assert plan.requires_confirmation is False
     assert plan.operations == [
         {"type": "create_or_update_page", "target_data_source": "Books", "data_source_id": "ds-books"}
@@ -324,7 +324,7 @@ def test_golden_podcast_episode_plan_maps_podcast_field(tmp_path, monkeypatch):
     assert plan.content_type == "podcast_episode"
     assert plan.target.data_source_id == "ds-podcasts"
     assert plan.normalized_record["podcast"] == "忽左忽右"
-    assert plan.normalized_record["state"] == "initialized"
+    assert plan.normalized_record["state"] == "想听"
     assert plan.field_mapping["podcast"] == "播客"
     assert "cover" not in plan.field_mapping
     assert plan.requires_confirmation is False

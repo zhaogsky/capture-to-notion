@@ -7,6 +7,7 @@ from capture_to_notion.assets import execute_asset_operations
 from capture_to_notion.blocks import split_block_batches
 from capture_to_notion.models import AssetOperation, WritePlan
 from capture_to_notion.notion_adapter import NotionApiError, NotionNotFoundError, NotionRateLimitError
+from capture_to_notion.people import resolve_record_people
 from capture_to_notion.relations import resolve_record_relations
 from capture_to_notion.schema import build_properties
 
@@ -15,6 +16,7 @@ APPEND_PAGE_CONTENT = "append_page_content"
 COMPLETE_RELATION_PAGE = "complete_relation_page"
 CREATE_CHILD_PAGE = "create_child_page"
 CREATE_OR_UPDATE_PAGE = "create_or_update_page"
+UPDATE_PAGE_PROPERTIES = "update_page_properties"
 EXPECTED_NOTION_WRITE_ERRORS = (NotionApiError, NotionNotFoundError, NotionRateLimitError)
 
 
@@ -26,9 +28,20 @@ class PartialWriteError(NotionWriterError):
     pass
 
 
+def _iter_target_data_sources(target_structure: dict[str, Any]):
+    data_sources = target_structure.get("data_sources")
+    if isinstance(data_sources, dict):
+        yield from data_sources.values()
+
+    graph = target_structure.get("graph")
+    graph_data_sources = graph.get("data_sources") if isinstance(graph, dict) else None
+    if isinstance(graph_data_sources, dict):
+        yield from graph_data_sources.values()
+
+
 def _data_source_schema(target_structure: dict[str, Any], data_source_id: str) -> dict[str, dict[str, Any]]:
-    for data_source in target_structure.get("data_sources", {}).values():
-        if data_source.get("data_source_id") == data_source_id:
+    for data_source in _iter_target_data_sources(target_structure):
+        if isinstance(data_source, dict) and data_source.get("data_source_id") == data_source_id:
             schema = data_source.get("schema", {})
             if isinstance(schema, dict):
                 return schema
@@ -123,12 +136,13 @@ def _validate_plan_target(plan: WritePlan, target_structure: dict[str, Any]) -> 
 
     target = target_structure.get("target")
     cached_page_id = target.get("page_id") if isinstance(target, dict) else None
+    plan_context_page_id = plan.target.parent_page_id if target_kind == "existing_page" else plan.target.page_id
     if (
-        isinstance(plan.target.page_id, str)
-        and plan.target.page_id
+        isinstance(plan_context_page_id, str)
+        and plan_context_page_id
         and isinstance(cached_page_id, str)
         and cached_page_id
-        and plan.target.page_id != cached_page_id
+        and plan_context_page_id != cached_page_id
     ):
         raise NotionWriterError("Plan target page_id does not match target_structure page_id")
 
@@ -305,7 +319,7 @@ def _execute_completion_operations(
             warnings.append(f"completion_invalid_payload:{source_record_key}")
             continue
 
-        record, _asset_results, asset_warnings = execute_asset_operations(
+        record, asset_results, asset_warnings = execute_asset_operations(
             record,
             _completion_asset_operations(operation),
             adapter,
@@ -329,9 +343,59 @@ def _execute_completion_operations(
             result["page_id"] = response_page_id if response_page_id is not None else page_id
             if response_url is not None:
                 result["url"] = response_url
+            if asset_results:
+                result["asset_results"] = asset_results
             results.append(result)
 
     return results, warnings
+
+
+def _execute_update_page_properties_operation(operation: dict[str, Any], adapter: Any) -> dict[str, Any]:
+    page_id = operation.get("page_id")
+    record = operation.get("record")
+    field_mapping = operation.get("field_mapping")
+    schema = operation.get("schema")
+    if not isinstance(page_id, str) or not page_id:
+        raise NotionWriterError("update_page_properties operation page_id must be a non-empty string")
+    if not isinstance(record, dict) or not isinstance(field_mapping, dict) or not isinstance(schema, dict):
+        raise NotionWriterError("update_page_properties operation requires record, field_mapping, and schema")
+    properties = build_properties(record, field_mapping, schema)
+    if not properties:
+        raise NotionWriterError("update_page_properties operation produced no properties")
+    response = adapter.update_page(page_id, properties)
+    result = {
+        "type": UPDATE_PAGE_PROPERTIES,
+        "action": "update_page",
+        "page_id": response.get("id") if isinstance(response, dict) and response.get("id") is not None else page_id,
+    }
+    operation_id = operation.get("operation_id")
+    if isinstance(operation_id, str) and operation_id:
+        result["operation_id"] = operation_id
+    response_url = response.get("url") if isinstance(response, dict) else None
+    if response_url is not None:
+        result["url"] = response_url
+    return result
+
+
+def _execute_explicit_plan_operations(plan: WritePlan, adapter: Any) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for operation in plan.plan_operations:
+        operation_type = operation.get("type")
+        try:
+            if operation_type == UPDATE_PAGE_PROPERTIES:
+                results.append(_execute_update_page_properties_operation(operation, adapter))
+                continue
+            if operation_type in {CREATE_CHILD_PAGE, APPEND_PAGE_CONTENT}:
+                results.append(_execute_page_content_operation(operation, adapter))
+                continue
+            raise NotionWriterError(f"Unsupported plan operation type: {operation_type}")
+        except EXPECTED_NOTION_WRITE_ERRORS as exc:
+            if results:
+                raise PartialWriteError(
+                    "写入已部分完成，后续操作失败；请检查已更新页面后重新生成 update 计划再重试"
+                ) from exc
+            raise
+    return results
 
 
 def apply_write_plan(
@@ -340,10 +404,20 @@ def apply_write_plan(
     adapter: Any,
     downloader: Callable[[str], bytes] | None = None,
 ) -> dict[str, Any]:
-    if not plan.operations:
+    if not plan.operations and not (plan.plan_operations_explicit and plan.plan_operations):
         raise NotionWriterError("Plan has no operations to apply")
 
     _validate_plan_target(plan, target_structure)
+    if plan.plan_operations_explicit:
+        results = _execute_explicit_plan_operations(plan, adapter)
+        return {
+            "plan_id": plan.plan_id,
+            "applied": True,
+            "results": results,
+            "asset_results": [],
+            "warnings": plan.warnings,
+        }
+
     _validate_write_operations(plan)
     has_data_source_operation = any(
         operation.get("type") == CREATE_OR_UPDATE_PAGE for operation in plan.operations
@@ -362,6 +436,14 @@ def apply_write_plan(
             target_structure,
             adapter,
         )
+        people_warnings: list[str]
+        working_record, people_warnings = resolve_record_people(
+            working_record,
+            plan.field_mapping,
+            target_structure,
+            adapter,
+        )
+        relation_warnings.extend(people_warnings)
         properties = _build_record_properties(working_record, plan, target_structure, schema)
         if not properties and not _has_writable_asset_property(plan, schema):
             raise NotionWriterError("Plan produced no properties to write")
@@ -439,6 +521,8 @@ def apply_write_plan(
         "asset_results": asset_results,
         "warnings": plan.warnings + relation_warnings + asset_warnings + completion_warnings,
     }
+    if working_record != plan.normalized_record:
+        response["resolved_record"] = working_record
     if plan.completion_operations:
         response["completion_results"] = completion_results
     return response

@@ -4,7 +4,8 @@ from typing import Any
 
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.cache_v2 import CacheV2Store
-from capture_to_notion.notion_graph import normalize_block, normalize_database, normalize_data_source, normalize_page, normalize_view
+from capture_to_notion.notion_adapter import NotionNotFoundError, NotionPermissionError
+from capture_to_notion.notion_graph import plain_text, normalize_block, normalize_database, normalize_data_source, normalize_data_source_template, normalize_page, normalize_view
 from capture_to_notion.schema import confirmation_blocking_warnings, normalize_database_schema, plain_title, resolve_field_mapping, schema_hash
 
 PROFILE_FIELD_SOURCES = {"explicit", "profile"}
@@ -28,11 +29,137 @@ def _empty_v2_graph(root_kind: str, root_id: str, graph_id: str) -> dict[str, An
     }
 
 
-def _child_database_view_location(page_id: str) -> dict[str, str]:
-    return {"type": "page_id", "id": page_id, "discovered_from": "page_scan"}
+def _child_database_view_location(
+    page_id: str,
+    *,
+    block_id: str | None = None,
+    display_title: str | None = None,
+    section_path: list[str] | None = None,
+) -> dict[str, Any]:
+    location: dict[str, Any] = {"type": "page_id", "id": page_id, "discovered_from": "page_scan"}
+    if block_id:
+        location["source_block_id"] = block_id
+        location["source_block_type"] = "child_database"
+    if display_title:
+        location["display_title"] = display_title
+    if section_path:
+        location["section_path"] = section_path
+    return location
 
 
-def _list_views(adapter: Any, *, database_id: str | None = None, data_source_id: str | None = None) -> list[dict[str, Any]]:
+def _heading_level(block_type: str) -> int | None:
+    if block_type not in {"heading_1", "heading_2", "heading_3"}:
+        return None
+    return int(block_type.rsplit("_", 1)[1])
+
+
+def _block_title(block: dict[str, Any]) -> str | None:
+    block_type = block.get("type")
+    payload = block.get(block_type) if isinstance(block_type, str) else None
+    return plain_text(payload) if isinstance(payload, dict) else None
+
+
+def _section_path(headings: dict[int, str]) -> list[str]:
+    return [headings[level] for level in sorted(headings) if headings[level]]
+
+
+def _add_parent_pages(adapter: Any, graph: dict[str, Any], node: dict[str, Any]) -> None:
+    parent = node.get("parent") if isinstance(node, dict) else None
+    seen: set[str] = set()
+    while isinstance(parent, dict) and parent.get("type") == "page_id":
+        page_id = parent.get("id")
+        if not isinstance(page_id, str) or not page_id or page_id in seen:
+            return
+        seen.add(page_id)
+        if page_id in graph["pages"]:
+            parent = graph["pages"][page_id].get("parent")
+            continue
+        try:
+            page = adapter.retrieve_page(page_id)
+        except (KeyError, AttributeError, NotionNotFoundError, NotionPermissionError):
+            return
+        normalized_page = normalize_page(page)
+        graph["pages"][page_id] = normalized_page
+        parent = normalized_page.get("parent")
+
+
+def _add_parent_graph_objects(adapter: Any, graph: dict[str, Any], node: dict[str, Any]) -> None:
+    parent = node.get("parent") if isinstance(node, dict) else None
+    if not isinstance(parent, dict):
+        return
+    parent_type = parent.get("type")
+    parent_id = parent.get("id")
+    if not isinstance(parent_id, str) or not parent_id:
+        return
+    if parent_type == "page_id":
+        _add_parent_pages(adapter, graph, node)
+    elif parent_type == "data_source_id":
+        _add_data_source_parent_chain(adapter, graph, parent_id)
+    elif parent_type == "database_id":
+        _add_database_parent_chain(adapter, graph, parent_id)
+
+
+def _safe_retrieve_data_source(adapter: Any, data_source_id: str | None) -> dict[str, Any]:
+    if not data_source_id:
+        return {}
+    try:
+        data_source = adapter.retrieve_data_source(data_source_id)
+    except (KeyError, AttributeError, NotionNotFoundError, NotionPermissionError):
+        return {}
+    return data_source if isinstance(data_source, dict) else {}
+
+
+def _safe_list_data_source_templates(adapter: Any, data_source_id: str) -> list[dict[str, Any]]:
+    try:
+        templates = adapter.list_data_source_templates(data_source_id)
+    except (KeyError, AttributeError, TypeError, NotionNotFoundError, NotionPermissionError):
+        return []
+    return [template for template in templates if isinstance(template, dict)] if isinstance(templates, list) else []
+
+
+def _add_template_facts(adapter: Any, data_source: dict[str, Any]) -> None:
+    data_source_id = data_source.get("data_source_id")
+    if not isinstance(data_source_id, str) or not data_source_id:
+        return
+    templates = [
+        normalize_data_source_template(
+            template,
+            fallback_data_source_id=data_source_id,
+            fallback_database_id=data_source.get("database_id") if isinstance(data_source.get("database_id"), str) else None,
+        )
+        for template in _safe_list_data_source_templates(adapter, data_source_id)
+    ]
+    if templates:
+        data_source["templates"] = templates
+
+
+def _add_data_source_parent_chain(adapter: Any, graph: dict[str, Any], data_source_id: str) -> None:
+    if data_source_id not in graph["data_sources"]:
+        data_source = _safe_retrieve_data_source(adapter, data_source_id)
+        if not data_source:
+            return
+        normalized_data_source = normalize_data_source(data_source)
+        location_facts = _data_source_location_facts(adapter, data_source)
+        for key, value in location_facts.items():
+            normalized_data_source.setdefault(key, value)
+        _add_template_facts(adapter, normalized_data_source)
+        graph["data_sources"][data_source_id] = normalized_data_source
+
+    database_id = graph["data_sources"][data_source_id].get("database_id")
+    if isinstance(database_id, str) and database_id:
+        _add_database_parent_chain(adapter, graph, database_id)
+
+
+def _add_database_parent_chain(adapter: Any, graph: dict[str, Any], database_id: str) -> None:
+    if database_id not in graph["databases"]:
+        database = _safe_retrieve_database(adapter, database_id)
+        if not database:
+            return
+        graph["databases"][database_id] = normalize_database(database)
+    _add_parent_pages(adapter, graph, graph["databases"][database_id])
+
+
+def _list_view_refs(adapter: Any, *, database_id: str | None = None, data_source_id: str | None = None) -> list[dict[str, Any]]:
     try:
         return adapter.list_views(database_id=database_id, data_source_id=data_source_id)
     except TypeError:
@@ -41,8 +168,41 @@ def _list_views(adapter: Any, *, database_id: str | None = None, data_source_id:
         if data_source_id is not None:
             return adapter.list_views(data_source_id=data_source_id)
         return []
-    except AttributeError:
-        return []
+
+
+def _retrieve_views(adapter: Any, *, database_id: str | None = None, data_source_id: str | None = None) -> list[dict[str, Any]]:
+    views: list[dict[str, Any]] = []
+    for view_ref in _list_view_refs(adapter, database_id=database_id, data_source_id=data_source_id):
+        view_id = view_ref.get("id") if isinstance(view_ref, dict) else None
+        if not view_id:
+            continue
+        view = adapter.retrieve_view(str(view_id))
+        if isinstance(view, dict):
+            views.append(view)
+    return views
+
+
+def _add_view_data_source(adapter: Any, graph: dict[str, Any], view: dict[str, Any]) -> None:
+    data_source_id = view.get("data_source_id")
+    if isinstance(data_source_id, str) and data_source_id and data_source_id not in graph["data_sources"]:
+        _add_data_source_parent_chain(adapter, graph, data_source_id)
+
+
+
+def _normalize_view_with_source_schema(
+    view: dict[str, Any],
+    graph: dict[str, Any],
+    *,
+    location: dict[str, Any] | None = None,
+    fallback_data_source_id: str | None = None,
+) -> dict[str, Any]:
+    normalized_view = normalize_view(view, location=location)
+    data_source_id = normalized_view.get("data_source_id") or fallback_data_source_id
+    data_source = graph.get("data_sources", {}).get(data_source_id) if isinstance(data_source_id, str) else None
+    schema = data_source.get("schema") if isinstance(data_source, dict) else None
+    if isinstance(schema, dict) and schema:
+        normalized_view["_source_schema"] = schema
+    return normalized_view
 
 
 def scan_page_graph(adapter: Any, page_id: str, store: CacheV2Store, *, graph_id: str) -> dict[str, Any]:
@@ -50,18 +210,39 @@ def scan_page_graph(adapter: Any, page_id: str, store: CacheV2Store, *, graph_id
     page = adapter.retrieve_page(page_id)
     children = adapter.list_block_children(page_id)
     graph["pages"][page_id] = normalize_page(page, block_ids=[str(block.get("id")) for block in children if block.get("id")])
+    _add_parent_graph_objects(adapter, graph, graph["pages"][page_id])
 
+    headings: dict[int, str] = {}
     for block in children:
         block_id = block.get("id")
+        block_id_text = str(block_id) if block_id else None
         if block_id:
             graph["blocks"][str(block_id)] = normalize_block(block)
+        block_type = str(block.get("type"))
+        heading_level = _heading_level(block_type)
+        if heading_level is not None:
+            title = _block_title(block)
+            for level in list(headings):
+                if level >= heading_level:
+                    headings.pop(level, None)
+            if title:
+                headings[heading_level] = title
+            continue
         if block.get("type") != "child_database":
             continue
         database_id = _child_database_id(block)
         if not database_id:
             continue
         database = adapter.retrieve_database(database_id)
+        display_title = _database_title(database, block)
+        visual_location = _child_database_view_location(
+            page_id,
+            block_id=block_id_text,
+            display_title=display_title,
+            section_path=_section_path(headings),
+        )
         graph["databases"][database_id] = normalize_database(database)
+        _add_parent_pages(adapter, graph, graph["databases"][database_id])
         source_metadata = database.get("data_sources")
         sources = source_metadata if isinstance(source_metadata, list) and source_metadata else [{"id": database_id}]
         for source in sources:
@@ -78,11 +259,17 @@ def scan_page_graph(adapter: Any, page_id: str, store: CacheV2Store, *, graph_id
             if block_id:
                 normalized_data_source["source_block_id"] = str(block_id)
             normalized_data_source["source_block_type"] = "child_database"
+            _add_template_facts(adapter, normalized_data_source)
             graph["data_sources"][data_source_id] = normalized_data_source
-        for view in _list_views(adapter, database_id=database_id):
+        for view in _retrieve_views(adapter, database_id=database_id):
             view_id = view.get("id")
             if view_id:
-                graph["views"][str(view_id)] = normalize_view(view, location=_child_database_view_location(page_id))
+                _add_view_data_source(adapter, graph, view)
+                graph["views"][str(view_id)] = _normalize_view_with_source_schema(
+                    view,
+                    graph,
+                    location=visual_location,
+                )
 
     store.write_graph(graph_id, graph)
     return graph
@@ -97,20 +284,28 @@ def scan_data_source_graph(adapter: Any, data_source_id: str, store: CacheV2Stor
     location_facts = _data_source_location_facts(adapter, data_source, database)
     for key, value in location_facts.items():
         normalized_data_source.setdefault(key, value)
+    _add_template_facts(adapter, normalized_data_source)
     graph["data_sources"][data_source_id] = normalized_data_source
 
     if isinstance(database_id, str) and database_id:
         if database:
             graph["databases"][database_id] = normalize_database(database)
-        for view in _list_views(adapter, database_id=database_id):
+            _add_parent_pages(adapter, graph, graph["databases"][database_id])
+        for view in _retrieve_views(adapter, database_id=database_id):
             view_id = view.get("id")
             if view_id:
-                graph["views"][str(view_id)] = normalize_view(view)
+                _add_view_data_source(adapter, graph, view)
+                graph["views"][str(view_id)] = _normalize_view_with_source_schema(view, graph)
 
-    for view in _list_views(adapter, data_source_id=data_source_id):
+    for view in _retrieve_views(adapter, data_source_id=data_source_id):
         view_id = view.get("id")
         if view_id:
-            graph["views"][str(view_id)] = normalize_view(view)
+            _add_view_data_source(adapter, graph, view)
+            graph["views"][str(view_id)] = _normalize_view_with_source_schema(
+                view,
+                graph,
+                fallback_data_source_id=data_source_id,
+            )
 
     store.write_graph(graph_id, graph)
     return graph
@@ -186,13 +381,15 @@ def _build_relations(data_sources: dict[str, Any]) -> list[dict[str, Any]]:
     for data_source_id, data_source in data_sources.items():
         for field_name, property_schema in data_source.get("schema", {}).items():
             if property_schema.get("type") == "relation":
-                relations.append(
-                    {
-                        "data_source_id": data_source_id,
-                        "field": field_name,
-                        "target_database_id": property_schema.get("target_database_id"),
-                    }
-                )
+                relation = {
+                    "data_source_id": data_source_id,
+                    "field": field_name,
+                    "target_database_id": property_schema.get("target_database_id"),
+                }
+                target_data_source_id = property_schema.get("target_data_source_id")
+                if target_data_source_id:
+                    relation["target_data_source_id"] = target_data_source_id
+                relations.append(relation)
     return relations
 
 
@@ -312,7 +509,7 @@ def _safe_retrieve_database(adapter: Any, database_id: str | None) -> dict[str, 
         return {}
     try:
         database = adapter.retrieve_database(database_id)
-    except (KeyError, AttributeError):
+    except (KeyError, AttributeError, NotionNotFoundError, NotionPermissionError):
         return {}
     return database if isinstance(database, dict) else {}
 
@@ -432,6 +629,7 @@ def _scan_data_source(
     title: str | None,
     cached_structure: dict[str, Any],
     location_facts: dict[str, Any] | None = None,
+    templates: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     schema = normalize_database_schema(data_source)
     mapping = _merge_profile_field_mapping(
@@ -451,6 +649,16 @@ def _scan_data_source(
     }
     if location_facts:
         scanned_data_source.update(location_facts)
+    normalized_templates = [
+        normalize_data_source_template(
+            template,
+            fallback_data_source_id=data_source_id,
+            fallback_database_id=scanned_data_source.get("database_id") if isinstance(scanned_data_source.get("database_id"), str) else None,
+        )
+        for template in templates or []
+    ]
+    if normalized_templates:
+        scanned_data_source["templates"] = normalized_templates
     _preserve_cached_parser_profile(scanned_data_source, _cached_data_source(cached_structure, data_source_id))
     return scanned_data_source
 
@@ -525,6 +733,7 @@ def scan_page_target(
                 _data_source_title(data_source, source, database, block),
                 cached_structure,
                 location_facts,
+                _safe_list_data_source_templates(adapter, data_source_id),
             )
 
     if data_sources:
@@ -556,7 +765,14 @@ def scan_page_target(
         data_source_title = plain_title(data_source.get("title")) or data_source.get("name")
         location_facts = _data_source_location_facts(adapter, data_source)
         data_sources = {
-            data_source_id: _scan_data_source(data_source_id, data_source, data_source_title, cached_structure, location_facts)
+            data_source_id: _scan_data_source(
+                data_source_id,
+                data_source,
+                data_source_title,
+                cached_structure,
+                location_facts,
+                _safe_list_data_source_templates(adapter, data_source_id),
+            )
         }
         config_data = cache.read_json(cache.config.config_file, {})
         score_fields = _default_primary_score_fields(config_data)
@@ -618,6 +834,7 @@ def scan_page_target(
                 _data_source_title(data_source, source, database, block),
                 cached_structure,
                 location_facts,
+                _safe_list_data_source_templates(adapter, data_source_id),
             )
 
     config_data = cache.read_json(cache.config.config_file, {})
@@ -657,7 +874,14 @@ def scan_data_source_target(
     title = plain_title(data_source.get("title")) or data_source.get("name")
     location_facts = _data_source_location_facts(adapter, data_source)
     data_sources = {
-        data_source_id: _scan_data_source(data_source_id, data_source, title, cached_structure, location_facts)
+        data_source_id: _scan_data_source(
+            data_source_id,
+            data_source,
+            title,
+            cached_structure,
+            location_facts,
+            _safe_list_data_source_templates(adapter, data_source_id),
+        )
     }
 
     config_data = cache.read_json(cache.config.config_file, {})

@@ -38,8 +38,8 @@ def normalize_state(
 
 
 def classify_content_type(capture: CaptureInput) -> str:
-    if capture.content_type_hint in {"book", "podcast_episode"}:
-        return capture.content_type_hint
+    if isinstance(capture.content_type_hint, str) and capture.content_type_hint.strip():
+        return capture.content_type_hint.strip()
 
     text = capture.raw_input.lower()
     if "播客" in text or "podcast" in text or "/episode" in text:

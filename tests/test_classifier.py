@@ -61,6 +61,19 @@ def test_content_type_hint_prioritizes_over_conflicting_text():
     assert classify_content_type(capture) == "book"
 
 
+def test_content_type_hint_accepts_profile_defined_types():
+    capture = CaptureInput(
+        raw_input="标题：CTN E2E View Constraint 2026-06-02\n标签：社会",
+        target_hint="ctn-e2e-view-source-ds",
+        state=None,
+        content_type_hint="note",
+        user_intent="capture_to_notion",
+        options=CaptureOptions(),
+    )
+
+    assert classify_content_type(capture) == "note"
+
+
 def test_normalize_state_handles_whitespace_and_case_aliases():
     assert normalize_state("  COMPLETED  ") == "completed"
     assert normalize_state("  已读  ") == "completed"
@@ -98,3 +111,49 @@ def test_capture_input_from_dict_uses_defaults_and_ignores_extra_options():
     assert capture.options.allow_target_search is True
     assert capture.options.allow_asset_download is True
     assert capture.options.dry_run is False
+
+
+def test_capture_input_preserves_ai_structured_enrichment_payload():
+    capture = CaptureInput.from_dict(
+        {
+            "raw_input": "补全这个条目",
+            "structured_record": {"title": "Example", "rating": 5},
+            "entities": [
+                {
+                    "entity_id": "speaker-1",
+                    "entity_type": "person",
+                    "record": {"name": "Ada", "bio": "Mathematician"},
+                    "field_mapping": {"name": "Name", "bio": "Bio"},
+                    "target": {"kind": "relation_target", "relation_key": "speaker"},
+                    "sources": ["source-1"],
+                }
+            ],
+            "enrichment": {
+                "record_patch": {"summary": "AI 整理后的摘要"},
+                "entities": [],
+                "sources": ["source-1"],
+                "conflicts": [],
+                "confirmation_status": "confirmed",
+            },
+            "sources": [
+                {
+                    "source_id": "source-1",
+                    "type": "web",
+                    "title": "Reference",
+                    "url": "https://example.com/ref",
+                    "provided_by": "skill_ai",
+                    "confidence": "medium",
+                }
+            ],
+            "verification_requirements": [
+                {"target_id": "speaker-page", "required": True, "fields": ["name", "bio"]}
+            ],
+        }
+    )
+
+    assert capture.structured_record == {"title": "Example", "rating": 5}
+    assert capture.entities[0]["entity_id"] == "speaker-1"
+    assert capture.enrichment["confirmation_status"] == "confirmed"
+    assert capture.sources[0]["provided_by"] == "skill_ai"
+    assert capture.verification_requirements[0]["target_id"] == "speaker-page"
+    assert capture.to_dict()["structured_record"] == {"title": "Example", "rating": 5}

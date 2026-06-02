@@ -12,13 +12,14 @@ class CaptureOptions:
     allow_target_search: bool = True
     allow_asset_download: bool = True
     dry_run: bool = False
+    template_choice: dict[str, Any] | str | None = None
 
 
 @dataclass
 class CaptureInput:
     raw_input: str
     target_hint: str | None = None
-    state: str | None = "initialized"
+    state: str | None = None
     content_type_hint: str | None = None
     user_intent: str = "capture_to_notion"
     intent_hint: str | None = None
@@ -28,6 +29,12 @@ class CaptureInput:
     user_requested_action: str | None = None
     existing_page_id: str | None = None
     workflow_confirmations: list[str] = field(default_factory=list)
+    structured_record: dict[str, Any] = field(default_factory=dict)
+    entities: list[dict[str, Any]] = field(default_factory=list)
+    enrichment: dict[str, Any] = field(default_factory=dict)
+    sources: list[dict[str, Any]] = field(default_factory=list)
+    verification_requirements: list[dict[str, Any]] = field(default_factory=list)
+    body_blocks: list[dict[str, Any]] = field(default_factory=list)
     options: CaptureOptions = field(default_factory=CaptureOptions)
 
     @classmethod
@@ -43,7 +50,7 @@ class CaptureInput:
         return cls(
             raw_input=data["raw_input"],
             target_hint=data.get("target_hint"),
-            state=data.get("state", "initialized"),
+            state=data.get("state"),
             content_type_hint=data.get("content_type_hint"),
             user_intent=data.get("user_intent", "capture_to_notion"),
             intent_hint=data.get("intent_hint"),
@@ -57,6 +64,12 @@ class CaptureInput:
                 for value in data.get("workflow_confirmations", [])
                 if isinstance(value, str)
             ],
+            structured_record=data.get("structured_record") if isinstance(data.get("structured_record"), dict) else {},
+            entities=data.get("entities") if isinstance(data.get("entities"), list) else [],
+            enrichment=data.get("enrichment") if isinstance(data.get("enrichment"), dict) else {},
+            sources=data.get("sources") if isinstance(data.get("sources"), list) else [],
+            verification_requirements=data.get("verification_requirements") if isinstance(data.get("verification_requirements"), list) else [],
+            body_blocks=data.get("body_blocks") if isinstance(data.get("body_blocks"), list) else [],
             options=options,
         )
 
@@ -122,6 +135,32 @@ class AssetOperation:
         )
 
 
+def _operation_with_id(operation: dict[str, Any], prefix: str, index: int) -> dict[str, Any]:
+    normalized = dict(operation)
+    normalized.setdefault("operation_id", f"{prefix}:{index}")
+    return normalized
+
+
+def _asset_plan_operation(operation: AssetOperation, index: int) -> dict[str, Any]:
+    return {
+        "operation_id": f"asset:{index}",
+        "type": "asset_operation",
+        "asset_operation": asdict(operation),
+    }
+
+
+def _normalized_plan_operations(
+    operations: list[dict[str, Any]],
+    asset_operations: list[AssetOperation],
+    completion_operations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        *[_operation_with_id(operation, "operation", index) for index, operation in enumerate(operations)],
+        *[_asset_plan_operation(operation, index) for index, operation in enumerate(asset_operations)],
+        *[_operation_with_id(operation, "completion", index) for index, operation in enumerate(completion_operations)],
+    ]
+
+
 @dataclass
 class WritePlan:
     plan_id: str
@@ -132,7 +171,7 @@ class WritePlan:
     field_mapping: dict[str, str]
     operations: list[dict[str, Any]]
     asset_operations: list[AssetOperation]
-    sources: list[dict[str, str]]
+    sources: list[dict[str, Any]]
     warnings: list[str]
     requires_confirmation: bool
     confirmation_reason: str | None
@@ -142,9 +181,17 @@ class WritePlan:
     planned_completion_operations: list[dict[str, Any]] = field(default_factory=list)
     capture_input: dict[str, Any] | None = None
     preflight_workflow: dict[str, Any] | None = None
+    plan_operations: list[dict[str, Any]] = field(default_factory=list)
+    plan_operations_explicit: bool = field(default=False, repr=False)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "WritePlan":
+        asset_operations = [
+            AssetOperation.from_dict(operation)
+            for operation in data["asset_operations"]
+        ]
+        completion_operations = data.get("completion_operations", [])
+        explicit_plan_operations = data.get("plan_operations")
         return cls(
             plan_id=data["plan_id"],
             content_type=data["content_type"],
@@ -153,15 +200,12 @@ class WritePlan:
             normalized_record=data["normalized_record"],
             field_mapping=data["field_mapping"],
             operations=data["operations"],
-            asset_operations=[
-                AssetOperation.from_dict(operation)
-                for operation in data["asset_operations"]
-            ],
+            asset_operations=asset_operations,
             sources=data["sources"],
             warnings=data["warnings"],
             requires_confirmation=data["requires_confirmation"],
             confirmation_reason=data["confirmation_reason"],
-            completion_operations=data.get("completion_operations", []),
+            completion_operations=completion_operations,
             planned_operations=data.get("planned_operations", []),
             planned_asset_operations=[
                 AssetOperation.from_dict(operation)
@@ -170,6 +214,10 @@ class WritePlan:
             planned_completion_operations=data.get("planned_completion_operations", []),
             capture_input=data.get("capture_input"),
             preflight_workflow=data.get("preflight_workflow"),
+            plan_operations=explicit_plan_operations
+            if isinstance(explicit_plan_operations, list)
+            else _normalized_plan_operations(data["operations"], asset_operations, completion_operations),
+            plan_operations_explicit=isinstance(explicit_plan_operations, list),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -207,6 +255,8 @@ class WritePlan:
             data["capture_input"] = self.capture_input
         if self.preflight_workflow is not None:
             data["preflight_workflow"] = self.preflight_workflow
+        if self.plan_operations_explicit:
+            data["plan_operations"] = self.plan_operations
         return data
 
     def to_json(self) -> str:

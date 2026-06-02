@@ -77,6 +77,10 @@ def _workflow_target_resolution(resolution: dict[str, Any]) -> dict[str, Any]:
         "target_scope_hint": resolution.get("target_scope_hint"),
         "target_context_verified": resolution.get("target_context_verified"),
         "context_verification_source": resolution.get("context_verification_source"),
+        "target_path": resolution.get("target_path"),
+        "target_path_complete": resolution.get("target_path_complete"),
+        "visual_path": resolution.get("visual_path"),
+        "visual_path_complete": resolution.get("visual_path_complete"),
         "cache_completeness": resolution.get("cache_completeness"),
         "sync": resolution.get("sync"),
     }
@@ -129,7 +133,7 @@ def _is_workflow_confirmed(capture: CaptureInput, confirmation: str) -> bool:
 
 def _is_page_parent_direct_write(capture: CaptureInput) -> bool:
     return (
-        capture.target_scope_hint == "page_parent"
+        capture.target_scope_hint in {"page_parent", "existing_page"}
         and capture.intent_hint == "direct_write"
         and capture.user_requested_action == "write"
     )
@@ -189,6 +193,10 @@ def _target_from_resolution(resolution: dict[str, Any], hint: str | None = None)
         "target_scope_hint": resolution.get("target_scope_hint"),
         "target_context_verified": resolution.get("target_context_verified"),
         "context_verification_source": resolution.get("context_verification_source"),
+        "target_path": resolution.get("target_path"),
+        "target_path_complete": resolution.get("target_path_complete"),
+        "visual_path": resolution.get("visual_path"),
+        "visual_path_complete": resolution.get("visual_path_complete"),
         "cache_completeness": resolution.get("cache_completeness"),
         "sync": resolution.get("sync"),
     }
@@ -206,6 +214,37 @@ def _has_stale_schema(structure: dict[str, Any]) -> bool:
         isinstance(data_source, dict) and data_source.get("schema_status") == "stale"
         for data_source in data_sources.values()
     )
+
+
+def _preflight_target_semantics(target: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "target_kind",
+        "page_id",
+        "data_source_id",
+        "view_id",
+        "view_name",
+        "view_type",
+        "parent_page_id",
+        "target_path",
+        "target_path_complete",
+        "visual_path",
+        "visual_path_complete",
+    )
+    return {key: target[key] for key in keys if target.get(key) is not None}
+
+
+
+def _preflight_review(preflight: dict[str, Any], planning: dict[str, Any]) -> dict[str, Any]:
+    target = preflight.get("target")
+    target = target if isinstance(target, dict) else {}
+    return {
+        "target_semantics": _preflight_target_semantics(target),
+        "safe_actions": list(preflight.get("safe_actions") or []),
+        "blocked_actions": list(preflight.get("blocked_actions") or []),
+        "next_action": planning.get("next_action"),
+        "next_action_reason": planning.get("reason"),
+    }
+
 
 
 def build_capture_preflight_summary(preflight: dict[str, Any]) -> dict[str, Any]:
@@ -230,6 +269,7 @@ def build_capture_preflight_summary(preflight: dict[str, Any]) -> dict[str, Any]
         "user_requested_action": preflight.get("user_requested_action"),
         "target": preflight.get("target", {}),
         "structure": structure_summary,
+        "review": _preflight_review(preflight, planning),
         "safe_actions": list(preflight.get("safe_actions") or []),
         "blocked_actions": list(preflight.get("blocked_actions") or []),
         "confirmation_needed": list(preflight.get("confirmation_needed") or []),

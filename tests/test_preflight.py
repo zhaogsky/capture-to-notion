@@ -166,6 +166,13 @@ def test_build_capture_preflight_summary_omits_full_structure():
             "recommendations": [{"action": "confirm_risky_target"}],
             "structure_complexity": {"data_source_count": 2},
         },
+        "review": {
+            "target_semantics": {},
+            "safe_actions": [{"action": "confirm_risky_target", "reason": "risky_target"}],
+            "blocked_actions": [{"action": "plan_directly", "reason": "risky_target_requires_confirmation"}],
+            "next_action": "confirm_risky_target",
+            "next_action_reason": "risky_target_requires_confirmation",
+        },
         "safe_actions": [{"action": "confirm_risky_target", "reason": "risky_target"}],
         "blocked_actions": [{"action": "plan_directly", "reason": "risky_target_requires_confirmation"}],
         "confirmation_needed": ["risky_target"],
@@ -181,6 +188,45 @@ def test_build_capture_preflight_summary_omits_full_structure():
     }
     assert "data_sources" not in summary["structure"]
     assert summary["workflow"] == preflight["workflow"]
+
+
+
+def test_build_capture_preflight_summary_exposes_compact_review_target_semantics():
+    preflight = {
+        "content_type": "book",
+        "target": {
+            "status": "cache_hit",
+            "target_kind": "data_source",
+            "page_id": "page-books",
+            "data_source_id": "ds-books",
+            "view_id": "view-next",
+            "view_name": "待读列表",
+            "view_type": "list",
+        },
+        "safe_actions": [{"action": "capture_plan", "reason": "direct_plan_allowed"}],
+        "blocked_actions": [{"action": "apply_directly", "reason": "plan_required"}],
+        "workflow": {
+            "planning": {"status": "allowed", "next_action": "capture_plan", "reason": "direct_plan_allowed"},
+            "target_resolution": {"status": "cache_hit", "target_kind": "data_source", "view_id": "view-next"},
+        },
+    }
+
+    summary = preflight_module.build_capture_preflight_summary(preflight)
+
+    assert summary["review"] == {
+        "target_semantics": {
+            "target_kind": "data_source",
+            "page_id": "page-books",
+            "data_source_id": "ds-books",
+            "view_id": "view-next",
+            "view_name": "待读列表",
+            "view_type": "list",
+        },
+        "safe_actions": [{"action": "capture_plan", "reason": "direct_plan_allowed"}],
+        "blocked_actions": [{"action": "apply_directly", "reason": "plan_required"}],
+        "next_action": "capture_plan",
+        "next_action_reason": "direct_plan_allowed",
+    }
 
 
 
@@ -489,7 +535,134 @@ def _seed_v2_episode_target(tmp_path, *, data_source_location=None):
     )
 
 
-def test_v2_preflight_syncs_explicit_child_alias_when_page_context_location_facts_missing(tmp_path):
+def test_v2_preflight_allows_view_context_name_match(tmp_path):
+    _write_json(
+        tmp_path / "cache-v2" / "graphs" / "bookshelf.json",
+        {
+            "cache_version": 2,
+            "graph_id": "bookshelf",
+            "root": {"kind": "data_source", "id": "ds-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {"名称": {"name": "名称", "type": "title"}},
+                }
+            },
+            "views": {
+                "view-reading": {
+                    "view_id": "view-reading",
+                    "name": "在读列表",
+                    "type": "table",
+                    "data_source_id": "ds-books",
+                }
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "cache-v2" / "profiles" / "books-profile.json",
+        {
+            "cache_version": 2,
+            "profile_id": "books-profile",
+            "graph_id": "bookshelf",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "canonical_view_id": "view-reading",
+                    "field_mapping": {"title": "名称"},
+                    "field_sources": {"title": "user_binding"},
+                    "parser_profile": {"trusted_field_sources": ["user_binding"]},
+                    "state_mapping": {},
+                    "asset_mapping": {},
+                    "relation_mapping": {},
+                }
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "cache-v2" / "aliases.json",
+        {"cache_version": 2, "aliases": {"书单": {"graph_id": "bookshelf", "profile_id": "books-profile", "kind": "write_profile"}}},
+    )
+
+    preflight = build_capture_preflight(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "书名：反乌合之众",
+                "target_hint": "书单",
+                "target_context_hint": "用户指定目标：书单里面的在读列表",
+                "target_scope_hint": "database_like_area_or_view",
+                "content_type_hint": "book",
+            }
+        ),
+        cache=_v2_cache(tmp_path),
+    )
+
+    assert preflight["target"]["target_context_verified"] is True
+    assert preflight["target"]["view_id"] == "view-reading"
+    assert preflight["workflow"]["target_resolution"]["context_verification_source"] == "view_name_text_match"
+    assert preflight["workflow"]["planning"]["next_action"] == "capture_plan"
+
+
+def test_v2_preflight_includes_profile_relation_mapping_in_target_structure(tmp_path):
+    _write_json(
+        tmp_path / "cache-v2" / "graphs" / "bookshelf.json",
+        {
+            "cache_version": 2,
+            "graph_id": "bookshelf",
+            "root": {"kind": "data_source", "id": "ds-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {
+                        "名称": {"name": "名称", "type": "title"},
+                        "作者": {"name": "作者", "type": "relation", "target_database_id": "db-authors"},
+                    },
+                }
+            },
+            "views": {},
+        },
+    )
+    _write_json(
+        tmp_path / "cache-v2" / "profiles" / "books-profile.json",
+        {
+            "cache_version": 2,
+            "profile_id": "books-profile",
+            "graph_id": "bookshelf",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "canonical_view_id": None,
+                    "field_mapping": {"title": "名称", "author": "作者"},
+                    "field_sources": {"title": "user_binding", "author": "user_binding"},
+                    "parser_profile": {"trusted_field_sources": ["user_binding"]},
+                    "state_mapping": {},
+                    "asset_mapping": {},
+                    "relation_mapping": {"author": {"create_missing": True}},
+                }
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "cache-v2" / "aliases.json",
+        {"cache_version": 2, "aliases": {"书单": {"graph_id": "bookshelf", "profile_id": "books-profile", "kind": "write_profile"}}},
+    )
+
+    from capture_to_notion.target_resolver import resolve_capture_target
+
+    result = resolve_capture_target(
+        CaptureInput.from_dict(
+            {"raw_input": "名称：反乌合之众\n作者：肯尼斯·L.费雪", "target_hint": "书单", "content_type_hint": "book"}
+        ),
+        _v2_cache(tmp_path),
+        "book",
+    )
+
+    assert result["structure"]["relation_mapping"] == {"author": {"create_missing": True}}
+
+
+
+def test_v2_preflight_exposes_incomplete_location_facts_without_hard_blocking(tmp_path):
     _seed_v2_episode_target(tmp_path)
 
     preflight = build_capture_preflight(
@@ -505,18 +678,14 @@ def test_v2_preflight_syncs_explicit_child_alias_when_page_context_location_fact
         cache=_v2_cache(tmp_path),
     )
 
-    assert preflight["target"]["status"] == "target_context_cache_incomplete"
+    assert preflight["target"]["status"] == "cache_hit"
     assert preflight["target"]["target_context_verified"] is False
-    assert preflight["target"]["sync"] == {
-        "scope": "data_source",
-        "target_id": "show-episodes",
-        "alias": "后互联网时代的乱弹-单集列表",
-        "page_id": "page-show",
-    }
+    assert preflight["target"]["cache_completeness"]["status"] == "incomplete"
+    assert preflight["target"]["target_path_complete"] is False
     assert preflight["workflow"]["planning"] == {
-        "status": "blocked",
-        "next_action": "sync_target_cache",
-        "reason": "cache_location_facts_missing",
+        "status": "allowed",
+        "next_action": "capture_plan",
+        "reason": "direct_plan_allowed",
     }
 
 
@@ -919,6 +1088,48 @@ def test_preflight_ignores_legacy_aliases_and_requires_v2_target(tmp_path, monke
 
     assert preflight["workflow"]["planning"]["next_action"] == "scan_target"
     assert preflight["workflow"]["target_resolution"]["status"] == "v2_target_missing"
+
+
+def test_preflight_routes_existing_page_update_with_scanned_page_alias_to_capture_plan(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.config import ensure_config
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "ai-knowledge",
+        {
+            "cache_version": 2,
+            "graph_id": "ai-knowledge",
+            "root": {"kind": "page", "id": "page-knowledge"},
+            "pages": {"page-knowledge": {"page_id": "page-knowledge", "title": "知识", "kind": "page"}},
+            "blocks": {},
+            "databases": {},
+            "data_sources": {},
+            "views": {},
+        },
+    )
+    store.bind_alias("AI/知识", graph_id="ai-knowledge", profile_id=None, kind="graph")
+
+    preflight = build_capture_preflight(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "追加内容",
+                "target_hint": "AI/知识",
+                "intent_hint": "direct_write",
+                "input_shape_hint": "plain_text",
+                "target_scope_hint": "existing_page",
+                "user_requested_action": "write",
+                "existing_page_id": "page-existing",
+            }
+        ),
+        store,
+    )
+
+    assert preflight["target"]["status"] == "v2_page_parent_ready"
+    assert preflight["workflow"]["planning"]["next_action"] == "capture_plan"
+
 
 
 def test_preflight_routes_scanned_page_only_target_to_capture_plan(tmp_path, monkeypatch):

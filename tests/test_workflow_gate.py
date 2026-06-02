@@ -115,6 +115,12 @@ class ScopedDataSourceSyncAdapter:
             },
         }
 
+    def list_views(self, data_source_id: str | None = None, database_id: str | None = None) -> list[dict]:
+        return []
+
+    def retrieve_view(self, view_id: str) -> dict:
+        raise AssertionError(f"unexpected view retrieval: {view_id}")
+
 
 class PodcastChildDatabaseSyncAdapter:
     def __init__(self) -> None:
@@ -141,6 +147,12 @@ class PodcastChildDatabaseSyncAdapter:
         if database_id != "db-houhulianwang-child":
             raise AssertionError(f"unexpected database sync: {database_id}")
         return {"id": database_id, "parent": {"type": "page_id", "page_id": "page-houhulianwang"}}
+
+    def list_views(self, data_source_id: str | None = None, database_id: str | None = None) -> list[dict]:
+        return []
+
+    def retrieve_view(self, view_id: str) -> dict:
+        raise AssertionError(f"unexpected view retrieval: {view_id}")
 
 
 def test_capture_plan_blocks_when_preflight_next_action_is_suggest_target(tmp_path, monkeypatch, capsys):

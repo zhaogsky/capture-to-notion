@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from capture_to_notion import cli
 from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.config import ensure_config
@@ -242,7 +244,15 @@ class ManySearchAdapter:
         ]
 
 
-class ScanAdapter:
+class NoViewsMixin:
+    def list_views(self, database_id=None, data_source_id=None):
+        return []
+
+    def retrieve_view(self, view_id):
+        raise AssertionError("retrieve_view should not be called when list_views is empty")
+
+
+class ScanAdapter(NoViewsMixin):
     def retrieve_page(self, page_id):
         return {"id": page_id, "title": "书单"}
 
@@ -261,7 +271,7 @@ class ScanAdapter:
         }
 
 
-class PageOnlyScanAdapter:
+class PageOnlyScanAdapter(NoViewsMixin):
     def retrieve_page(self, page_id):
         return {"id": page_id, "title": "AI/知识"}
 
@@ -269,7 +279,65 @@ class PageOnlyScanAdapter:
         return [{"type": "paragraph", "id": "block-1", "paragraph": {}}]
 
 
-class PodcastCompletionDateScanAdapter:
+class NestedPageOnlyScanAdapter(NoViewsMixin):
+    def retrieve_page(self, page_id):
+        pages = {
+            "page-tools": {
+                "id": "page-tools",
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "工具"}]}},
+                "parent": {"type": "page_id", "page_id": "page-ai"},
+            },
+            "page-ai": {
+                "id": "page-ai",
+                "properties": {"title": {"type": "title", "title": [{"plain_text": "AI"}]}},
+                "parent": {"type": "workspace", "workspace": True},
+            },
+        }
+        return pages[page_id]
+
+    def list_block_children(self, page_id):
+        return [{"type": "paragraph", "id": "block-1", "parent": {"type": "page_id", "page_id": page_id}, "paragraph": {}}]
+
+
+class RecordPageAncestorScanAdapter(NoViewsMixin):
+    def retrieve_page(self, page_id):
+        pages = {
+            "page-show": {
+                "id": "page-show",
+                "parent": {"type": "data_source_id", "data_source_id": "ds-podcasts"},
+                "properties": {"播客名称": {"type": "title", "title": [{"plain_text": "独树不成林"}]}},
+            },
+            "page-podcasts": {
+                "id": "page-podcasts",
+                "parent": {"type": "workspace", "workspace": True},
+                "properties": {"名称": {"type": "title", "title": [{"plain_text": "播客"}]}},
+            },
+        }
+        return pages[page_id]
+
+    def list_block_children(self, page_id):
+        return []
+
+    def retrieve_data_source(self, data_source_id):
+        assert data_source_id == "ds-podcasts"
+        return {
+            "id": "ds-podcasts",
+            "title": [{"plain_text": "播客索引"}],
+            "parent": {"type": "database_id", "database_id": "db-podcasts"},
+            "properties": {"播客名称": {"id": "title", "name": "播客名称", "type": "title"}},
+        }
+
+    def retrieve_database(self, database_id):
+        assert database_id == "db-podcasts"
+        return {
+            "id": "db-podcasts",
+            "title": [{"plain_text": "播客库"}],
+            "parent": {"type": "page_id", "page_id": "page-podcasts"},
+            "data_sources": [{"id": "ds-podcasts"}],
+        }
+
+
+class PodcastCompletionDateScanAdapter(NoViewsMixin):
     def retrieve_page(self, page_id):
         return {"id": page_id, "title": "独树不成林"}
 
@@ -293,15 +361,21 @@ class CreateDatabaseAdapter:
     def __init__(self):
         self.created = []
 
-    def create_database(self, page_id, title, properties):
-        self.created.append({"page_id": page_id, "title": title, "properties": properties})
-        return {"id": "db-episodes", "title": [{"plain_text": title}]}
+    def create_database(self, page_id, title, properties, views=None):
+        self.created.append({"page_id": page_id, "title": title, "properties": properties, "views": views})
+        result = {"id": "db-episodes", "title": [{"plain_text": title}]}
+        if views:
+            result["created_views"] = [{"id": "view-gallery", "name": "画廊", "type": "gallery"}]
+        return result
 
     def retrieve_page(self, page_id):
         return {"id": page_id, "parent": {"type": "data_source_id", "data_source_id": "ds-programs"}, "properties": {}}
 
     def list_block_children(self, page_id):
         return [{"type": "child_database", "id": "db-episodes", "child_database": {"title": "数据库"}}]
+
+    def list_views(self, database_id=None, data_source_id=None):
+        return []
 
     def retrieve_database(self, database_id):
         return {
@@ -334,7 +408,7 @@ class CreateDatabaseAdapter:
         }
 
 
-class DataSourceScanAdapter:
+class DataSourceScanAdapter(NoViewsMixin):
     def retrieve_data_source(self, data_source_id):
         return {
             "id": data_source_id,
@@ -347,7 +421,43 @@ class DataSourceScanAdapter:
         }
 
 
-class NullTitleDataSourceScanAdapter:
+class DataSourceScanWithViewsAdapter:
+    def retrieve_data_source(self, data_source_id):
+        return {
+            "id": data_source_id,
+            "title": [{"plain_text": "Books"}],
+            "parent": {"type": "database_id", "database_id": "db-books"},
+            "properties": {
+                "Name": {"id": "title", "type": "title", "title": {}},
+                "Status": {"id": "status", "type": "status", "status": {"options": []}},
+            },
+        }
+
+    def retrieve_database(self, database_id):
+        return {
+            "id": database_id,
+            "title": [{"plain_text": "Book Database"}],
+            "data_sources": [{"id": "ds-books", "name": "Books"}],
+        }
+
+    def list_views(self, database_id=None, data_source_id=None):
+        if database_id == "db-books" or data_source_id == "ds-books":
+            return [{"id": "view-reading"}]
+        return []
+
+    def retrieve_view(self, view_id):
+        return {
+            "id": view_id,
+            "name": "在读列表",
+            "type": "table",
+            "data_source_id": "ds-books",
+            "database_id": "db-books",
+            "filter": {"property": "Status", "select": {"equals": "在读"}},
+            "sorts": [{"property": "Name", "direction": "ascending"}],
+        }
+
+
+class NullTitleDataSourceScanAdapter(NoViewsMixin):
     def retrieve_page(self, page_id):
         return {"id": page_id, "title": "播客"}
 
@@ -465,6 +575,193 @@ def test_target_bind_profile_writes_v2_profile_and_alias(tmp_path, monkeypatch, 
     assert write_profile["field_sources"] == {"title": "user_binding", "state": "user_binding"}
     aliases = json.loads((tmp_path / "cache-v2" / "aliases.json").read_text(encoding="utf-8"))["aliases"]
     assert aliases["books"] == {"graph_id": "graph-books", "profile_id": "profile-books", "kind": "write_profile"}
+
+
+
+def test_target_bind_profile_writes_relation_create_missing_policy(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(
+        tmp_path / "cache-v2" / "graphs" / "graph-books.json",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-books",
+            "root": {"kind": "page", "id": "page-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "schema": {"Name": {"type": "title"}, "Author": {"type": "relation"}},
+                }
+            },
+            "views": {},
+        },
+    )
+
+    result = cli.main([
+        "target",
+        "bind-profile",
+        "--alias",
+        "books",
+        "--graph-id",
+        "graph-books",
+        "--profile-id",
+        "profile-books",
+        "--content-type",
+        "book",
+        "--data-source-id",
+        "ds-books",
+        "--field",
+        "title=Name",
+        "--field",
+        "author=Author",
+        "--relation-create-missing",
+        "author",
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["relation_mapping"] == {"author": {"create_missing": True}}
+    profile = json.loads((tmp_path / "cache-v2" / "profiles" / "profile-books.json").read_text(encoding="utf-8"))
+    assert profile["write_profiles"]["book"]["relation_mapping"] == {"author": {"create_missing": True}}
+
+
+
+def test_target_bind_profile_preserves_existing_profile_settings_when_adding_relation_policy(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(
+        tmp_path / "cache-v2" / "graphs" / "graph-books.json",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-books",
+            "root": {"kind": "page", "id": "page-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "schema": {"Name": {"type": "title"}, "Author": {"type": "relation"}},
+                }
+            },
+            "views": {},
+        },
+    )
+    write_json(
+        tmp_path / "cache-v2" / "profiles" / "profile-books.json",
+        {
+            "cache_version": 2,
+            "profile_id": "profile-books",
+            "graph_id": "graph-books",
+            "write_profiles": {
+                "book": {
+                    "content_type": "book",
+                    "canonical_data_source_id": "ds-books",
+                    "canonical_view_id": None,
+                    "field_mapping": {"title": "Name"},
+                    "field_sources": {"title": "user_binding"},
+                    "state_mapping": {"initialized": "Next"},
+                    "asset_mapping": {"cover": {"field": "Cover", "type": "files", "strategy": "download_and_attach"}},
+                    "relation_mapping": {"category": {"create_missing": False}},
+                    "parser_profile": {"labels": {"title": ["书名"]}},
+                }
+            },
+        },
+    )
+
+    result = cli.main([
+        "target",
+        "bind-profile",
+        "--alias",
+        "books",
+        "--graph-id",
+        "graph-books",
+        "--profile-id",
+        "profile-books",
+        "--content-type",
+        "book",
+        "--data-source-id",
+        "ds-books",
+        "--field",
+        "title=Name",
+        "--field",
+        "author=Author",
+        "--relation-create-missing",
+        "author",
+    ])
+
+    assert result == 0
+    capsys.readouterr()
+    profile = json.loads((tmp_path / "cache-v2" / "profiles" / "profile-books.json").read_text(encoding="utf-8"))
+    write_profile = profile["write_profiles"]["book"]
+    assert write_profile["state_mapping"] == {"initialized": "Next"}
+    assert write_profile["asset_mapping"] == {"cover": {"field": "Cover", "type": "files", "strategy": "download_and_attach"}}
+    assert write_profile["parser_profile"] == {"labels": {"title": ["书名"]}}
+    assert write_profile["relation_mapping"] == {
+        "category": {"create_missing": False},
+        "author": {"create_missing": True},
+    }
+
+
+
+def test_target_bind_profile_preserves_existing_fields_when_no_field_args(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(
+        tmp_path / "cache-v2" / "graphs" / "graph-books.json",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-books",
+            "root": {"kind": "page", "id": "page-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "schema": {"Name": {"type": "title"}, "Author": {"type": "relation"}},
+                }
+            },
+            "views": {},
+        },
+    )
+    write_json(
+        tmp_path / "cache-v2" / "profiles" / "profile-books.json",
+        {
+            "cache_version": 2,
+            "profile_id": "profile-books",
+            "graph_id": "graph-books",
+            "write_profiles": {
+                "book": {
+                    "content_type": "book",
+                    "canonical_data_source_id": "ds-books",
+                    "canonical_view_id": None,
+                    "field_mapping": {"title": "Name", "author": "Author"},
+                    "field_sources": {"title": "user_binding", "author": "user_binding"},
+                    "state_mapping": {},
+                    "asset_mapping": {},
+                    "relation_mapping": {},
+                    "parser_profile": {},
+                }
+            },
+        },
+    )
+
+    result = cli.main([
+        "target",
+        "bind-profile",
+        "--alias",
+        "books",
+        "--graph-id",
+        "graph-books",
+        "--profile-id",
+        "profile-books",
+        "--content-type",
+        "book",
+        "--data-source-id",
+        "ds-books",
+        "--relation-create-missing",
+        "author",
+    ])
+
+    assert result == 0
+    capsys.readouterr()
+    profile = json.loads((tmp_path / "cache-v2" / "profiles" / "profile-books.json").read_text(encoding="utf-8"))
+    write_profile = profile["write_profiles"]["book"]
+    assert write_profile["field_mapping"] == {"title": "Name", "author": "Author"}
+    assert write_profile["field_sources"] == {"title": "user_binding", "author": "user_binding"}
+    assert write_profile["relation_mapping"] == {"author": {"create_missing": True}}
 
 
 
@@ -655,6 +952,8 @@ def test_target_search_compact_can_include_parent_path(tmp_path, monkeypatch, ca
             "title": "候选 1",
             "last_edited_time": "2026-05-10T00:00:00Z",
             "parent_path": "工具 / 模板",
+            "path": "工具 / 模板 / 候选 1",
+            "path_complete": True,
         }
     ]
     assert adapter.search_calls == [{"query": "书单", "limit": 2, "include_parent_path": True}]
@@ -741,6 +1040,60 @@ def test_target_scan_page_only_reports_page_parent_capability(tmp_path, monkeypa
     assert data["next_action"] == "capture preflight"
 
 
+def test_target_scan_page_only_stores_ancestor_page_for_path(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: NestedPageOnlyScanAdapter()))
+
+    result = cli.main([
+        "target",
+        "scan",
+        "--page-id",
+        "page-tools",
+        "--alias",
+        "AI 工具",
+        "--target-id",
+        "ai-tools",
+        "--compact",
+    ])
+
+    assert result == 0
+    graph = json.loads((tmp_path / "cache-v2" / "graphs" / "ai-tools.json").read_text(encoding="utf-8"))
+    assert graph["pages"]["page-tools"]["parent"] == {"type": "page_id", "id": "page-ai"}
+    assert graph["pages"]["page-ai"]["title"] == "AI"
+
+
+
+def test_target_scan_record_page_stores_data_source_ancestor_chain(tmp_path, monkeypatch, capsys):
+    from capture_to_notion.path_utils import graph_object_path
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: RecordPageAncestorScanAdapter()))
+
+    result = cli.main([
+        "target",
+        "scan",
+        "--page-id",
+        "page-show",
+        "--alias",
+        "独树不成林",
+        "--target-id",
+        "dushubuchenglin",
+        "--compact",
+    ])
+
+    assert result == 0
+    capsys.readouterr()
+    graph = json.loads((tmp_path / "cache-v2" / "graphs" / "dushubuchenglin.json").read_text(encoding="utf-8"))
+    assert graph["pages"]["page-show"]["parent"] == {"type": "data_source_id", "id": "ds-podcasts"}
+    assert graph["data_sources"]["ds-podcasts"]["database_id"] == "db-podcasts"
+    assert graph["databases"]["db-podcasts"]["parent"] == {"type": "page_id", "id": "page-podcasts"}
+    assert graph["pages"]["page-podcasts"]["title"] == "播客"
+    assert graph_object_path(graph, "page-show", "page") == {
+        "path": "工作区顶层 / 播客 / 播客库 / 播客索引 / 独树不成林",
+        "path_complete": True,
+    }
+
+
 def test_target_scan_output_includes_data_source_without_title(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: NullTitleDataSourceScanAdapter()))
@@ -758,6 +1111,102 @@ def test_target_scan_output_includes_data_source_without_title(tmp_path, monkeyp
             "schema_fields": ["主题", "状态"],
         }
     ]
+
+
+def test_target_create_database_loads_views_file_and_outputs_created_views(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    adapter = CreateDatabaseAdapter()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: adapter))
+    schema_file = tmp_path / "episode-schema.json"
+    views_file = tmp_path / "views.json"
+    write_json(schema_file, {"properties": {"主题": {"type": "title", "title": {}}}})
+    write_json(
+        views_file,
+        [
+            {
+                "name": "画廊",
+                "type": "gallery",
+                "configuration": {"gallery": {"card_preview": "cover"}},
+            }
+        ],
+    )
+
+    result = cli.main([
+        "target",
+        "create-database",
+        "--page-id",
+        "page-show",
+        "--title",
+        "数据库",
+        "--schema",
+        str(schema_file),
+        "--views",
+        str(views_file),
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["created_views"] == [{"id": "view-gallery", "name": "画廊", "type": "gallery"}]
+    assert adapter.created[0]["views"] == [
+        {
+            "name": "画廊",
+            "type": "gallery",
+            "configuration": {"gallery": {"card_preview": "cover"}},
+        }
+    ]
+
+
+def test_target_create_database_accepts_wrapped_views_file(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    adapter = CreateDatabaseAdapter()
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: adapter))
+    schema_file = tmp_path / "episode-schema.json"
+    views_file = tmp_path / "views.json"
+    write_json(schema_file, {"properties": {"主题": {"type": "title", "title": {}}}})
+    write_json(
+        views_file,
+        {
+            "views": [
+                {
+                    "name": "画廊",
+                    "type": "gallery",
+                    "configuration": {"gallery": {"card_preview": "cover"}},
+                }
+            ]
+        },
+    )
+
+    result = cli.main([
+        "target",
+        "create-database",
+        "--page-id",
+        "page-show",
+        "--title",
+        "数据库",
+        "--schema",
+        str(schema_file),
+        "--views",
+        str(views_file),
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["created_views"] == [{"id": "view-gallery", "name": "画廊", "type": "gallery"}]
+    assert adapter.created[0]["views"] == [
+        {
+            "name": "画廊",
+            "type": "gallery",
+            "configuration": {"gallery": {"card_preview": "cover"}},
+        }
+    ]
+
+
+def test_load_database_views_rejects_invalid_wrapper_shape(tmp_path):
+    views_file = tmp_path / "views.json"
+    write_json(views_file, {"views": {"name": "画廊", "type": "gallery"}})
+
+    with pytest.raises(cli.CliInputError, match="views 文件必须是 view 对象数组"):
+        cli._load_database_views(str(views_file))
 
 
 def test_target_create_database_creates_then_scans_v2_graph(tmp_path, monkeypatch, capsys):
@@ -817,6 +1266,7 @@ def test_target_create_database_creates_then_scans_v2_graph(tmp_path, monkeypatc
                 "内容描述": {"type": "rich_text", "rich_text": {}},
                 "完成时间": {"type": "date", "date": {}},
             },
+            "views": None,
         }
     ]
     graph = json.loads((tmp_path / "cache-v2" / "graphs" / "fyfy.json").read_text(encoding="utf-8"))
@@ -936,6 +1386,136 @@ def test_target_scan_accepts_data_source_id(tmp_path, monkeypatch, capsys):
     assert graph["data_sources"]["ds-books"]["title"] == "Books"
     aliases = json.loads((tmp_path / "cache-v2" / "aliases.json").read_text(encoding="utf-8"))["aliases"]
     assert aliases["书单Books"] == {"graph_id": "books-ds", "profile_id": None, "kind": "graph"}
+
+
+def test_target_scan_outputs_structured_view_details(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: DataSourceScanWithViewsAdapter()))
+
+    result = cli.main([
+        "target",
+        "scan",
+        "--data-source-id",
+        "ds-books",
+        "--alias",
+        "书单",
+        "--target-id",
+        "books-ds",
+        "--compact",
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["views"] == [
+        {
+            "view_id": "view-reading",
+            "name": "在读列表",
+            "type": "table",
+            "data_source_id": "ds-books",
+            "database_id": "db-books",
+        }
+    ]
+
+
+def test_target_inspect_outputs_structured_view_details(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(
+        tmp_path / "cache-v2" / "graphs" / "bookshelf.json",
+        {
+            "cache_version": 2,
+            "graph_id": "bookshelf",
+            "root": {"kind": "data_source", "id": "ds-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema_hash": "abc123",
+                    "schema": {"Name": {"type": "title"}},
+                }
+            },
+            "views": {
+                "view-reading": {
+                    "view_id": "view-reading",
+                    "name": "在读列表",
+                    "type": "table",
+                    "data_source_id": "ds-books",
+                    "database_id": "db-books",
+                    "filter": {"property": "Status", "select": {"equals": "在读"}},
+                }
+            },
+        },
+    )
+    write_json(
+        tmp_path / "cache-v2" / "aliases.json",
+        {"cache_version": 2, "aliases": {"书单": {"graph_id": "bookshelf", "profile_id": None, "kind": "graph"}}},
+    )
+
+    def fail_from_config(cls, config):
+        raise AssertionError("target inspect must read local cache only")
+
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(fail_from_config))
+
+    result = cli.main(["target", "inspect", "--alias", "书单", "--compact"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["views"] == [
+        {
+            "view_id": "view-reading",
+            "name": "在读列表",
+            "type": "table",
+            "data_source_id": "ds-books",
+            "database_id": "db-books",
+        }
+    ]
+
+
+def test_target_bind_profile_accepts_view_name(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(
+        tmp_path / "cache-v2" / "graphs" / "graph-books.json",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-books",
+            "root": {"kind": "data_source", "id": "ds-books"},
+            "data_sources": {
+                "ds-books": {"data_source_id": "ds-books", "schema": {"Name": {"type": "title"}}}
+            },
+            "views": {
+                "view-reading": {
+                    "view_id": "view-reading",
+                    "name": "在读列表",
+                    "data_source_id": "ds-books",
+                    "type": "table",
+                }
+            },
+        },
+    )
+
+    result = cli.main([
+        "target",
+        "bind-profile",
+        "--alias",
+        "书单",
+        "--graph-id",
+        "graph-books",
+        "--profile-id",
+        "profile-books",
+        "--content-type",
+        "book",
+        "--data-source-id",
+        "ds-books",
+        "--view-name",
+        "在读列表",
+        "--field",
+        "title=Name",
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["view_id"] == "view-reading"
+    profile = json.loads((tmp_path / "cache-v2" / "profiles" / "profile-books.json").read_text(encoding="utf-8"))
+    assert profile["write_profiles"]["book"]["canonical_view_id"] == "view-reading"
 
 
 def test_target_list_outputs_cached_targets_without_notion_adapter(tmp_path, monkeypatch, capsys):

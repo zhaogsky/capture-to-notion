@@ -1,8 +1,9 @@
 import json
 
 from capture_to_notion.cache import CacheStore
+from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.config import ensure_config
-from capture_to_notion.scanner import _build_asset_mapping, _primary_score, scan_data_source_target, scan_page_target
+from capture_to_notion.scanner import _build_asset_mapping, _primary_score, scan_data_source_graph, scan_data_source_target, scan_page_target
 from capture_to_notion.schema import SCHEMA_PROPERTY_TYPES, normalize_database_schema
 
 
@@ -24,6 +25,12 @@ class FakeAdapter:
 
     def retrieve_data_source(self, data_source_id):
         return self.data_sources[data_source_id]
+
+    def list_views(self, database_id=None, data_source_id=None):
+        return []
+
+    def list_data_source_templates(self, data_source_id):
+        return []
 
 
 def seed_profile_mapping(config, target_id, data_source_id, fields):
@@ -67,6 +74,52 @@ def test_primary_score_uses_profile_weights():
         },
         {"headline": 100, "topic": 15},
     ) == 115
+
+
+def test_scan_data_source_graph_preserves_template_facts(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheV2Store(config)
+
+    class TemplateAdapter(FakeAdapter):
+        def list_data_source_templates(self, data_source_id):
+            assert data_source_id == "ds-notes"
+            return [
+                {
+                    "id": "template-default",
+                    "page_id": "page-template-default",
+                    "title": [{"plain_text": "Default note"}],
+                    "data_source_id": "ds-notes",
+                    "database_id": "db-notes",
+                    "is_default": True,
+                }
+            ]
+
+    adapter = TemplateAdapter(
+        data_sources={
+            "ds-notes": {
+                "id": "ds-notes",
+                "title": [{"plain_text": "Notes"}],
+                "parent": {"type": "database_id", "database_id": "db-notes"},
+                "properties": {"Name": {"type": "title"}},
+            }
+        },
+        databases={"db-notes": {"id": "db-notes", "title": [{"plain_text": "Notes DB"}], "data_sources": [{"id": "ds-notes"}]}},
+    )
+
+    graph = scan_data_source_graph(adapter, "ds-notes", cache, graph_id="notes")
+
+    assert graph["data_sources"]["ds-notes"]["templates"] == [
+        {
+            "template_id": "template-default",
+            "page_id": "page-template-default",
+            "name": "Default note",
+            "title": "Default note",
+            "data_source_id": "ds-notes",
+            "database_id": "db-notes",
+            "is_default": True,
+        }
+    ]
 
 
 def test_scan_page_uses_target_parser_profile_primary_score_fields(tmp_path, monkeypatch):
@@ -203,7 +256,7 @@ def test_scan_page_discovers_child_databases_normalizes_schema_and_saves_target(
                     "作者": {
                         "id": "rel",
                         "type": "relation",
-                        "relation": {"database_id": "db-authors", "type": "single_property"},
+                        "relation": {"database_id": "db-authors", "data_source_id": "ds-authors", "type": "single_property"},
                     },
                     "忽略": {"id": "num", "type": "number", "number": {}},
                 },
@@ -237,6 +290,7 @@ def test_scan_page_discovers_child_databases_normalizes_schema_and_saves_target(
     }
     assert data_source["schema"]["状态"]["options"] == [{"name": "想读", "color": "blue"}]
     assert data_source["schema"]["作者"]["target_database_id"] == "db-authors"
+    assert data_source["schema"]["作者"]["target_data_source_id"] == "ds-authors"
     assert data_source["schema_hash"] == scan_page_target(
         adapter,
         "page-books",
@@ -244,7 +298,12 @@ def test_scan_page_discovers_child_databases_normalizes_schema_and_saves_target(
         target_id="bookshelf-second",
     )["data_sources"]["db-books"]["schema_hash"]
     assert result["relations"] == [
-        {"data_source_id": "db-books", "field": "作者", "target_database_id": "db-authors"}
+        {
+            "data_source_id": "db-books",
+            "field": "作者",
+            "target_database_id": "db-authors",
+            "target_data_source_id": "ds-authors",
+        }
     ]
     assert result["state_mapping"] == {"field": "状态", "values": {}}
     assert result["asset_mapping"] == {
@@ -1383,6 +1442,409 @@ def test_build_asset_mapping_includes_non_cover_mapped_files_field():
     }
 
 
+def test_scan_page_graph_uses_title_property_for_record_page_title(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.scanner import scan_page_graph
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {
+                "id": page_id,
+                "parent": {"type": "data_source_id", "data_source_id": "ds-podcasts"},
+                "properties": {
+                    "状态": {"id": "status", "type": "status", "status": {"name": "完成"}},
+                    "播客名称": {
+                        "id": "title",
+                        "type": "title",
+                        "title": [{"plain_text": "独树不成林"}],
+                    },
+                },
+            }
+
+        def list_block_children(self, block_id):
+            return []
+
+    graph = scan_page_graph(Adapter(), "page-podcast", store, graph_id="graph-podcast")
+
+    assert graph["pages"]["page-podcast"]["title"] == "独树不成林"
+    assert store.read_graph("graph-podcast")["pages"]["page-podcast"]["title"] == "独树不成林"
+
+
+
+def test_scan_page_graph_includes_record_page_data_source_ancestor_chain(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.path_utils import graph_object_path
+    from capture_to_notion.scanner import scan_page_graph
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+
+    class Adapter:
+        def retrieve_page(self, page_id):
+            pages = {
+                "page-episode": {
+                    "id": "page-episode",
+                    "parent": {"type": "data_source_id", "data_source_id": "ds-episodes"},
+                    "properties": {
+                        "播客名称": {
+                            "id": "title",
+                            "type": "title",
+                            "title": [{"plain_text": "独树不成林"}],
+                        }
+                    },
+                },
+                "page-podcasts": {
+                    "id": "page-podcasts",
+                    "parent": {"type": "workspace", "workspace": True},
+                    "properties": {
+                        "名称": {
+                            "id": "title",
+                            "type": "title",
+                            "title": [{"plain_text": "播客"}],
+                        }
+                    },
+                },
+            }
+            return pages[page_id]
+
+        def list_block_children(self, block_id):
+            return []
+
+        def retrieve_data_source(self, data_source_id):
+            assert data_source_id == "ds-episodes"
+            return {
+                "id": "ds-episodes",
+                "title": [{"plain_text": "Rows"}],
+                "parent": {"type": "database_id", "database_id": "db-episodes"},
+                "properties": {
+                    "主题": {"id": "title", "name": "主题", "type": "title"},
+                    "状态": {"id": "status", "name": "状态", "type": "status"},
+                },
+            }
+
+        def retrieve_database(self, database_id):
+            assert database_id == "db-episodes"
+            return {
+                "id": "db-episodes",
+                "title": [{"plain_text": "Episodes"}],
+                "parent": {"type": "page_id", "page_id": "page-podcasts"},
+                "data_sources": [{"id": "ds-episodes"}],
+            }
+
+    graph = scan_page_graph(Adapter(), "page-episode", store, graph_id="graph-episode")
+
+    assert graph["pages"]["page-episode"]["parent"] == {"type": "data_source_id", "id": "ds-episodes"}
+    assert graph["data_sources"]["ds-episodes"]["database_id"] == "db-episodes"
+    assert graph["databases"]["db-episodes"]["parent"] == {"type": "page_id", "id": "page-podcasts"}
+    assert graph["pages"]["page-podcasts"]["title"] == "播客"
+    assert graph_object_path(graph, "page-episode", "page") == {
+        "path": "工作区顶层 / 播客 / Episodes / Rows / 独树不成林",
+        "path_complete": True,
+    }
+    assert store.read_graph("graph-episode")["data_sources"]["ds-episodes"]["database_id"] == "db-episodes"
+
+
+
+def test_scan_page_graph_retrieves_full_child_database_views(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.scanner import scan_page_graph
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {"id": page_id, "parent": {"type": "workspace"}, "properties": {}}
+
+        def list_block_children(self, block_id):
+            return [
+                {
+                    "id": "db-episodes",
+                    "type": "child_database",
+                    "parent": {"type": "page_id", "page_id": "page-podcasts"},
+                    "child_database": {"title": "Episodes"},
+                    "has_children": False,
+                }
+            ]
+
+        def retrieve_database(self, database_id):
+            return {
+                "id": database_id,
+                "title": [{"plain_text": "Episodes"}],
+                "parent": {"type": "page_id", "page_id": "page-podcasts"},
+                "properties": {"Title": {"id": "title", "name": "Title", "type": "title"}},
+            }
+
+        def list_views(self, data_source_id=None, database_id=None):
+            assert database_id == "db-episodes"
+            assert data_source_id is None
+            return [{"object": "view", "id": "view-gallery"}]
+
+        def retrieve_view(self, view_id):
+            assert view_id == "view-gallery"
+            return {
+                "object": "view",
+                "id": "view-gallery",
+                "name": "Episode Gallery",
+                "type": "gallery",
+                "database_id": "db-episodes",
+                "data_source_id": "ds-episodes",
+                "configuration": {"gallery": {"card_size": "medium"}},
+                "sorts": [{"property": "Publish Date", "direction": "descending"}],
+                "filter": {"property": "Status", "select": {"equals": "Published"}},
+                "quick_filters": {"Status": ["Published"]},
+            }
+
+    graph = scan_page_graph(Adapter(), "page-podcasts", store, graph_id="graph-views")
+
+    assert graph["views"]["view-gallery"] == {
+        "object": "view",
+        "view_id": "view-gallery",
+        "name": "Episode Gallery",
+        "type": "gallery",
+        "database_id": "db-episodes",
+        "data_source_id": "ds-episodes",
+        "location": {
+            "type": "page_id",
+            "id": "page-podcasts",
+            "discovered_from": "page_scan",
+            "source_block_id": "db-episodes",
+            "source_block_type": "child_database",
+            "display_title": "Episodes",
+        },
+        "filter": {"property": "Status", "select": {"equals": "Published"}},
+        "sorts": [{"property": "Publish Date", "direction": "descending"}],
+        "quick_filters": {"Status": ["Published"]},
+        "configuration": {"gallery": {"card_size": "medium"}},
+    }
+    assert store.read_graph("graph-views")["views"]["view-gallery"]["configuration"] == {
+        "gallery": {"card_size": "medium"}
+    }
+
+
+def test_scan_page_graph_caches_child_database_view_source_schema(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.scanner import scan_page_graph
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {"id": page_id, "parent": {"type": "workspace"}, "properties": {}}
+
+        def list_block_children(self, block_id):
+            return [
+                {
+                    "id": "db-episodes",
+                    "type": "child_database",
+                    "parent": {"type": "page_id", "page_id": "page-podcasts"},
+                    "child_database": {"title": "Episodes"},
+                    "has_children": False,
+                }
+            ]
+
+        def retrieve_database(self, database_id):
+            return {
+                "id": database_id,
+                "title": [{"plain_text": "Episodes"}],
+                "parent": {"type": "page_id", "page_id": "page-podcasts"},
+                "data_sources": [{"id": "ds-episodes"}],
+            }
+
+        def retrieve_data_source(self, data_source_id):
+            return {
+                "id": data_source_id,
+                "parent": {"type": "database_id", "database_id": "db-episodes"},
+                "properties": {
+                    "Title": {"id": "title", "name": "Title", "type": "title"},
+                    "Status": {"id": "status", "name": "Status", "type": "status"},
+                },
+            }
+
+        def list_views(self, data_source_id=None, database_id=None):
+            assert database_id == "db-episodes"
+            assert data_source_id is None
+            return [{"object": "view", "id": "view-gallery"}]
+
+        def retrieve_view(self, view_id):
+            return {
+                "object": "view",
+                "id": view_id,
+                "name": "Episode Gallery",
+                "type": "gallery",
+                "database_id": "db-episodes",
+                "data_source_id": "ds-episodes",
+                "sorts": [{"property": "Status", "direction": "ascending"}],
+            }
+
+    graph = scan_page_graph(Adapter(), "page-podcasts", store, graph_id="graph-view-schema")
+
+    assert graph["views"]["view-gallery"]["_source_schema"] == {
+        "Title": {"id": "title", "name": "Title", "type": "title"},
+        "Status": {"id": "status", "name": "Status", "type": "status"},
+    }
+    assert store.read_graph("graph-view-schema")["views"]["view-gallery"]["_source_schema"] == graph["views"]["view-gallery"]["_source_schema"]
+
+
+
+def test_scan_page_graph_exposes_child_database_visual_section_path(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.path_utils import graph_visual_path
+    from capture_to_notion.scanner import scan_page_graph
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {
+                "id": page_id,
+                "parent": {"type": "workspace"},
+                "properties": {
+                    "title": {
+                        "type": "title",
+                        "title": [{"plain_text": "书单"}],
+                    }
+                },
+            }
+
+        def list_block_children(self, block_id):
+            return [
+                {
+                    "id": "heading-reading",
+                    "type": "heading_2",
+                    "parent": {"type": "page_id", "page_id": "page-books"},
+                    "heading_2": {"rich_text": [{"plain_text": "在读列表"}]},
+                    "has_children": False,
+                },
+                {
+                    "id": "db-current-reading",
+                    "type": "child_database",
+                    "parent": {"type": "page_id", "page_id": "page-books"},
+                    "child_database": {"title": "正在阅读"},
+                    "has_children": False,
+                },
+            ]
+
+        def retrieve_database(self, database_id):
+            return {
+                "id": database_id,
+                "title": [{"plain_text": "正在阅读"}],
+                "parent": {"type": "page_id", "page_id": "page-books"},
+                "data_sources": [{"id": "ds-books"}],
+            }
+
+        def retrieve_data_source(self, data_source_id):
+            return {
+                "id": data_source_id,
+                "title": [{"plain_text": "Books"}],
+                "parent": {"type": "database_id", "database_id": "db-current-reading"},
+                "properties": {"名称": {"id": "title", "name": "名称", "type": "title"}},
+            }
+
+        def list_views(self, data_source_id=None, database_id=None):
+            assert database_id == "db-current-reading"
+            return [{"object": "view", "id": "view-current-reading"}]
+
+        def retrieve_view(self, view_id):
+            return {
+                "object": "view",
+                "id": view_id,
+                "name": "正在阅读",
+                "type": "gallery",
+                "database_id": "db-current-reading",
+                "data_source_id": "ds-books",
+            }
+
+    graph = scan_page_graph(Adapter(), "page-books", store, graph_id="graph-books")
+
+    assert graph["views"]["view-current-reading"]["location"] == {
+        "type": "page_id",
+        "id": "page-books",
+        "discovered_from": "page_scan",
+        "source_block_id": "db-current-reading",
+        "source_block_type": "child_database",
+        "display_title": "正在阅读",
+        "section_path": ["在读列表"],
+    }
+    assert graph_visual_path(graph, "view-current-reading", "view") == {
+        "path": "工作区顶层 / 书单 / 在读列表 / 正在阅读",
+        "path_complete": True,
+    }
+
+
+def test_scan_page_graph_adds_view_data_source_when_database_metadata_omits_it(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.scanner import scan_page_graph
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+
+    class Adapter:
+        def retrieve_page(self, page_id):
+            return {"id": page_id, "parent": {"type": "workspace"}, "properties": {}}
+
+        def list_block_children(self, block_id):
+            return [
+                {
+                    "id": "db-books",
+                    "type": "child_database",
+                    "parent": {"type": "page_id", "page_id": "page-books"},
+                    "child_database": {"title": "正在阅读"},
+                    "has_children": False,
+                }
+            ]
+
+        def retrieve_database(self, database_id):
+            return {
+                "id": database_id,
+                "title": [{"plain_text": "正在阅读"}],
+                "parent": {"type": "page_id", "page_id": "page-books"},
+                "properties": {},
+            }
+
+        def retrieve_data_source(self, data_source_id):
+            assert data_source_id == "ds-books"
+            return {
+                "id": "ds-books",
+                "title": [{"plain_text": "Books"}],
+                "parent": {"type": "database_id", "database_id": "db-books"},
+                "properties": {"名称": {"id": "title", "name": "名称", "type": "title"}},
+            }
+
+        def list_views(self, data_source_id=None, database_id=None):
+            assert database_id == "db-books"
+            return [{"object": "view", "id": "view-reading"}]
+
+        def retrieve_view(self, view_id):
+            return {
+                "object": "view",
+                "id": "view-reading",
+                "name": "正在阅读",
+                "type": "gallery",
+                "database_id": "db-books",
+                "data_source_id": "ds-books",
+            }
+
+    graph = scan_page_graph(Adapter(), "page-books", store, graph_id="graph-books")
+
+    assert graph["data_sources"]["ds-books"]["title"] == "Books"
+    assert graph["data_sources"]["ds-books"]["database_id"] == "db-books"
+    assert graph["data_sources"]["ds-books"]["schema"] == {"名称": {"id": "title", "name": "名称", "type": "title"}}
+    assert graph["views"]["view-reading"]["_source_schema"] == {"名称": {"id": "title", "name": "名称", "type": "title"}}
+
+
+
 def test_scan_page_target_writes_v2_graph(tmp_path, monkeypatch):
     from capture_to_notion.cache_v2 import CacheV2Store
     from capture_to_notion.scanner import scan_page_graph
@@ -1426,7 +1888,11 @@ def test_scan_page_target_writes_v2_graph(tmp_path, monkeypatch):
 
         def list_views(self, data_source_id=None, database_id=None):
             assert database_id == "db-1" or data_source_id == "ds-1"
-            return [{"id": "view-1", "name": "Episodes", "type": "gallery", "database_id": "db-1", "data_source_id": "ds-1"}]
+            return [{"id": "view-1"}]
+
+        def retrieve_view(self, view_id):
+            assert view_id == "view-1"
+            return {"id": "view-1", "name": "Episodes", "type": "gallery", "database_id": "db-1", "data_source_id": "ds-1"}
 
     graph = scan_page_graph(Adapter(), "page-1", store, graph_id="graph-1")
 
@@ -1441,8 +1907,56 @@ def test_scan_page_target_writes_v2_graph(tmp_path, monkeypatch):
     assert graph["data_sources"]["ds-1"]["source_block_id"] == "db-1"
     assert graph["data_sources"]["ds-1"]["source_block_type"] == "child_database"
     assert graph["views"]["view-1"]["type"] == "gallery"
-    assert graph["views"]["view-1"]["location"] == {"type": "page_id", "id": "page-1", "discovered_from": "page_scan"}
+    assert graph["views"]["view-1"]["location"] == {
+        "type": "page_id",
+        "id": "page-1",
+        "discovered_from": "page_scan",
+        "source_block_id": "db-1",
+        "source_block_type": "child_database",
+        "display_title": "Episodes",
+    }
     assert store.read_graph("graph-1")["views"]["view-1"]["data_source_id"] == "ds-1"
+
+
+def test_scan_data_source_graph_keeps_target_when_parent_page_is_inaccessible(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.notion_adapter import NotionPermissionError
+    from capture_to_notion.scanner import scan_data_source_graph
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+
+    class Adapter:
+        def retrieve_data_source(self, data_source_id):
+            return {
+                "id": data_source_id,
+                "title": [{"plain_text": "Rows"}],
+                "parent": {"type": "database_id", "database_id": "db-1"},
+                "properties": {"Name": {"id": "title", "name": "Name", "type": "title"}},
+            }
+
+        def retrieve_database(self, database_id):
+            return {
+                "id": database_id,
+                "title": [{"plain_text": "Episodes"}],
+                "parent": {"type": "page_id", "page_id": "page-private"},
+                "data_sources": [{"id": "ds-1"}],
+            }
+
+        def retrieve_page(self, page_id):
+            raise NotionPermissionError("parent page is not shared")
+
+        def list_views(self, data_source_id=None, database_id=None):
+            return []
+
+    graph = scan_data_source_graph(Adapter(), "ds-1", store, graph_id="graph-private-parent")
+
+    assert graph["data_sources"]["ds-1"]["database_id"] == "db-1"
+    assert graph["databases"]["db-1"]["parent"] == {"type": "page_id", "id": "page-private"}
+    assert graph["pages"] == {}
+    assert store.read_graph("graph-private-parent")["data_sources"]["ds-1"]["data_source_id"] == "ds-1"
+
 
 
 def test_scan_data_source_graph_writes_parent_location_facts(tmp_path, monkeypatch):

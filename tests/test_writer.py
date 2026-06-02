@@ -66,6 +66,7 @@ class FakeApplyAdapter:
         self.upload_error = upload_error
         self.upload_calls = []
         self.cover_calls = []
+        self.create_calls = []
 
     def create_page(self, data_source_id, properties, cover=None, cover_source_url=None):
         self.calls.append(("create_page", data_source_id, properties))
@@ -79,15 +80,76 @@ class FakeApplyAdapter:
             self.cover_calls.append(("update_page", cover, cover_source_url))
         return {"id": page_id, "url": f"https://notion.so/{page_id}"}
 
-    def query_database_title_exact(self, database_id, title):
-        self.relation_calls.append((database_id, title))
+    def query_database_title_exact(self, database_id, title, data_source_id=None):
+        self.relation_calls.append((database_id, title, data_source_id) if data_source_id is not None else (database_id, title))
         return self.relation_responses.get((database_id, title), [])
+
+    def create_relation_target_page(self, database_id, title, data_source_id=None, extra_properties=None):
+        self.create_calls.append((database_id, title, data_source_id, extra_properties))
+        return {"id": f"created-{len(self.create_calls)}"}
 
     def upload_file_for_property(self, path, name, mime_type):
         self.upload_calls.append((path, name, mime_type))
         if self.upload_error is not None:
             raise self.upload_error
         return self.upload_result
+
+
+def test_apply_write_plan_executes_update_page_properties_plan_operation():
+    plan = WritePlan(
+        plan_id="plan-operation-1",
+        content_type="custom",
+        target=Target(
+            page_title="Profile",
+            page_id="page-profile",
+            data_source_id=None,
+            confidence="high",
+            source="ai_enrichment",
+            target_kind="existing_page",
+        ),
+        normalized_record={},
+        field_mapping={},
+        operations=[],
+        asset_operations=[],
+        sources=[],
+        warnings=[],
+        requires_confirmation=False,
+        confirmation_reason=None,
+        plan_operations=[
+            {
+                "operation_id": "op-profile-update",
+                "type": "update_page_properties",
+                "page_id": "page-profile",
+                "record": {"bio": "Mathematician", "website": "https://example.com"},
+                "field_mapping": {"bio": "Bio", "website": "Website"},
+                "schema": {"Bio": {"type": "rich_text"}, "Website": {"type": "url"}},
+            }
+        ],
+        plan_operations_explicit=True,
+    )
+    adapter = FakeApplyAdapter()
+
+    result = apply_write_plan(plan, {"target": {"page_id": "page-profile"}}, adapter)
+
+    assert adapter.calls == [
+        (
+            "update_page",
+            "page-profile",
+            {
+                "Bio": {"rich_text": [{"text": {"content": "Mathematician"}}]},
+                "Website": {"url": "https://example.com"},
+            },
+        )
+    ]
+    assert result["results"] == [
+        {
+            "operation_id": "op-profile-update",
+            "type": "update_page_properties",
+            "action": "update_page",
+            "page_id": "page-profile",
+            "url": "https://notion.so/page-profile",
+        }
+    ]
 
 
 def test_build_plan_properties_uses_matching_data_source_schema():
@@ -229,6 +291,47 @@ class PageParentAdapter:
 
 def paragraph_block(text):
     return {"object": "block", "type": "paragraph", "paragraph": {"rich_text": [{"type": "text", "text": {"content": text}}]}}
+
+
+def test_apply_write_plan_executes_append_page_content_plan_operation():
+    blocks = [paragraph_block("tracked body")]
+    plan = WritePlan(
+        plan_id="plan-operation-append",
+        content_type="article",
+        target=Target(
+            page_title="知识页",
+            page_id="existing-page",
+            data_source_id=None,
+            confidence="high",
+            source="ai_enrichment",
+            target_kind="existing_page",
+        ),
+        normalized_record={},
+        field_mapping={},
+        operations=[],
+        asset_operations=[],
+        sources=[],
+        warnings=[],
+        requires_confirmation=False,
+        confirmation_reason=None,
+        plan_operations=[
+            {
+                "operation_id": "op-append",
+                "type": "append_page_content",
+                "page_id": "existing-page",
+                "body_blocks": blocks,
+            }
+        ],
+        plan_operations_explicit=True,
+    )
+    adapter = PageParentAdapter()
+
+    result = apply_write_plan(plan, {"target": {"page_id": "existing-page"}}, adapter)
+
+    assert adapter.appended == [{"block_id": "existing-page", "children": blocks}]
+    assert result["results"] == [
+        {"type": "append_page_content", "action": "append_page_content", "page_id": "existing-page"}
+    ]
 
 
 def test_apply_write_plan_creates_child_page_with_first_100_blocks():
@@ -460,6 +563,29 @@ def test_apply_write_plan_skips_unresolved_author_relation_and_returns_warning()
     assert result["warnings"] == ["relation_unresolved:author:不存在"]
 
 
+
+def test_apply_write_plan_creates_missing_relation_target_before_updating_existing_page():
+    plan = make_plan()
+    plan.operations = [
+        {"type": "create_or_update_page", "data_source_id": "ds-books", "page_id": "page-123"}
+    ]
+    plan.normalized_record["author"] = "肯尼斯·L.费雪（Kenneth L. Fisher）"
+    plan.field_mapping["author"] = "作者"
+    target_structure = make_target_structure()
+    target_structure["relation_mapping"] = {"author": {"create_missing": True}}
+    adapter = FakeApplyAdapter()
+
+    result = apply_write_plan(plan, target_structure, adapter)
+
+    properties = adapter.calls[0][2]
+    assert adapter.calls[0][0] == "update_page"
+    assert adapter.calls[0][1] == "page-123"
+    assert properties["作者"] == {"relation": [{"id": "created-1"}]}
+    assert adapter.relation_calls == [("ds-authors", "肯尼斯·L.费雪（Kenneth L. Fisher）")]
+    assert adapter.create_calls == [("ds-authors", "肯尼斯·L.费雪（Kenneth L. Fisher）", None, None)]
+    assert result["warnings"] == ["relation_created:author:肯尼斯·L.费雪（Kenneth L. Fisher）"]
+
+
 def test_apply_write_plan_resolves_schema_driven_relation_key_before_building_properties():
     plan = make_plan()
     plan.normalized_record["contributor"] = "张三"
@@ -516,7 +642,7 @@ def test_apply_write_plan_uses_uploaded_cover_file_object(tmp_path):
     assert result["warnings"] == []
 
 
-def test_apply_write_plan_falls_back_to_external_cover_when_upload_unavailable(tmp_path):
+def test_apply_write_plan_does_not_write_external_file_when_upload_unavailable(tmp_path):
     cache_path = tmp_path / "covers" / "cover.jpg"
     plan = make_plan()
     plan.asset_operations = [
@@ -538,16 +664,8 @@ def test_apply_write_plan_falls_back_to_external_cover_when_upload_unavailable(t
     )
 
     properties = adapter.calls[0][2]
-    assert properties["封面"] == {
-        "files": [
-            {
-                "type": "external",
-                "name": "cover.jpg",
-                "external": {"url": "https://example.com/cover.jpg"},
-            }
-        ]
-    }
-    assert result["asset_results"][0]["status"] == "external_url"
+    assert "封面" not in properties
+    assert result["asset_results"][0]["status"] == "upload_unavailable"
     assert result["warnings"] == ["asset_upload_unavailable:cover:https://example.com/cover.jpg"]
 
 
@@ -753,6 +871,108 @@ def test_apply_write_plan_completes_resolved_relation_page_from_operation_mappin
         }
     ]
     assert result["warnings"] == []
+
+
+def test_apply_write_plan_completes_relation_page_using_nested_graph_data_source_schema():
+    plan = make_plan()
+    plan.normalized_record["author"] = "刘瑜"
+    plan.field_mapping["author"] = "作者"
+    plan.completion_operations = [
+        {
+            "type": "complete_relation_page",
+            "source_record_key": "author",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {"country": "国籍"},
+            "record": {"country": "美国"},
+            "asset_operations": [],
+        }
+    ]
+    target_structure = make_target_structure()
+    target_structure["graph"] = {
+        "data_sources": {
+            "ds-authors": {
+                "data_source_id": "ds-authors",
+                "schema": {"国籍": {"type": "select"}},
+            }
+        }
+    }
+    adapter = FakeApplyAdapter(relation_responses={("ds-authors", "刘瑜"): [{"id": "author-page-1"}]})
+
+    result = apply_write_plan(plan, target_structure, adapter)
+
+    assert adapter.calls[1] == (
+        "update_page",
+        "author-page-1",
+        {"国籍": {"select": {"name": "美国"}}},
+    )
+    assert result["completion_results"] == [
+        {
+            "type": "complete_relation_page",
+            "action": "update_page",
+            "source_record_key": "author",
+            "page_id": "author-page-1",
+            "url": "https://notion.so/author-page-1",
+        }
+    ]
+    assert result["warnings"] == []
+
+
+
+def test_apply_write_plan_returns_completion_asset_results_for_uploaded_author_picture(tmp_path):
+    cache_path = tmp_path / "authors" / "author.jpg"
+    uploaded = {"type": "file_upload", "name": "author.jpg", "file_upload": {"id": "file-author"}}
+    plan = make_plan()
+    plan.normalized_record["author"] = "刘瑜"
+    plan.field_mapping["author"] = "作者"
+    plan.completion_operations = [
+        {
+            "type": "complete_relation_page",
+            "source_record_key": "author",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {"author_picture": "Author Picture"},
+            "record": {"author_picture": "https://example.com/author.jpg"},
+            "schema": {"Author Picture": {"type": "files"}},
+            "asset_operations": [
+                {
+                    "type": "file",
+                    "source_url": "https://example.com/author.jpg",
+                    "local_cache_path": str(cache_path),
+                    "target_field": "Author Picture",
+                    "action": "download_and_attach",
+                    "record_key": "author_picture",
+                    "status": "planned",
+                    "warning": None,
+                }
+            ],
+        }
+    ]
+    adapter = FakeApplyAdapter(
+        relation_responses={("ds-authors", "刘瑜"): [{"id": "author-page-1"}]},
+        upload_result=uploaded,
+    )
+
+    result = apply_write_plan(
+        plan,
+        make_target_structure(),
+        adapter,
+        downloader=lambda url: b"author-image",
+    )
+
+    assert adapter.calls[1][2] == {"Author Picture": {"files": [uploaded]}}
+    assert result["completion_results"][0]["asset_results"] == [
+        {
+            "field": "author_picture",
+            "action": "download_and_attach",
+            "status": "uploaded",
+            "source_url": "https://example.com/author.jpg",
+            "uploaded_name": "author.jpg",
+            "mime_type": "image/jpeg",
+            "local_cache_path": str(cache_path),
+            "file_upload_id": "file-author",
+        }
+    ]
+    assert result["warnings"] == []
+
 
 
 def test_apply_write_plan_skips_completion_when_relation_unresolved():

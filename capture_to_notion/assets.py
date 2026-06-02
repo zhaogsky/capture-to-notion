@@ -103,6 +103,51 @@ def _mime_type_for_path(path: Path) -> str:
     return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
 
+KNOWN_ASSET_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".pdf", ".avif"}
+
+
+def _asset_suffix_for_bytes(payload: bytes) -> str | None:
+    if payload.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if len(payload) >= 12 and payload[:4] == b"RIFF" and payload[8:12] == b"WEBP":
+        return ".webp"
+    if payload.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if payload.startswith(b"%PDF-"):
+        return ".pdf"
+    if len(payload) >= 12 and payload[4:8] == b"ftyp" and b"avif" in payload[8:16]:
+        return ".avif"
+    return None
+
+
+def _cache_path_with_asset_suffix(cache_path: Path, payload: bytes) -> Path:
+    suffix = _asset_suffix_for_bytes(payload)
+    if suffix is None or cache_path.suffix.lower() in KNOWN_ASSET_SUFFIXES:
+        return cache_path
+    return cache_path.with_suffix(suffix)
+
+
+def _normalize_cached_asset_path(cache_path: Path) -> Path:
+    if cache_path.suffix.lower() in KNOWN_ASSET_SUFFIXES:
+        return cache_path
+    inferred_path = _cache_path_with_asset_suffix(cache_path, cache_path.read_bytes())
+    if inferred_path != cache_path:
+        cache_path.replace(inferred_path)
+    return inferred_path
+
+
+def _file_upload_id(uploaded_file: Any) -> str | None:
+    if not isinstance(uploaded_file, dict):
+        return None
+    file_upload = uploaded_file.get("file_upload")
+    if isinstance(file_upload, dict) and isinstance(file_upload.get("id"), str):
+        return file_upload["id"]
+    upload_id = uploaded_file.get("id")
+    return upload_id if isinstance(upload_id, str) else None
+
+
 def execute_asset_operations(
     record: dict[str, Any],
     asset_operations: list[AssetOperation],
@@ -138,9 +183,10 @@ def execute_asset_operations(
             results.append(result)
             continue
 
+        updated_record.pop(operation.record_key, None)
+
         if not source_url:
-            updated_record[operation.record_key] = source_url
-            result["status"] = "external_url"
+            result["status"] = "source_missing"
             results.append(result)
             continue
 
@@ -148,41 +194,53 @@ def execute_asset_operations(
         if cache_path is not None and not cache_path.exists():
             try:
                 payload = download(source_url)
+                cache_path = _cache_path_with_asset_suffix(cache_path, payload)
                 cache_path.parent.mkdir(parents=True, exist_ok=True)
                 cache_path.write_bytes(payload)
             except Exception:
-                updated_record[operation.record_key] = source_url
                 warnings.append(f"asset_download_failed:{operation.record_key}:{source_url}")
-                result["status"] = "external_url"
+                result["status"] = "download_failed"
+                results.append(result)
+                continue
+        elif cache_path is not None:
+            try:
+                cache_path = _normalize_cached_asset_path(cache_path)
+            except Exception:
+                warnings.append(f"asset_download_failed:{operation.record_key}:{source_url}")
+                result["status"] = "download_failed"
                 results.append(result)
                 continue
 
         upload = getattr(adapter, "upload_file_for_property", None)
         if not callable(upload) or cache_path is None:
-            updated_record[operation.record_key] = source_url
             warnings.append(f"asset_upload_unavailable:{operation.record_key}:{source_url}")
-            result["status"] = "external_url"
+            result["status"] = "upload_unavailable"
             results.append(result)
             continue
 
+        mime_type = _mime_type_for_path(cache_path)
         try:
-            uploaded_file = upload(cache_path, cache_path.name, _mime_type_for_path(cache_path))
+            uploaded_file = upload(cache_path, cache_path.name, mime_type)
         except Exception:
-            updated_record[operation.record_key] = source_url
             warnings.append(f"asset_upload_failed:{operation.record_key}:{source_url}")
-            result["status"] = "external_url"
+            result["status"] = "upload_failed"
             results.append(result)
             continue
 
         if uploaded_file is None:
-            updated_record[operation.record_key] = source_url
             warnings.append(f"asset_upload_unavailable:{operation.record_key}:{source_url}")
-            result["status"] = "external_url"
+            result["status"] = "upload_unavailable"
             results.append(result)
             continue
 
         updated_record[operation.record_key] = uploaded_file
         result["status"] = "uploaded"
+        result["uploaded_name"] = uploaded_file.get("name", cache_path.name) if isinstance(uploaded_file, dict) else cache_path.name
+        result["mime_type"] = uploaded_file.get("mime_type", mime_type) if isinstance(uploaded_file, dict) else mime_type
+        result["local_cache_path"] = str(cache_path)
+        file_upload_id = _file_upload_id(uploaded_file)
+        if file_upload_id:
+            result["file_upload_id"] = file_upload_id
         results.append(result)
 
     return updated_record, results, warnings

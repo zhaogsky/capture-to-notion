@@ -91,12 +91,16 @@ def test_execute_asset_operations_download_and_upload_success(tmp_path):
             "action": "download_and_attach",
             "status": "uploaded",
             "source_url": "https://example.com/cover.jpg",
+            "uploaded_name": "cover.jpg",
+            "mime_type": "image/jpeg",
+            "local_cache_path": str(cache_path),
+            "file_upload_id": "file-1",
         }
     ]
     assert warnings == []
 
 
-def test_execute_asset_operations_upload_unavailable_falls_back_to_external_url(tmp_path):
+def test_execute_asset_operations_upload_unavailable_does_not_fall_back_to_external_url(tmp_path):
     cache_path = tmp_path / "covers" / "cover.jpg"
     adapter = FakeUploadAdapter(upload_result=None)
 
@@ -108,12 +112,12 @@ def test_execute_asset_operations_upload_unavailable_falls_back_to_external_url(
     )
 
     assert cache_path.read_bytes() == b"image-bytes"
-    assert updated_record["cover"] == "https://example.com/cover.jpg"
+    assert "cover" not in updated_record
     assert results == [
         {
             "field": "cover",
             "action": "download_and_attach",
-            "status": "external_url",
+            "status": "upload_unavailable",
             "source_url": "https://example.com/cover.jpg",
         }
     ]
@@ -135,7 +139,108 @@ def test_execute_asset_operations_uses_cache_file_mime_type(tmp_path):
     assert adapter.calls == [(cache_path, "cover.png", "image/png")]
 
 
-def test_execute_asset_operations_upload_failure_falls_back_to_external_url(tmp_path):
+@pytest.mark.parametrize(
+    ("payload", "expected_name", "expected_mime_type"),
+    [
+        (b"GIF89a\x01\x00\x01\x00\x00\x00\x00;", "asset.gif", "image/gif"),
+        (b"%PDF-1.7\n%file-bytes", "asset.pdf", "application/pdf"),
+        (b"\x00\x00\x00 ftypavif\x00\x00\x00\x00", "asset.avif", "image/avif"),
+    ],
+)
+def test_execute_asset_operations_infers_generic_file_extension_from_downloaded_bytes(
+    tmp_path,
+    payload,
+    expected_name,
+    expected_mime_type,
+):
+    cache_path = tmp_path / "assets" / "asset.bin"
+    uploaded = {"type": "file_upload", "file_upload": {"id": "file-1"}}
+    adapter = FakeUploadAdapter(upload_result=uploaded)
+
+    updated_record, results, warnings = execute_asset_operations(
+        {"title": "Document"},
+        [
+            make_operation(
+                "download_and_attach",
+                source_url="https://example.com/download/asset",
+                local_cache_path=str(cache_path),
+                record_key="attachment",
+            )
+        ],
+        adapter,
+        downloader=lambda url: payload,
+    )
+
+    inferred_path = tmp_path / "assets" / expected_name
+    assert not cache_path.exists()
+    assert inferred_path.read_bytes() == payload
+    assert adapter.calls == [(inferred_path, expected_name, expected_mime_type)]
+    assert updated_record["attachment"] == uploaded
+    assert results[0]["status"] == "uploaded"
+    assert results[0]["uploaded_name"] == expected_name
+    assert results[0]["mime_type"] == expected_mime_type
+    assert results[0]["local_cache_path"] == str(inferred_path)
+    assert results[0]["file_upload_id"] == "file-1"
+    assert warnings == []
+
+
+def test_execute_asset_operations_infers_image_extension_from_downloaded_bytes(tmp_path):
+    cache_path = tmp_path / "assets" / "author-picture.bin"
+    uploaded = {"type": "file_upload", "file_upload": {"id": "file-1"}}
+    adapter = FakeUploadAdapter(upload_result=uploaded)
+
+    updated_record, results, warnings = execute_asset_operations(
+        {"title": "Book"},
+        [
+            make_operation(
+                "download_and_attach",
+                source_url="https://example.com/author/2248404",
+                local_cache_path=str(cache_path),
+            )
+        ],
+        adapter,
+        downloader=lambda url: b"\xff\xd8\xff\xe0\x00\x10JFIF\x00image-bytes",
+    )
+
+    inferred_path = tmp_path / "assets" / "author-picture.jpg"
+    assert not cache_path.exists()
+    assert inferred_path.read_bytes() == b"\xff\xd8\xff\xe0\x00\x10JFIF\x00image-bytes"
+    assert adapter.calls == [(inferred_path, "author-picture.jpg", "image/jpeg")]
+    assert updated_record["cover"] == uploaded
+    assert results[0]["status"] == "uploaded"
+    assert warnings == []
+
+
+def test_execute_asset_operations_infers_image_extension_from_existing_cache(tmp_path):
+    cache_path = tmp_path / "assets" / "author-picture.bin"
+    cache_path.parent.mkdir(parents=True)
+    cache_path.write_bytes(b"\xff\xd8\xff\xe0\x00\x10JFIF\x00cached-image")
+    uploaded = {"type": "file_upload", "file_upload": {"id": "file-1"}}
+    adapter = FakeUploadAdapter(upload_result=uploaded)
+
+    updated_record, results, warnings = execute_asset_operations(
+        {"title": "Book"},
+        [
+            make_operation(
+                "download_and_attach",
+                source_url="https://example.com/author/2248404",
+                local_cache_path=str(cache_path),
+            )
+        ],
+        adapter,
+        downloader=lambda url: (_ for _ in ()).throw(RuntimeError("should not download")),
+    )
+
+    inferred_path = tmp_path / "assets" / "author-picture.jpg"
+    assert not cache_path.exists()
+    assert inferred_path.read_bytes() == b"\xff\xd8\xff\xe0\x00\x10JFIF\x00cached-image"
+    assert adapter.calls == [(inferred_path, "author-picture.jpg", "image/jpeg")]
+    assert updated_record["cover"] == uploaded
+    assert results[0]["status"] == "uploaded"
+    assert warnings == []
+
+
+def test_execute_asset_operations_upload_failure_does_not_fall_back_to_external_url(tmp_path):
     cache_path = tmp_path / "covers" / "cover.jpg"
     adapter = FakeUploadAdapter(upload_error=RuntimeError("upload failed"))
 
@@ -146,15 +251,31 @@ def test_execute_asset_operations_upload_failure_falls_back_to_external_url(tmp_
         downloader=lambda url: b"image-bytes",
     )
 
-    assert updated_record["cover"] == "https://example.com/cover.jpg"
+    assert "cover" not in updated_record
     assert results == [
         {
             "field": "cover",
             "action": "download_and_attach",
-            "status": "external_url",
+            "status": "upload_failed",
             "source_url": "https://example.com/cover.jpg",
         }
     ]
+    assert warnings == ["asset_upload_failed:cover:https://example.com/cover.jpg"]
+
+
+def test_execute_asset_operations_download_and_attach_removes_source_url_until_upload_succeeds(tmp_path):
+    cache_path = tmp_path / "covers" / "cover.jpg"
+    adapter = FakeUploadAdapter(upload_error=RuntimeError("upload failed"))
+
+    updated_record, results, warnings = execute_asset_operations(
+        {"title": "Book", "cover": "https://example.com/cover.jpg"},
+        [make_operation("download_and_attach", local_cache_path=str(cache_path))],
+        adapter,
+        downloader=lambda url: b"image-bytes",
+    )
+
+    assert updated_record == {"title": "Book"}
+    assert results[0]["status"] == "upload_failed"
     assert warnings == ["asset_upload_failed:cover:https://example.com/cover.jpg"]
 
 
@@ -183,7 +304,7 @@ def test_execute_asset_operations_uses_existing_cache_without_downloading(tmp_pa
     assert warnings == []
 
 
-def test_execute_asset_operations_cache_write_failure_falls_back_to_external_url(tmp_path, monkeypatch):
+def test_execute_asset_operations_cache_write_failure_does_not_fall_back_to_external_url(tmp_path, monkeypatch):
     cache_path = tmp_path / "covers" / "cover.jpg"
     adapter = FakeUploadAdapter(upload_result={"type": "file_upload"})
 
@@ -199,13 +320,13 @@ def test_execute_asset_operations_cache_write_failure_falls_back_to_external_url
         downloader=lambda url: b"image-bytes",
     )
 
-    assert updated_record["cover"] == "https://example.com/cover.jpg"
-    assert results[0]["status"] == "external_url"
+    assert "cover" not in updated_record
+    assert results[0]["status"] == "download_failed"
     assert warnings == ["asset_download_failed:cover:https://example.com/cover.jpg"]
     assert adapter.calls == []
 
 
-def test_execute_asset_operations_download_failure_falls_back_to_external_url(tmp_path):
+def test_execute_asset_operations_download_failure_does_not_fall_back_to_external_url(tmp_path):
     cache_path = tmp_path / "covers" / "cover.jpg"
     adapter = NoUploadAdapter()
 
@@ -220,12 +341,12 @@ def test_execute_asset_operations_download_failure_falls_back_to_external_url(tm
     )
 
     assert not cache_path.exists()
-    assert updated_record["cover"] == "https://example.com/cover.jpg"
+    assert "cover" not in updated_record
     assert results == [
         {
             "field": "cover",
             "action": "download_and_attach",
-            "status": "external_url",
+            "status": "download_failed",
             "source_url": "https://example.com/cover.jpg",
         }
     ]
@@ -274,6 +395,10 @@ def test_execute_asset_operations_uses_record_key_for_result_record_and_warnings
             "action": "download_and_attach",
             "status": "uploaded",
             "source_url": "https://example.com/poster.png",
+            "uploaded_name": "poster.png",
+            "mime_type": "image/png",
+            "local_cache_path": str(cache_path),
+            "file_upload_id": "file-1",
         }
     ]
     assert warnings == []

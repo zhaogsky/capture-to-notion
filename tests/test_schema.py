@@ -165,6 +165,23 @@ def test_property_value_builders_cover_supported_write_types_without_business_ke
     assert properties["Tags"] == {"multi_select": [{"name": "政治"}, {"name": "历史"}]}
 
 
+def test_build_properties_does_not_write_business_fields_without_explicit_mapping():
+    schema = {
+        "Author": {"type": "relation"},
+        "ISBN": {"type": "rich_text"},
+        "Page Count": {"type": "number"},
+        "Cover": {"type": "files"},
+    }
+    record = {
+        "author": ["page-author"],
+        "isbn": "9787559847357",
+        "page_count": 400,
+        "cover": "https://example.com/cover.jpg",
+    }
+
+    assert build_properties(record, {}, schema) == {}
+
+
 def test_build_properties_coerces_checkbox_strings():
     schema = {"已读": {"type": "checkbox"}}
     field_mapping = {"read": "已读"}
@@ -213,6 +230,72 @@ def test_build_properties_skips_empty_unknown_and_unmapped_values():
 
     assert build_properties(record, field_mapping, schema) == {
         "名称": {"title": [{"text": {"content": "可能性的艺术"}}]}
+    }
+
+
+def test_build_properties_accepts_raw_notion_property_payload():
+    rich_text_payload = {
+        "rich_text": [
+            {
+                "type": "text",
+                "text": {"content": "Source", "link": {"url": "https://example.com"}},
+                "annotations": {"bold": True},
+            }
+        ]
+    }
+    relation_payload = {"relation": [{"id": "page-1"}]}
+
+    assert build_properties(
+        {
+            "summary": {"$notion": rich_text_payload},
+            "related": {"$notion": relation_payload},
+        },
+        {"summary": "Summary", "related": "Related"},
+        {"Summary": {"type": "rich_text"}, "Related": {"type": "relation"}},
+    ) == {"Summary": rich_text_payload, "Related": relation_payload}
+
+
+def test_build_properties_supports_explicit_clear_values():
+    schema = {
+        "Summary": {"type": "rich_text"},
+        "Reference": {"type": "url"},
+        "Timeline": {"type": "date"},
+        "Metric": {"type": "number"},
+        "Single Choice": {"type": "select"},
+        "Workflow State": {"type": "status"},
+        "Related": {"type": "relation"},
+        "Attachments": {"type": "files"},
+        "People": {"type": "people"},
+        "Tags": {"type": "multi_select"},
+        "Flag": {"type": "checkbox"},
+    }
+    field_mapping = {
+        "summary": "Summary",
+        "url": "Reference",
+        "date": "Timeline",
+        "number": "Metric",
+        "select": "Single Choice",
+        "status": "Workflow State",
+        "relation": "Related",
+        "files": "Attachments",
+        "people": "People",
+        "tags": "Tags",
+        "flag": "Flag",
+    }
+    record = {key: {"$clear": True} for key in field_mapping}
+
+    assert build_properties(record, field_mapping, schema) == {
+        "Summary": {"rich_text": []},
+        "Reference": {"url": None},
+        "Timeline": {"date": None},
+        "Metric": {"number": None},
+        "Single Choice": {"select": None},
+        "Workflow State": {"status": None},
+        "Related": {"relation": []},
+        "Attachments": {"files": []},
+        "People": {"people": []},
+        "Tags": {"multi_select": []},
+        "Flag": {"checkbox": False},
     }
 
 
@@ -301,7 +384,7 @@ def test_normalize_database_schema_preserves_supported_notion_property_types():
         "Date": {"type": "date", "date": {}},
         "Url": {"type": "url", "url": {}},
         "Files": {"type": "files", "files": {}},
-        "Relation": {"type": "relation", "relation": {"database_id": "db-related"}},
+        "Relation": {"type": "relation", "relation": {"database_id": "db-related", "data_source_id": "ds-related"}},
         "Checkbox": {"type": "checkbox", "checkbox": {}},
         "Email": {"type": "email", "email": {}},
         "Phone": {"type": "phone_number", "phone_number": {}},
@@ -323,6 +406,7 @@ def test_normalize_database_schema_preserves_supported_notion_property_types():
         "Phone": "phone_number",
     }
     assert normalized["Relation"]["target_database_id"] == "db-related"
+    assert normalized["Relation"]["target_data_source_id"] == "ds-related"
 
 
 
@@ -523,6 +607,34 @@ def test_build_properties_accepts_prebuilt_file_upload_object():
 
     assert build_properties({"cover": file_object}, field_mapping, schema) == {
         "封面": {"files": [file_object]}
+    }
+
+
+def test_build_properties_strips_upload_metadata_from_file_upload_object():
+    schema = {
+        "封面": {"type": "files"},
+    }
+    field_mapping = {
+        "cover": "封面",
+    }
+    file_object = {
+        "type": "file_upload",
+        "name": "cover.jpg",
+        "mime_type": "image/jpeg",
+        "local_cache_path": "/tmp/cover.jpg",
+        "file_upload": {"id": "file-upload-id"},
+    }
+
+    assert build_properties({"cover": file_object}, field_mapping, schema) == {
+        "封面": {
+            "files": [
+                {
+                    "type": "file_upload",
+                    "name": "cover.jpg",
+                    "file_upload": {"id": "file-upload-id"},
+                }
+            ]
+        }
     }
 
 

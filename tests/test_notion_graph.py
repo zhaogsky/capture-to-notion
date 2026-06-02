@@ -2,6 +2,7 @@ from capture_to_notion.notion_graph import (
     normalize_block,
     normalize_database,
     normalize_data_source,
+    normalize_data_source_template,
     normalize_page,
     normalize_view,
     property_capability,
@@ -99,6 +100,32 @@ def test_normalize_view_records_display_context():
     assert view["sorts"] == []
     assert view["quick_filters"] == {"status": {}}
     assert view["configuration"] == {"gallery": {}}
+
+
+def test_normalize_data_source_template_preserves_generic_template_facts():
+    template = normalize_data_source_template(
+        {
+            "id": "template-1",
+            "page_id": "page-template-1",
+            "name": "Default note",
+            "title": [{"plain_text": "Default note title"}],
+            "data_source_id": "ds-notes",
+            "database_id": "db-notes",
+            "is_default": True,
+        },
+        fallback_data_source_id="ds-fallback",
+        fallback_database_id="db-fallback",
+    )
+
+    assert template == {
+        "template_id": "template-1",
+        "page_id": "page-template-1",
+        "name": "Default note",
+        "title": "Default note title",
+        "data_source_id": "ds-notes",
+        "database_id": "db-notes",
+        "is_default": True,
+    }
 
 
 def test_normalize_page_distinguishes_record_page():

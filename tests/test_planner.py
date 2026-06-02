@@ -4,8 +4,9 @@ from pathlib import Path
 import pytest
 
 from capture_to_notion.cache import CacheStore
+from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.config import ensure_config
-from capture_to_notion.models import CaptureInput, CaptureOptions, Target, WritePlan
+from capture_to_notion.models import AssetOperation, CaptureInput, CaptureOptions, Target, WritePlan
 import capture_to_notion.planner as planner_module
 from capture_to_notion.planner import (
     build_asset_operations,
@@ -140,6 +141,486 @@ def seed_podcast_target(config, parser_profile=True):
             "asset_mapping": {"cover": {"field": "封面", "type": "files", "strategy": "download_and_attach"}},
         },
     )
+
+
+def seed_template_v2_target(config):
+    write_json(
+        config.graphs_v2_dir / "noteshelf.json",
+        {
+            "cache_version": 2,
+            "graph_id": "noteshelf",
+            "root": {"kind": "data_source", "id": "ds-notes"},
+            "data_sources": {
+                "ds-notes": {
+                    "data_source_id": "ds-notes",
+                    "database_id": "db-notes",
+                    "title": "Notes",
+                    "schema": {"Name": {"type": "title"}, "Status": {"type": "select"}},
+                    "templates": [
+                        {
+                            "template_id": "template-default",
+                            "page_id": "page-template-default",
+                            "name": "Default note",
+                            "title": "Default note",
+                            "data_source_id": "ds-notes",
+                            "database_id": "db-notes",
+                            "is_default": True,
+                        }
+                    ],
+                }
+            },
+            "views": {},
+        },
+    )
+    write_json(
+        config.profiles_v2_dir / "notes-profile.json",
+        {
+            "cache_version": 2,
+            "profile_id": "notes-profile",
+            "graph_id": "noteshelf",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-notes",
+                    "canonical_view_id": None,
+                    "field_mapping": {"title": "Name", "state": "Status"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding"},
+                    "parser_profile": {"trusted_field_sources": ["user_binding"]},
+                    "state_mapping": {},
+                    "asset_mapping": {},
+                    "relation_mapping": {},
+                }
+            },
+        },
+    )
+    write_json(
+        config.aliases_v2_file,
+        {"cache_version": 2, "aliases": {"notes": {"graph_id": "noteshelf", "profile_id": "notes-profile", "kind": "write_profile"}}},
+    )
+
+
+def test_v2_plan_exposes_template_options_as_facts_only_without_decision(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheV2Store(config)
+    seed_template_v2_target(config)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "标题：Template note",
+                "target_hint": "notes",
+                "content_type_hint": "book",
+            }
+        ),
+        cache,
+    )
+    cli_summary = build_plan_cli_summary(plan)
+
+    assert plan.summary["template_options"] == {
+        "data_source_id": "ds-notes",
+        "templates": [
+            {
+                "template_id": "template-default",
+                "page_id": "page-template-default",
+                "name": "Default note",
+                "title": "Default note",
+                "data_source_id": "ds-notes",
+                "database_id": "db-notes",
+                "is_default": True,
+            }
+        ],
+        "decision": "undecided",
+        "selected_template_id": None,
+        "facts_only": True,
+        "apply_status": "facts_only",
+    }
+    assert cli_summary["review"]["template_options"] == plan.summary["template_options"]
+    assert cli_summary["review"]["verification_expectations"]["targets"][0]["template"] == {
+        "decision": "undecided",
+        "selected_template_id": None,
+        "apply_status": "facts_only",
+    }
+
+
+def test_v2_plan_marks_use_template_as_unsupported_until_writer_supports_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheV2Store(config)
+    seed_template_v2_target(config)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "标题：Template note",
+                "target_hint": "notes",
+                "content_type_hint": "book",
+                "options": {"template_choice": {"decision": "use_template", "template_id": "template-default"}},
+            }
+        ),
+        cache,
+    )
+
+    assert plan.summary["template_options"]["decision"] == "use_template"
+    assert plan.summary["template_options"]["selected_template_id"] == "template-default"
+    assert plan.summary["template_options"]["apply_status"] == "unsupported"
+    assert "template_apply_unsupported:template-default" in plan.warnings
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "template_apply_unsupported"
+    assert plan.summary["write_targets"][0]["template"] == {
+        "decision": "use_template",
+        "selected_template_id": "template-default",
+        "apply_status": "unsupported",
+    }
+
+
+def test_v2_plan_reflects_skip_template_decision(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheV2Store(config)
+    seed_template_v2_target(config)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "标题：Template note",
+                "target_hint": "notes",
+                "content_type_hint": "book",
+                "enrichment": {"template_decisions": {"ds-notes": {"decision": "skip_template"}}},
+            }
+        ),
+        cache,
+    )
+
+    assert plan.summary["template_options"]["decision"] == "skip_template"
+    assert plan.summary["template_options"]["selected_template_id"] is None
+    assert plan.summary["template_options"]["apply_status"] == "skipped"
+    assert plan.summary["write_targets"][0]["template"] == {
+        "decision": "skip_template",
+        "selected_template_id": None,
+        "apply_status": "skipped",
+    }
+
+
+def test_v2_capture_plan_does_not_write_state_when_input_state_is_null(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheV2Store(config)
+    write_json(
+        config.graphs_v2_dir / "bookshelf.json",
+        {
+            "cache_version": 2,
+            "graph_id": "bookshelf",
+            "root": {"kind": "data_source", "id": "ds-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {
+                        "名称": {"type": "title"},
+                        "状态": {"type": "select", "select": {"options": [{"name": "In progress"}, {"name": "未开始"}]}},
+                    },
+                }
+            },
+            "views": {
+                "view-reading": {
+                    "view_id": "view-reading",
+                    "name": "正在阅读",
+                    "type": "gallery",
+                    "data_source_id": "ds-books",
+                }
+            },
+        },
+    )
+    write_json(
+        config.profiles_v2_dir / "books-profile.json",
+        {
+            "cache_version": 2,
+            "profile_id": "books-profile",
+            "graph_id": "bookshelf",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "canonical_view_id": "view-reading",
+                    "field_mapping": {"title": "名称", "state": "状态"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding"},
+                    "parser_profile": {"trusted_field_sources": ["user_binding"]},
+                    "state_mapping": {},
+                    "asset_mapping": {},
+                    "relation_mapping": {},
+                }
+            },
+        },
+    )
+    write_json(
+        config.aliases_v2_file,
+        {"cache_version": 2, "aliases": {"书单": {"graph_id": "bookshelf", "profile_id": "books-profile", "kind": "write_profile"}}},
+    )
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "书名：反乌合之众",
+                "target_hint": "书单",
+                "state": None,
+                "content_type_hint": "book",
+                "target_context_hint": "Notion view 正在阅读",
+                "target_scope_hint": "database_like_area_or_view",
+            }
+        ),
+        cache,
+    )
+
+    assert plan.normalized_record.get("state") is None
+    assert "state" not in plan.field_mapping
+    assert plan.summary["writable_fields"]["state"]["value_status"] == "missing_value"
+    assert plan.summary["writable_fields"]["state"]["write_status"] == "omitted_missing_value"
+
+
+def test_v2_capture_plan_applies_view_status_constraint(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheV2Store(config)
+    write_json(
+        config.graphs_v2_dir / "bookshelf.json",
+        {
+            "cache_version": 2,
+            "graph_id": "bookshelf",
+            "root": {"kind": "data_source", "id": "ds-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {
+                        "名称": {"id": "title", "type": "title", "name": "名称"},
+                        "状态": {"id": "state_id", "type": "status", "name": "状态", "status": {"options": [{"name": "Next"}]}},
+                    },
+                }
+            },
+            "views": {
+                "view-pending": {
+                    "view_id": "view-pending",
+                    "name": "待读列表",
+                    "type": "gallery",
+                    "data_source_id": "ds-books",
+                    "quick_filters": {"state_id": {"status": {"equals": "Next"}}},
+                }
+            },
+        },
+    )
+    write_json(
+        config.profiles_v2_dir / "books-profile.json",
+        {
+            "cache_version": 2,
+            "profile_id": "books-profile",
+            "graph_id": "bookshelf",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "canonical_view_id": "view-pending",
+                    "field_mapping": {"title": "名称", "state": "状态"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding"},
+                    "parser_profile": {"labels": {"title": ["名称"]}, "trusted_field_sources": ["user_binding"]},
+                    "state_mapping": {},
+                    "asset_mapping": {},
+                    "relation_mapping": {},
+                }
+            },
+        },
+    )
+    write_json(
+        config.aliases_v2_file,
+        {"cache_version": 2, "aliases": {"书单待读列表": {"graph_id": "bookshelf", "profile_id": "books-profile", "kind": "write_profile"}}},
+    )
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "名称：反乌合之众",
+                "target_hint": "书单待读列表",
+                "state": None,
+                "content_type_hint": "book",
+                "target_context_hint": "Notion view 待读列表",
+                "target_scope_hint": "database_like_area_or_view",
+            }
+        ),
+        cache,
+    )
+
+    assert plan.normalized_record["state"] == "Next"
+    assert plan.field_mapping["state"] == "状态"
+    assert plan.summary["writable_fields"]["state"] == {
+        "target_field": "状态",
+        "value_status": "present",
+        "write_status": "planned",
+    }
+    expected_constraints = {
+        "values": {"状态": "Next"},
+        "warnings": [],
+        "unsupported": [],
+        "conflicts": [],
+    }
+    assert plan.summary["view_context"]["constraints"] == expected_constraints
+    review = build_plan_cli_summary(plan)["review"]
+    assert review["view_constraints"] == [
+        {"status": "enforced", "field": "状态", "value": "Next"}
+    ]
+    assert review["verification_expectations"]["targets"][0]["view_visibility"] == {
+        "view_id": "view-pending",
+        "view_name": "待读列表",
+        "view_type": "gallery",
+        "constraints": expected_constraints,
+    }
+
+
+
+def test_v2_capture_plan_blocks_conflicting_view_status_constraint(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheV2Store(config)
+    write_json(
+        config.graphs_v2_dir / "bookshelf.json",
+        {
+            "cache_version": 2,
+            "graph_id": "bookshelf",
+            "root": {"kind": "data_source", "id": "ds-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {
+                        "名称": {"id": "title", "type": "title", "name": "名称"},
+                        "状态": {"id": "state_id", "type": "status", "name": "状态", "status": {"options": [{"name": "Next"}, {"name": "Reading"}]}},
+                    },
+                }
+            },
+            "views": {
+                "view-pending": {
+                    "view_id": "view-pending",
+                    "name": "待读列表",
+                    "type": "gallery",
+                    "data_source_id": "ds-books",
+                    "quick_filters": {"state_id": {"status": {"equals": "Next"}}},
+                }
+            },
+        },
+    )
+    write_json(
+        config.profiles_v2_dir / "books-profile.json",
+        {
+            "cache_version": 2,
+            "profile_id": "books-profile",
+            "graph_id": "bookshelf",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "canonical_view_id": "view-pending",
+                    "field_mapping": {"title": "名称", "state": "状态"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding"},
+                    "parser_profile": {"labels": {"title": ["名称"]}, "trusted_field_sources": ["user_binding"]},
+                    "state_mapping": {},
+                    "asset_mapping": {},
+                    "relation_mapping": {},
+                }
+            },
+        },
+    )
+    write_json(
+        config.aliases_v2_file,
+        {"cache_version": 2, "aliases": {"书单待读列表": {"graph_id": "bookshelf", "profile_id": "books-profile", "kind": "write_profile"}}},
+    )
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "名称：反乌合之众",
+                "target_hint": "书单待读列表",
+                "state": "Reading",
+                "content_type_hint": "book",
+                "target_context_hint": "Notion view 待读列表",
+                "target_scope_hint": "database_like_area_or_view",
+            }
+        ),
+        cache,
+    )
+
+    assert plan.requires_confirmation is True
+    assert plan.operations == []
+    assert "view_constraint_conflict:状态:Next:Reading" in plan.warnings
+
+
+
+def test_v2_capture_plan_creates_cover_asset_operation_from_trusted_files_mapping(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheV2Store(config)
+    write_json(
+        config.graphs_v2_dir / "bookshelf.json",
+        {
+            "cache_version": 2,
+            "graph_id": "bookshelf",
+            "root": {"kind": "data_source", "id": "ds-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {
+                        "名称": {"type": "title"},
+                        "封面": {"type": "files"},
+                    },
+                }
+            },
+            "views": {},
+        },
+    )
+    write_json(
+        config.profiles_v2_dir / "books-profile.json",
+        {
+            "cache_version": 2,
+            "profile_id": "books-profile",
+            "graph_id": "bookshelf",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "field_mapping": {"title": "名称", "cover": "封面"},
+                    "field_sources": {"title": "user_binding", "cover": "user_binding"},
+                    "parser_profile": {
+                        "required_schema_fields": [],
+                        "required_value_fields": [],
+                        "summary_key_fields": [],
+                        "trusted_field_sources": ["user_binding"],
+                    },
+                    "state_mapping": {},
+                    "asset_mapping": {},
+                    "relation_mapping": {},
+                }
+            },
+        },
+    )
+    write_json(
+        config.aliases_v2_file,
+        {"cache_version": 2, "aliases": {"书单": {"graph_id": "bookshelf", "profile_id": "books-profile", "kind": "write_profile"}}},
+    )
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "名称：反乌合之众\n封面：https://example.com/cover.jpg",
+                "target_hint": "书单",
+                "state": None,
+                "content_type_hint": "book",
+            }
+        ),
+        cache,
+    )
+
+    assert plan.field_mapping["cover"] == "封面"
+    assert plan.asset_operations[0].record_key == "cover"
+    assert plan.asset_operations[0].target_field == "封面"
+    assert plan.asset_operations[0].action == "download_and_attach"
+    assert plan.summary["asset_actions"] == [
+        {"record_key": "cover", "target_field": "封面", "action": "download_and_attach"}
+    ]
+
 
 
 def test_capture_plan_updates_database_item_resolved_from_page_alias(tmp_path, monkeypatch):
@@ -765,16 +1246,69 @@ def test_v2_plan_creates_child_page_when_target_is_plain_page(tmp_path, monkeypa
             "page_id": None,
             "page_id_status": "pending_after_apply",
             "context_verification_source": "v2_page_graph",
+            "target_path": "知识",
+            "target_path_complete": False,
         }
     ]
     assert plan.summary["body_block_count"] == 2
 
 
 
+def test_v2_page_parent_plan_accepts_ai_generated_body_blocks(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "ai-knowledge",
+        {
+            "cache_version": 2,
+            "graph_id": "ai-knowledge",
+            "root": {"kind": "page", "id": "page-knowledge"},
+            "pages": {"page-knowledge": {"page_id": "page-knowledge", "title": "知识", "kind": "page"}},
+            "blocks": {},
+            "databases": {},
+            "data_sources": {},
+            "views": {},
+        },
+    )
+    store.bind_alias("AI/知识", graph_id="ai-knowledge", profile_id=None, kind="graph")
+    body_blocks = [
+        {
+            "object": "block",
+            "type": "callout",
+            "callout": {
+                "rich_text": [{"type": "text", "text": {"content": "AI 生成的重点"}}],
+                "icon": {"emoji": "💡"},
+            },
+        }
+    ]
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "标题：DeepSeek V4\n\nFallback body should not be used.",
+                "target_hint": "AI/知识",
+                "content_type_hint": "article",
+                "intent_hint": "direct_write",
+                "input_shape_hint": "plain_text",
+                "target_scope_hint": "page_parent",
+                "user_requested_action": "write",
+                "body_blocks": body_blocks,
+            }
+        ),
+        store,
+    )
+
+    assert plan.operations[0]["body_blocks"] == body_blocks
+    assert plan.summary["body_block_count"] == 1
+
+
 def test_write_plan_serializes_page_parent_target_kind():
     plan = WritePlan(
         plan_id="plan-page-1",
-        content_type="article",
+        content_type="book",
         target=Target(
             page_title="知识",
             page_id="parent-page",
@@ -855,6 +1389,28 @@ def test_build_plan_cli_summary_omits_execution_payload():
             "state": "initialized",
             "requires_confirmation": False,
         },
+        "review": {
+            "target_semantics": {
+                "target_kind": "data_source",
+                "page_title": "书单",
+                "page_id": "page-books",
+                "data_source_id": "ds-books",
+            },
+            "view_constraints": [],
+            "expected_fields": [],
+            "relation_actions": [],
+            "relation_target_plans": [],
+            "asset_actions": [],
+            "blocking_warnings": [
+                {
+                    "code": "review_this",
+                    "severity": "blocking",
+                    "category": "confirmation",
+                    "message": "review_this",
+                }
+            ],
+            "verification_expectations": {"fields": [], "relations": [], "assets": [], "page_cover": None, "targets": []},
+        },
         "warnings": ["review_this"],
         "warning_sections": {
             "blocking": [
@@ -878,6 +1434,108 @@ def test_build_plan_cli_summary_omits_execution_payload():
     assert "asset_operations" not in summary
     assert "completion_operations" not in summary
     assert "capture_input" not in summary
+
+
+
+def test_build_plan_cli_summary_exposes_compact_review_sections():
+    plan = WritePlan(
+        plan_id="20260512-review",
+        content_type="book",
+        target=Target(
+            page_title="书单",
+            page_id="page-books",
+            data_source_id="ds-books",
+            view_id="view-next",
+            view_name="待读列表",
+            view_type="list",
+            target_kind="data_source",
+            confidence="high",
+            source="v2_alias",
+        ),
+        summary={
+            "target_page": "书单",
+            "target_data_source": "Books",
+            "title": "反乌合之众",
+            "state": "Next",
+            "key_fields": {"isbn": {"target_field": "ISBN", "value_status": "present"}},
+            "writable_fields": {
+                "title": {"target_field": "名称", "value_status": "present", "write_status": "planned"},
+                "state": {"target_field": "状态", "value_status": "present", "write_status": "planned"},
+                "isbn": {"target_field": "ISBN", "value_status": "present", "write_status": "planned"},
+            },
+            "write_targets": [{"type": "primary_page", "action": "update_page", "page_id": "page-book"}],
+            "relation_actions": [{"field": "author", "target_field": "作者", "action": "create_missing"}],
+            "asset_actions": [
+                {"field": "cover", "target_field": "封面", "type": "cover_image", "action": "download_and_attach", "status": "planned"}
+            ],
+            "required_value_fields": ["isbn", "page_count"],
+            "warning_details": [
+                {"code": "relation_ambiguous:author", "severity": "blocking", "category": "relation", "message": "relation_ambiguous:author"}
+            ],
+            "requires_confirmation": True,
+        },
+        normalized_record={"title": "反乌合之众", "state": "Next", "isbn": "978-1"},
+        field_mapping={"title": "名称", "state": "状态", "isbn": "ISBN", "author": "作者", "cover": "封面"},
+        operations=[{"type": "create_or_update_page", "page_id": "page-book"}],
+        asset_operations=[
+            AssetOperation(
+                type="cover_image",
+                source_url="https://example.com/cover.jpg",
+                local_cache_path=None,
+                target_field="封面",
+                action="download_and_attach",
+                record_key="cover",
+            )
+        ],
+        sources=[],
+        warnings=["view_constraint_conflict:状态:Next:Reading", "relation_ambiguous:author"],
+        requires_confirmation=True,
+        confirmation_reason="view_constraint_unresolved",
+    )
+
+    review = build_plan_cli_summary(plan)["review"]
+
+    assert review["target_semantics"] == {
+        "target_kind": "data_source",
+        "page_title": "书单",
+        "page_id": "page-books",
+        "data_source_id": "ds-books",
+        "view_id": "view-next",
+        "view_name": "待读列表",
+        "view_type": "list",
+    }
+    assert review["view_constraints"] == [{"status": "conflict", "field": "状态", "expected": "Next", "actual": "Reading"}]
+    assert review["expected_fields"] == [
+        {"record_key": "title", "target_field": "名称", "value_status": "present", "write_status": "planned"},
+        {"record_key": "state", "target_field": "状态", "value_status": "present", "write_status": "planned"},
+        {"record_key": "isbn", "target_field": "ISBN", "value_status": "present", "write_status": "planned"},
+    ]
+    assert review["relation_actions"] == [{"field": "author", "target_field": "作者", "action": "create_missing"}]
+    assert review["asset_actions"] == [
+        {"field": "cover", "target_field": "封面", "type": "cover_image", "action": "download_and_attach", "status": "planned"}
+    ]
+    assert review["blocking_warnings"] == [
+        {"code": "relation_ambiguous:author", "severity": "blocking", "category": "relation", "message": "relation_ambiguous:author"}
+    ]
+    assert review["verification_expectations"] == {
+        "fields": ["isbn", "page_count"],
+        "relations": ["author"],
+        "assets": ["cover"],
+        "page_cover": "https://example.com/cover.jpg",
+        "targets": [
+            {
+                "target_type": "primary_page",
+                "action": "update_page",
+                "page_id": "page-book",
+                "page_id_status": "known",
+                "data_source_id": "ds-books",
+                "fields": ["isbn", "page_count"],
+                "relations": ["author"],
+                "assets": ["cover"],
+                "page_cover": "https://example.com/cover.jpg",
+            }
+        ],
+    }
 
 
 
@@ -927,7 +1585,7 @@ def test_builds_book_capture_plan_from_cached_target(tmp_path, monkeypatch):
     assert plan.content_type == "book"
     assert plan.target.page_title == "书单"
     assert plan.target.data_source_id == "ds-books"
-    assert plan.normalized_record["state"] == "initialized"
+    assert plan.normalized_record["state"] == "想读"
     assert plan.normalized_record.get("cover") is None
     assert "cover" not in plan.field_mapping
     assert plan.asset_operations == []
@@ -1202,6 +1860,788 @@ def test_book_capture_plan_supports_profile_labeled_extra_fields(tmp_path, monke
 
 
 
+def test_book_capture_plan_warns_when_relation_value_needs_apply_resolution(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["schema"]["作者"] = {
+        "type": "relation",
+        "target_database_id": "db-authors",
+    }
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+            target_hint="书单",
+            state="初始化",
+            content_type_hint="book",
+            options=CaptureOptions(),
+        ),
+        cache,
+    )
+
+    assert plan.requires_confirmation is False
+    assert plan.field_mapping["author"] == "作者"
+    assert "relation_resolution_pending:author:刘瑜" in plan.warnings
+    assert {
+        "code": "relation_resolution_pending:author:刘瑜",
+        "severity": "review",
+        "category": "relation_resolution",
+        "message": "刘瑜",
+    } in plan.summary["warning_details"]
+
+
+
+def test_book_capture_plan_summarizes_relation_create_missing_action(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["schema"]["作者"] = {
+        "type": "relation",
+        "target_database_id": "db-authors",
+    }
+    target["relation_mapping"] = {"author": {"create_missing": True}}
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+            target_hint="书单",
+            state="初始化",
+            content_type_hint="book",
+            options=CaptureOptions(),
+        ),
+        cache,
+    )
+
+    assert plan.summary["relation_actions"] == [
+        {
+            "record_key": "author",
+            "target_field": "作者",
+            "value": "刘瑜",
+            "action": "create_missing_relation_page",
+            "target_database_id": "db-authors",
+            "target_data_source_id": None,
+            "page_id": None,
+            "page_id_status": "pending_after_apply",
+        }
+    ]
+
+
+
+def test_book_capture_plan_exposes_relation_target_plan_for_missing_page(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["schema"]["作者"] = {
+        "type": "relation",
+        "target_database_id": "db-authors",
+        "target_data_source_id": "ds-authors",
+    }
+    target["data_sources"]["authors"] = {
+        "data_source_id": "ds-authors",
+        "title": "Authors",
+        "role": "secondary",
+        "content_types": ["author"],
+        "schema": {
+            "Name": {"type": "title"},
+            "Author Picture": {"type": "files"},
+            "Bio": {"type": "rich_text"},
+            "Country": {"type": "select", "select": {"options": [{"name": "Chile"}]}},
+            "Book Count": {"type": "rollup"},
+        },
+    }
+    target["relation_mapping"] = {"author": {"create_missing": True}}
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="把《当我们不再理解世界》初始化到书单 作者：[智利] 本哈明·拉巴图特 ISBN：9787020173228 页数：176",
+            target_hint="书单",
+            state="初始化",
+            content_type_hint="book",
+            options=CaptureOptions(),
+        ),
+        cache,
+    )
+
+    assert plan.summary["relation_target_plans"] == [
+        {
+            "source_record_key": "author",
+            "source_value": "[智利] 本哈明·拉巴图特",
+            "action": "create_page",
+            "target_data_source": "Authors",
+            "target_data_source_id": "ds-authors",
+            "page_id": None,
+            "page_id_status": "pending_after_apply",
+            "writable_fields": {
+                "title": {"target_field": "Name", "value_status": "present", "write_status": "planned", "type": "title"},
+                "Author Picture": {"target_field": "Author Picture", "value_status": "missing_value", "write_status": "needs_enrichment", "type": "files"},
+                "Bio": {"target_field": "Bio", "value_status": "missing_value", "write_status": "needs_enrichment", "type": "rich_text"},
+                "Country": {"target_field": "Country", "value_status": "missing_value", "write_status": "needs_user_choice", "type": "select"},
+            },
+            "omitted_fields": {"Book Count": {"type": "rollup", "write_status": "computed"}},
+            "shell_page_risk": True,
+        }
+    ]
+    assert "relation_target_shell_page:author:[智利] 本哈明·拉巴图特" in plan.warnings
+
+
+
+class FakePlannerPeopleAdapter:
+    def __init__(self, users):
+        self.users = users
+        self.search_calls = []
+
+    @classmethod
+    def from_config(cls, _config):
+        return cls(cls.users)
+
+    def search_users(self, query):
+        self.search_calls.append(query)
+        lowered = query.casefold()
+        return [
+            user
+            for user in self.users
+            if lowered in str(user.get("name", "")).casefold()
+            or lowered in str(user.get("person", {}).get("email", "")).casefold()
+        ]
+
+
+def test_capture_plan_auto_resolves_single_people_email_to_user_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["fields"]["reviewers"] = "Reviewers"
+    target["data_sources"]["books"]["schema"]["Reviewers"] = {"type": "people"}
+    target["parser_profile"]["book"]["required_value_fields"] = ["isbn", "page_count"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+    FakePlannerPeopleAdapter.users = [
+        {"id": "user-ada", "name": "Ada Lovelace", "type": "person", "person": {"email": "ada@example.com"}},
+    ]
+    monkeypatch.setattr(planner_module, "NotionAdapter", FakePlannerPeopleAdapter, raising=False)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "把《People Sprint》初始化到书单 ISBN：9787559847357 页数：400",
+                "target_hint": "书单",
+                "state": "初始化",
+                "content_type_hint": "book",
+                "structured_record": {"reviewers": "ada@example.com"},
+            }
+        ),
+        cache,
+    )
+    compact = build_plan_cli_summary(plan)
+
+    assert plan.normalized_record["reviewers"] == "user-ada"
+    assert plan.field_mapping["reviewers"] == "Reviewers"
+    assert "people_resolution_requirements" not in compact["summary"]
+    assert not any(warning.startswith("people_") for warning in plan.warnings)
+
+
+def test_capture_plan_auto_blocks_required_ambiguous_people_candidates(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["fields"]["reviewers"] = "Reviewers"
+    target["data_sources"]["books"]["schema"]["Reviewers"] = {"type": "people"}
+    target["parser_profile"]["book"]["required_value_fields"] = ["reviewers"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+    FakePlannerPeopleAdapter.users = [
+        {"id": "user-1", "name": "Alex Chen", "type": "person", "person": {"email": "alex.chen@example.com"}},
+        {"id": "user-2", "name": "Alex Kim", "type": "person", "person": {"email": "alex.kim@example.com"}},
+    ]
+    monkeypatch.setattr(planner_module, "NotionAdapter", FakePlannerPeopleAdapter, raising=False)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "把《People Sprint》初始化到书单 ISBN：9787559847357 页数：400",
+                "target_hint": "书单",
+                "state": "初始化",
+                "content_type_hint": "book",
+                "structured_record": {"reviewers": "Alex"},
+            }
+        ),
+        cache,
+    )
+    compact = build_plan_cli_summary(plan)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "people_resolution_required"
+    assert plan.operations == []
+    assert "people_resolution_required:reviewers:Alex" in plan.warnings
+    assert compact["summary"]["people_resolution_requirements"] == [
+        {
+            "target_type": "people_resolution",
+            "source_record_key": "reviewers",
+            "source_value": "Alex",
+            "target_field": "Reviewers",
+            "required": True,
+            "blocking": True,
+            "candidates": [
+                {"user_id": "user-1", "id": "user-1", "name": "Alex Chen", "email": "alex.chen@example.com", "type": "person"},
+                {"user_id": "user-2", "id": "user-2", "name": "Alex Kim", "email": "alex.kim@example.com", "type": "person"},
+            ],
+        }
+    ]
+    assert compact["review"]["people_resolution_requirements"] == compact["summary"]["people_resolution_requirements"]
+
+
+def test_capture_plan_blocks_required_unresolved_people_value(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["fields"]["reviewers"] = "Reviewers"
+    target["data_sources"]["books"]["schema"]["Reviewers"] = {"type": "people"}
+    target["parser_profile"]["book"]["required_value_fields"] = ["reviewers"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+    FakePlannerPeopleAdapter.users = []
+    monkeypatch.setattr(planner_module, "NotionAdapter", FakePlannerPeopleAdapter, raising=False)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "把《People Sprint》初始化到书单 ISBN：9787559847357 页数：400",
+                "target_hint": "书单",
+                "state": "初始化",
+                "content_type_hint": "book",
+                "structured_record": {"reviewers": "Alex"},
+            }
+        ),
+        cache,
+    )
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "people_resolution_required"
+    assert plan.operations == []
+    assert "people_unresolved:reviewers:Alex" in plan.warnings
+
+
+
+def test_capture_plan_blocks_required_ambiguous_people_candidates_from_enrichment(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["fields"]["reviewers"] = "Reviewers"
+    target["data_sources"]["books"]["schema"]["Reviewers"] = {"type": "people"}
+    target["parser_profile"]["book"]["required_value_fields"] = ["reviewers"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "把《People Sprint》初始化到书单 ISBN：9787559847357 页数：400",
+                "target_hint": "书单",
+                "state": "初始化",
+                "content_type_hint": "book",
+                "structured_record": {"reviewers": "Alex"},
+                "enrichment": {
+                    "people_resolution_requirements": [
+                        {
+                            "record_key": "reviewers",
+                            "source_value": "Alex",
+                            "target_field": "Reviewers",
+                            "candidates": [
+                                {"user_id": "user-1", "id": "user-1", "name": "Alex Chen", "email": "alex@example.com"},
+                                {"user_id": "user-2", "id": "user-2", "name": "Alex Kim"},
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        cache,
+    )
+    compact = build_plan_cli_summary(plan)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "people_resolution_required"
+    assert plan.operations == []
+    assert "people_resolution_required:reviewers:Alex" in plan.warnings
+    assert compact["summary"]["people_resolution_requirements"] == [
+        {
+            "target_type": "people_resolution",
+            "source_record_key": "reviewers",
+            "source_value": "Alex",
+            "target_field": "Reviewers",
+            "required": True,
+            "blocking": True,
+            "candidates": [
+                {"user_id": "user-1", "id": "user-1", "name": "Alex Chen", "email": "alex@example.com"},
+                {"user_id": "user-2", "id": "user-2", "name": "Alex Kim"},
+            ],
+        }
+    ]
+    assert compact["review"]["people_resolution_requirements"] == compact["summary"]["people_resolution_requirements"]
+    assert any(warning["code"] == "people_resolution_required:reviewers:Alex" for warning in compact["review"]["blocking_warnings"])
+
+
+
+def test_capture_plan_people_decision_choose_existing_sets_user_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["fields"]["reviewers"] = "Reviewers"
+    target["data_sources"]["books"]["schema"]["Reviewers"] = {"type": "people"}
+    target["parser_profile"]["book"]["required_value_fields"] = ["reviewers"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "把《People Sprint》初始化到书单 ISBN：9787559847357 页数：400",
+                "target_hint": "书单",
+                "state": "初始化",
+                "content_type_hint": "book",
+                "structured_record": {"reviewers": "Alex"},
+                "enrichment": {
+                    "people_resolution_requirements": [
+                        {
+                            "record_key": "reviewers",
+                            "source_value": "Alex",
+                            "target_field": "Reviewers",
+                            "candidates": [{"user_id": "user-2", "id": "user-2", "name": "Alex Kim"}],
+                        }
+                    ],
+                    "requirement_decisions": [
+                        {
+                            "target_type": "people_resolution",
+                            "source_record_key": "reviewers",
+                            "source_value": "Alex",
+                            "target_field": "Reviewers",
+                            "action": "use_existing",
+                            "user_id": "user-2",
+                        }
+                    ],
+                },
+            }
+        ),
+        cache,
+    )
+    compact = build_plan_cli_summary(plan)
+
+    assert plan.requires_confirmation is False
+    assert plan.normalized_record["reviewers"] == "user-2"
+    assert plan.field_mapping["reviewers"] == "Reviewers"
+    assert not any(warning.startswith("people_resolution_required:reviewers:") for warning in plan.warnings)
+    assert "people_resolution_requirements" not in compact["summary"]
+    assert "people_resolution_requirements" not in compact["review"]
+
+
+
+def test_capture_plan_people_decision_skip_clears_optional_people_field(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["fields"]["reviewers"] = "Reviewers"
+    target["data_sources"]["books"]["schema"]["Reviewers"] = {"type": "people"}
+    target["parser_profile"]["book"]["required_value_fields"] = ["isbn", "page_count"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "把《People Sprint》初始化到书单 ISBN：9787559847357 页数：400",
+                "target_hint": "书单",
+                "state": "初始化",
+                "content_type_hint": "book",
+                "structured_record": {"reviewers": "Alex"},
+                "enrichment": {
+                    "people_resolution_requirements": [
+                        {
+                            "record_key": "reviewers",
+                            "source_value": "Alex",
+                            "target_field": "Reviewers",
+                            "candidates": [{"user_id": "user-1", "id": "user-1", "name": "Alex Chen"}],
+                        }
+                    ],
+                    "requirement_decisions": [
+                        {
+                            "target_type": "people_resolution",
+                            "source_record_key": "reviewers",
+                            "source_value": "Alex",
+                            "target_field": "Reviewers",
+                            "action": "skip",
+                        }
+                    ],
+                },
+            }
+        ),
+        cache,
+    )
+
+    assert plan.requires_confirmation is False
+    assert plan.normalized_record["reviewers"] is None
+    assert "reviewers" not in plan.field_mapping
+    assert "people_skipped:reviewers:Alex" in plan.warnings
+
+
+
+def test_capture_plan_optional_ambiguous_people_requirement_can_be_skipped(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["fields"]["reviewers"] = "Reviewers"
+    target["data_sources"]["books"]["schema"]["Reviewers"] = {"type": "people"}
+    target["parser_profile"]["book"]["required_value_fields"] = ["isbn", "page_count"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "把《People Sprint》初始化到书单 ISBN：9787559847357 页数：400",
+                "target_hint": "书单",
+                "state": "初始化",
+                "content_type_hint": "book",
+                "structured_record": {"reviewers": "Alex"},
+                "enrichment": {
+                    "people_resolution_requirements": [
+                        {
+                            "record_key": "reviewers",
+                            "source_value": "Alex",
+                            "target_field": "Reviewers",
+                            "candidates": [{"user_id": "user-1", "id": "user-1", "name": "Alex Chen"}],
+                        }
+                    ]
+                },
+            }
+        ),
+        cache,
+    )
+    compact = build_plan_cli_summary(plan)
+
+    assert plan.requires_confirmation is False
+    assert "people_resolution_required:reviewers:Alex" not in plan.warnings
+    assert compact["summary"]["people_resolution_requirements"] == [
+        {
+            "target_type": "people_resolution",
+            "source_record_key": "reviewers",
+            "source_value": "Alex",
+            "target_field": "Reviewers",
+            "required": False,
+            "blocking": False,
+            "candidates": [{"user_id": "user-1", "id": "user-1", "name": "Alex Chen"}],
+        }
+    ]
+
+
+
+def test_capture_plan_blocks_required_ambiguous_relation_candidates_from_enrichment(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["schema"]["作者"] = {
+        "type": "relation",
+        "target_database_id": "db-authors",
+        "target_data_source_id": "ds-authors",
+    }
+    target["parser_profile"]["book"]["required_value_fields"] = ["author"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+                "target_hint": "书单",
+                "state": "初始化",
+                "content_type_hint": "book",
+                "enrichment": {
+                    "relation_resolution_requirements": [
+                        {
+                            "record_key": "author",
+                            "source_value": "刘瑜",
+                            "target_field": "作者",
+                            "target_database_id": "db-authors",
+                            "target_data_source_id": "ds-authors",
+                            "candidates": [
+                                {"page_id": "author-1", "title": "刘瑜 A", "url": "https://notion.so/author-1"},
+                                {"page_id": "author-2", "title": "刘瑜 B"},
+                            ],
+                        }
+                    ]
+                },
+            }
+        ),
+        cache,
+    )
+    compact = build_plan_cli_summary(plan)
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "relation_resolution_required"
+    assert plan.operations == []
+    assert "relation_resolution_required:author:刘瑜" in plan.warnings
+    assert compact["summary"]["relation_resolution_requirements"] == [
+        {
+            "target_type": "relation_resolution",
+            "source_record_key": "author",
+            "source_value": "刘瑜",
+            "target_field": "作者",
+            "target_database_id": "db-authors",
+            "target_data_source_id": "ds-authors",
+            "required": True,
+            "blocking": True,
+            "candidates": [
+                {"page_id": "author-1", "title": "刘瑜 A", "url": "https://notion.so/author-1"},
+                {"page_id": "author-2", "title": "刘瑜 B"},
+            ],
+        }
+    ]
+    assert compact["review"]["relation_resolution_requirements"] == compact["summary"]["relation_resolution_requirements"]
+    assert any(warning["code"] == "relation_resolution_required:author:刘瑜" for warning in compact["review"]["blocking_warnings"])
+
+
+
+def test_capture_plan_relation_decision_choose_existing_sets_relation_page_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["schema"]["作者"] = {
+        "type": "relation",
+        "target_database_id": "db-authors",
+        "target_data_source_id": "ds-authors",
+    }
+    target["parser_profile"]["book"]["required_value_fields"] = ["author"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+                "target_hint": "书单",
+                "state": "初始化",
+                "content_type_hint": "book",
+                "enrichment": {
+                    "relation_resolution_requirements": [
+                        {
+                            "record_key": "author",
+                            "source_value": "刘瑜",
+                            "target_field": "作者",
+                            "target_database_id": "db-authors",
+                            "target_data_source_id": "ds-authors",
+                            "candidates": [{"page_id": "author-2", "title": "刘瑜 B"}],
+                        }
+                    ],
+                    "requirement_decisions": [
+                        {
+                            "target_type": "relation_resolution",
+                            "source_record_key": "author",
+                            "source_value": "刘瑜",
+                            "target_field": "作者",
+                            "action": "choose_existing",
+                            "page_id": "author-2",
+                        }
+                    ],
+                },
+            }
+        ),
+        cache,
+    )
+    compact = build_plan_cli_summary(plan)
+
+    assert plan.requires_confirmation is False
+    assert plan.normalized_record["author"] == "author-2"
+    assert plan.field_mapping["author"] == "作者"
+    assert not any(warning.startswith("relation_resolution_required:author:") for warning in plan.warnings)
+    assert not any(warning.startswith("relation_resolution_pending:author:") for warning in plan.warnings)
+    assert "relation_resolution_requirements" not in compact["summary"]
+    assert "relation_resolution_requirements" not in compact["review"]
+
+
+
+def test_capture_plan_relation_decision_skip_clears_optional_relation(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["schema"]["作者"] = {
+        "type": "relation",
+        "target_database_id": "db-authors",
+        "target_data_source_id": "ds-authors",
+    }
+    target["parser_profile"]["book"]["required_value_fields"] = ["isbn", "page_count"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+                "target_hint": "书单",
+                "state": "初始化",
+                "content_type_hint": "book",
+                "enrichment": {
+                    "relation_resolution_requirements": [
+                        {
+                            "record_key": "author",
+                            "source_value": "刘瑜",
+                            "target_field": "作者",
+                            "target_database_id": "db-authors",
+                            "target_data_source_id": "ds-authors",
+                            "candidates": [{"page_id": "author-1", "title": "刘瑜 A"}],
+                        }
+                    ],
+                    "requirement_decisions": [
+                        {
+                            "target_type": "relation_resolution",
+                            "source_record_key": "author",
+                            "source_value": "刘瑜",
+                            "target_field": "作者",
+                            "action": "skip",
+                            "reason": "user_confirmed_skip",
+                        }
+                    ],
+                },
+            }
+        ),
+        cache,
+    )
+
+    assert plan.requires_confirmation is False
+    assert plan.normalized_record["author"] is None
+    assert "author" not in plan.field_mapping
+    assert "relation_skipped:author:刘瑜" in plan.warnings
+
+
+
+def test_book_capture_plan_blocks_relation_pending_when_profile_marks_warning_blocking(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["schema"]["作者"] = {
+        "type": "relation",
+        "target_database_id": "db-authors",
+    }
+    target["parser_profile"]["book"]["blocking_warning_prefixes"] = ["relation_resolution_pending:author:"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+            target_hint="书单",
+            state="初始化",
+            content_type_hint="book",
+            options=CaptureOptions(),
+        ),
+        cache,
+    )
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "blocking_warning"
+    assert "relation_resolution_pending:author:刘瑜" in plan.warnings
+    assert plan.operations == []
+    assert {
+        "code": "relation_resolution_pending:author:刘瑜",
+        "severity": "blocking",
+        "category": "relation_resolution",
+        "message": "刘瑜",
+    } in plan.summary["warning_details"]
+
+
+
+def test_book_capture_plan_keeps_blocking_warning_when_also_marked_non_blocking(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["data_sources"]["books"]["schema"]["作者"] = {
+        "type": "relation",
+        "target_database_id": "db-authors",
+    }
+    target["parser_profile"]["book"]["non_blocking_warning_prefixes"] = ["relation_resolution_pending:author:"]
+    target["parser_profile"]["book"]["blocking_warning_prefixes"] = ["relation_resolution_pending:author:"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+            target_hint="书单",
+            state="初始化",
+            content_type_hint="book",
+            options=CaptureOptions(),
+        ),
+        cache,
+    )
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "blocking_warning"
+    assert plan.operations == []
+    assert {
+        "code": "relation_resolution_pending:author:刘瑜",
+        "severity": "blocking",
+        "category": "relation_resolution",
+        "message": "刘瑜",
+    } in plan.summary["warning_details"]
+
+
+
+def test_book_capture_plan_blocks_when_required_asset_url_is_inaccessible(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+    target = cache.read_json(config.targets_dir / "bookshelf.json", {})
+    target["parser_profile"]["book"]["record_defaults"] = {"cover": "https://assets.example.invalid/cover.jpg"}
+    target["parser_profile"]["book"]["asset_url_check_fields"] = ["cover"]
+    cache.write_json(config.targets_dir / "bookshelf.json", target)
+    monkeypatch.setattr(
+        planner_module,
+        "verify_image_url",
+        lambda url: {"ok": False, "status": 403, "content_type": "text/html", "method": "HEAD"},
+    )
+
+    plan = build_capture_plan(
+        CaptureInput(
+            raw_input="把《可能性的艺术》初始化到书单 作者：刘瑜 ISBN：9787559847357 页数：400",
+            target_hint="书单",
+            state="初始化",
+            content_type_hint="book",
+            options=CaptureOptions(),
+        ),
+        cache,
+    )
+
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "asset_url_inaccessible"
+    assert "asset_url_inaccessible:cover:https://assets.example.invalid/cover.jpg" in plan.warnings
+    assert plan.operations == []
+    assert plan.planned_asset_operations[0].record_key == "cover"
+    assert plan.summary["asset_actions"] == [
+        {"record_key": "cover", "target_field": "封面", "action": "download_and_attach"}
+    ]
+
+
+
 def test_book_capture_plan_builds_profile_relation_completion_operation(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -1260,6 +2700,7 @@ def test_book_capture_plan_builds_profile_relation_completion_operation(tmp_path
     assert plan.completion_operations == [
         {
             "type": "complete_relation_page",
+            "operation_id": "completion:0",
             "source_record_key": "author",
             "target_data_source_id": "ds-authors",
             "field_mapping": {
@@ -1560,6 +3001,7 @@ def test_book_capture_plan_uses_config_default_required_value_fields(tmp_path, m
     assert plan.requires_confirmation is False
     assert plan.confirmation_reason is None
     assert not any(warning.startswith("book_key_values_missing") for warning in plan.warnings)
+    assert plan.summary["required_value_fields"] == ["author"]
 
 
 
@@ -1615,6 +3057,22 @@ def test_book_capture_plan_uses_parser_profile_required_schema_fields(tmp_path, 
 
 
 
+def test_capture_plan_omits_state_when_input_does_not_request_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config)
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict({"raw_input": "《可能性的艺术》", "target_hint": "书单", "content_type_hint": "book"}),
+        cache,
+    )
+
+    assert plan.normalized_record["state"] is None
+    assert "state" not in plan.field_mapping
+
+
+
 def test_profile_normalized_record_extracts_custom_content_type_labels():
     capture = CaptureInput(
         raw_input="Title: Agent Notes creator: Aaron rating: 5 stars",
@@ -1626,7 +3084,7 @@ def test_profile_normalized_record_extracts_custom_content_type_labels():
 
     record = planner_module._normalized_record_for_capture(
         capture,
-        "article",
+        "book",
         {
             "title_patterns": [r"Title:\s*(.+?)(?=\s+creator\s*:)"] ,
             "labels": {"creator": ["creator"], "rating": ["rating"]},
@@ -1680,7 +3138,7 @@ def test_profile_normalized_record_uses_value_types_for_numeric_fields():
 
     record = planner_module._normalized_record_for_capture(
         capture,
-        "article",
+        "book",
         {
             "title_patterns": [r"Article:\s*(.+?)(?=\s+length\s*:)"] ,
             "labels": {"length": ["length"]},
@@ -1946,6 +3404,127 @@ def test_book_capture_plan_does_not_parse_business_labels_without_parser_profile
     assert plan.normalized_record["page_count"] is None
 
 
+def test_capture_plan_merges_ai_structured_record_without_business_label_parsing(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config, parser_profile=False)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        structured_record={"author": "刘瑜", "isbn": "9787559847357", "page_count": 400},
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.normalized_record["title"] == "可能性的艺术"
+    assert plan.normalized_record["author"] == "刘瑜"
+    assert plan.normalized_record["isbn"] == "9787559847357"
+    assert plan.normalized_record["page_count"] == 400
+    assert "book_key_values_missing:author,isbn,page_count" not in plan.warnings
+
+
+def test_capture_plan_merges_confirmed_enrichment_record_patch_and_sources(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config, parser_profile=False)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        structured_record={"author": "刘瑜", "isbn": "9787559847357", "page_count": 400},
+        enrichment={
+            "record_patch": {"publisher": "广西师范大学出版社"},
+            "confirmation_status": "confirmed",
+        },
+        sources=[
+            {
+                "source_id": "source-1",
+                "type": "web",
+                "title": "出版信息来源",
+                "url": "https://example.com/book",
+                "provided_by": "skill_ai",
+                "confidence": "medium",
+            }
+        ],
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.normalized_record["publisher"] == "广西师范大学出版社"
+    assert plan.sources == capture.sources
+
+
+def test_capture_plan_blocks_unconfirmed_enrichment_conflicts(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config, parser_profile=False)
+
+    capture = CaptureInput(
+        raw_input="把《可能性的艺术》初始化到书单",
+        target_hint="书单",
+        state="想读",
+        content_type_hint="book",
+        structured_record={
+            "author": "刘瑜",
+            "isbn": "9787559847357",
+            "page_count": 400,
+            "publisher": "来源 A 出版社",
+        },
+        enrichment={
+            "record_patch": {"publisher": "来源 B 出版社"},
+            "conflicts": [{"field": "publisher", "existing": "来源 A 出版社", "candidate": "来源 B 出版社"}],
+            "confirmation_status": "needs_confirmation",
+        },
+        options=CaptureOptions(),
+    )
+
+    plan = build_capture_plan(capture, cache)
+
+    assert plan.normalized_record["publisher"] == "来源 A 出版社"
+    assert "enrichment_conflict:publisher" in plan.warnings
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "enrichment_conflict"
+
+
+def test_allow_web_search_does_not_change_backend_plan_semantics(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    cache = CacheStore(config)
+    seed_book_target(config, parser_profile=False)
+
+    base_kwargs = {
+        "raw_input": "把《可能性的艺术》初始化到书单",
+        "target_hint": "书单",
+        "state": "想读",
+        "content_type_hint": "book",
+        "structured_record": {"author": "刘瑜", "isbn": "9787559847357", "page_count": 400},
+    }
+    without_web = build_capture_plan(
+        CaptureInput(**base_kwargs, options=CaptureOptions(allow_web_search=False)),
+        cache,
+    )
+    with_web = build_capture_plan(
+        CaptureInput(**base_kwargs, options=CaptureOptions(allow_web_search=True)),
+        cache,
+    )
+
+    assert with_web.normalized_record == without_web.normalized_record
+    assert with_web.field_mapping == without_web.field_mapping
+    assert with_web.warnings == without_web.warnings
+    assert with_web.requires_confirmation == without_web.requires_confirmation
+    assert with_web.sources == without_web.sources
+
+
 def test_podcast_capture_plan_summary_uses_parser_profile_key_fields(tmp_path, monkeypatch):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     config = ensure_config()
@@ -2151,7 +3730,7 @@ def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp
         "target_data_source": "Books",
         "title": "可能性的艺术",
         "content_type": "book",
-        "state": "initialized",
+        "state": "想读",
         "mapped_fields": {
             "title": "名称",
             "state": "阅读状态",
@@ -2194,6 +3773,7 @@ def test_book_capture_plan_summary_shows_reviewable_target_fields_and_assets(tmp
         "confirmation_reason": None,
         "warnings": [],
         "warning_details": [],
+        "required_value_fields": ["author", "isbn", "page_count"],
     }
 
 
@@ -4174,6 +5754,80 @@ def test_build_asset_operations_uses_safe_cache_path_for_record_key(tmp_path, mo
     assert relative_parts[0] != "../附件/危险"
 
 
+def test_v2_plan_maps_profile_state_mapping_to_target_option(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "graph-books",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-books",
+            "root": {"kind": "page", "id": "page-library"},
+            "pages": {"page-library": {"page_id": "page-library", "title": "书单"}},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "title": "Books",
+                    "schema": {
+                        "名称": {"id": "title", "type": "title", "name": "名称"},
+                        "状态": {
+                            "id": "state",
+                            "type": "status",
+                            "name": "状态",
+                            "status": {"options": [{"name": "Next"}, {"name": "Finished"}]},
+                        },
+                    },
+                }
+            },
+            "views": {},
+        },
+    )
+    store.write_profile(
+        "profile-books",
+        {
+            "cache_version": 2,
+            "profile_id": "profile-books",
+            "graph_id": "graph-books",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "field_mapping": {"title": "名称", "state": "状态"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding"},
+                    "state_mapping": {"initialized": "Next", "待读": "Next", "completed": "Finished"},
+                    "parser_profile": {
+                        "labels": {"title": ["书名"]},
+                        "required_schema_fields": [],
+                        "required_value_fields": [],
+                        "summary_key_fields": [],
+                        "trusted_field_sources": ["user_binding"],
+                    },
+                }
+            },
+        },
+    )
+    store.bind_alias("书单", graph_id="graph-books", profile_id="profile-books", kind="write_profile")
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "书名：羞耻感",
+                "target_hint": "书单",
+                "state": "待读",
+                "content_type_hint": "book",
+            }
+        ),
+        store,
+    )
+
+    assert plan.normalized_record["state"] == "Next"
+    assert plan.summary["state"] == "Next"
+    assert plan.field_mapping["state"] == "状态"
+
+
+
 def test_v2_plan_uses_write_profile_and_view_context(tmp_path, monkeypatch):
     from capture_to_notion.cache_v2 import CacheV2Store
 
@@ -4186,9 +5840,17 @@ def test_v2_plan_uses_write_profile_and_view_context(tmp_path, monkeypatch):
             "cache_version": 2,
             "graph_id": "graph-1",
             "root": {"kind": "page", "id": "page-1"},
+            "pages": {
+                "page-1": {"page_id": "page-1", "title": "Program", "parent": {"type": "workspace", "id": "workspace"}},
+            },
+            "databases": {
+                "db-1": {"database_id": "db-1", "title": "Episodes DB", "parent": {"type": "page_id", "id": "page-1"}},
+            },
             "data_sources": {
                 "ds-1": {
                     "data_source_id": "ds-1",
+                    "database_id": "db-1",
+                    "parent": {"type": "database_id", "id": "db-1"},
                     "title": "Rows",
                     "schema": {
                         "Name": {"id": "title", "type": "title", "name": "Name"},
@@ -4233,6 +5895,1068 @@ def test_v2_plan_uses_write_profile_and_view_context(tmp_path, monkeypatch):
     assert write_target["display_view_type"] == "gallery"
     assert write_target["display_view_name"] == "Episodes"
     assert write_target["data_source_id"] == "ds-1"
+    assert write_target["target_path"] == "工作区顶层 / Program / Episodes DB / Rows"
+    assert write_target["target_path_complete"] is True
+
+
+
+def test_v2_plan_builds_relation_completion_for_secondary_graph_data_source(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "graph-books",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-books",
+            "root": {"kind": "page", "id": "page-library"},
+            "pages": {
+                "page-library": {"page_id": "page-library", "title": "Library", "parent": {"type": "workspace", "id": "workspace"}},
+            },
+            "databases": {
+                "db-books": {"database_id": "db-books", "title": "Books", "parent": {"type": "page_id", "id": "page-library"}},
+                "db-authors": {"database_id": "db-authors", "title": "Authors", "parent": {"type": "page_id", "id": "page-library"}},
+            },
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "database_id": "db-books",
+                    "parent": {"type": "database_id", "id": "db-books"},
+                    "title": "Books",
+                    "schema": {
+                        "Name": {"id": "title", "type": "title", "name": "Name"},
+                        "State": {"id": "state", "type": "multi_select", "name": "State"},
+                        "Author Page": {"id": "rel", "type": "relation", "name": "Author Page", "target_database_id": "db-authors"},
+                    },
+                },
+                "ds-authors": {
+                    "data_source_id": "ds-authors",
+                    "database_id": "db-authors",
+                    "parent": {"type": "database_id", "id": "db-authors"},
+                    "title": "Authors",
+                    "schema": {
+                        "Name": {"id": "title", "type": "title", "name": "Name"},
+                        "State": {"id": "state", "type": "multi_select", "name": "State"},
+                    },
+                },
+            },
+            "views": {},
+        },
+    )
+    store.write_profile(
+        "profile-books",
+        {
+            "cache_version": 2,
+            "profile_id": "profile-books",
+            "graph_id": "graph-books",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "field_mapping": {"title": "Name", "state": "State", "author_relation": "Author Page"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding", "author_relation": "user_binding"},
+                    "parser_profile": {
+                        "labels": {"title": ["书名"], "author_relation": ["关联作者"]},
+                        "required_schema_fields": [],
+                        "required_value_fields": [],
+                        "summary_key_fields": [],
+                        "trusted_field_sources": ["user_binding"],
+                        "relation_completions": [
+                            {
+                                "source_record_key": "author_relation",
+                                "target_data_source_id": "ds-authors",
+                                "field_mapping": {"author_relation": "Name", "state": "State"},
+                                "labels": {"author_relation": ["关联作者"], "state": ["作者状态"]},
+                            }
+                        ],
+                    },
+                }
+            },
+        },
+    )
+    store.bind_alias("Library", graph_id="graph-books", profile_id="profile-books", kind="write_profile")
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "书名：关系测试\n关联作者：CTN E2E Author\n作者状态：initialized",
+                "target_hint": "Library",
+                "content_type_hint": "book",
+            }
+        ),
+        store,
+    )
+
+    assert plan.completion_operations == [
+        {
+            "type": "complete_relation_page",
+            "operation_id": "completion:0",
+            "source_record_key": "author_relation",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {"author_relation": "Name", "state": "State"},
+            "record": {"author_relation": "CTN E2E Author", "state": "initialized"},
+            "asset_operations": [],
+        }
+    ]
+    assert plan.summary["relation_completions"][0]["target_data_source"] == "Authors"
+    assert plan.summary["write_targets"][1]["target_data_source"] == "Authors"
+
+
+
+def test_v2_cache_database_lookup_requires_unique_data_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    for graph_id, data_source_id in (("graph-authors-a", "ds-authors-a"), ("graph-authors-b", "ds-authors-b")):
+        store.write_graph(
+            graph_id,
+            {
+                "cache_version": 2,
+                "graph_id": graph_id,
+                "root": {"kind": "page", "id": "page-library"},
+                "data_sources": {
+                    data_source_id: {
+                        "data_source_id": data_source_id,
+                        "database_id": "db-authors",
+                        "title": "Authors",
+                        "schema": {"Name": {"type": "title"}},
+                    }
+                },
+                "views": {},
+            },
+        )
+
+    assert store.find_graph_data_source_by_database("db-authors") is None
+
+
+
+def test_v2_plan_builds_relation_target_manifest_from_secondary_cached_graph(tmp_path, monkeypatch):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "graph-books",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-books",
+            "root": {"kind": "page", "id": "page-library"},
+            "pages": {
+                "page-library": {"page_id": "page-library", "title": "Library", "parent": {"type": "workspace", "id": "workspace"}},
+            },
+            "databases": {
+                "db-books": {"database_id": "db-books", "title": "Books", "parent": {"type": "page_id", "id": "page-library"}},
+            },
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "database_id": "db-books",
+                    "parent": {"type": "database_id", "id": "db-books"},
+                    "title": "Books",
+                    "schema": {
+                        "Name": {"id": "title", "type": "title", "name": "Name"},
+                        "Author Page": {
+                            "id": "rel",
+                            "type": "relation",
+                            "name": "Author Page",
+                            "target_database_id": "db-authors",
+                        },
+                    },
+                },
+            },
+            "views": {},
+        },
+    )
+    store.write_graph(
+        "graph-authors",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-authors",
+            "root": {"kind": "page", "id": "page-library"},
+            "pages": {
+                "page-library": {"page_id": "page-library", "title": "Library", "parent": {"type": "workspace", "id": "workspace"}},
+            },
+            "databases": {
+                "db-authors": {"database_id": "db-authors", "title": "Authors", "parent": {"type": "page_id", "id": "page-library"}},
+            },
+            "data_sources": {
+                "ds-authors": {
+                    "data_source_id": "ds-authors",
+                    "database_id": "db-authors",
+                    "parent": {"type": "database_id", "id": "db-authors"},
+                    "title": "Authors",
+                    "schema": {
+                        "Name": {"id": "title", "type": "title", "name": "Name"},
+                        "Author Picture": {"id": "files", "type": "files", "name": "Author Picture"},
+                        "Bio": {"id": "bio", "type": "rich_text", "name": "Bio"},
+                        "Country": {"id": "country", "type": "select", "name": "Country"},
+                        "Book Count": {"id": "count", "type": "rollup", "name": "Book Count"},
+                    },
+                },
+            },
+            "views": {},
+        },
+    )
+    store.write_profile(
+        "profile-books",
+        {
+            "cache_version": 2,
+            "profile_id": "profile-books",
+            "graph_id": "graph-books",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "field_mapping": {"title": "Name", "author_relation": "Author Page"},
+                    "field_sources": {"title": "user_binding", "author_relation": "user_binding"},
+                    "relation_mapping": {"author_relation": {"create_missing": True}},
+                    "parser_profile": {
+                        "labels": {"title": ["书名"], "author_relation": ["关联作者"]},
+                        "required_schema_fields": [],
+                        "required_value_fields": [],
+                        "summary_key_fields": [],
+                        "trusted_field_sources": ["user_binding"],
+                    },
+                }
+            },
+        },
+    )
+    store.bind_alias("Library", graph_id="graph-books", profile_id="profile-books", kind="write_profile")
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "书名：关系目标测试\n关联作者：CTN E2E Author",
+                "target_hint": "Library",
+                "content_type_hint": "book",
+            }
+        ),
+        store,
+    )
+
+    expected_target_plan = {
+        "source_record_key": "author_relation",
+        "source_value": "CTN E2E Author",
+        "action": "create_page",
+        "target_data_source": "Authors",
+        "target_data_source_id": "ds-authors",
+        "page_id": None,
+        "page_id_status": "pending_after_apply",
+        "writable_fields": {
+            "title": {"target_field": "Name", "value_status": "present", "write_status": "planned", "type": "title"},
+            "Author Picture": {
+                "target_field": "Author Picture",
+                "value_status": "missing_value",
+                "write_status": "needs_enrichment",
+                "type": "files",
+            },
+            "Bio": {"target_field": "Bio", "value_status": "missing_value", "write_status": "needs_enrichment", "type": "rich_text"},
+            "Country": {"target_field": "Country", "value_status": "missing_value", "write_status": "needs_user_choice", "type": "select"},
+        },
+        "omitted_fields": {
+            "Book Count": {"type": "rollup", "write_status": "computed"},
+        },
+        "shell_page_risk": True,
+    }
+    assert plan.summary["relation_target_plans"] == [expected_target_plan]
+    assert len(plan.summary["write_targets"]) == 2
+    primary_target, relation_target = plan.summary["write_targets"]
+    assert primary_target["type"] == "primary_page"
+    assert relation_target == {
+        "type": "relation_target_page",
+        **expected_target_plan,
+        "write_status": "requires_confirmation",
+    }
+    assert relation_target["writable_fields"] == plan.summary["relation_target_plans"][0]["writable_fields"]
+    assert relation_target["omitted_fields"] == plan.summary["relation_target_plans"][0]["omitted_fields"]
+    assert "relation_target_shell_page:author_relation:CTN E2E Author" in plan.warnings
+    expected_requirements = [
+        {
+            "target_type": "relation_target_page",
+            "target_role": "relation_target_page",
+            "source_record_key": "author_relation",
+            "source_value": "CTN E2E Author",
+            "target_data_source_id": "ds-authors",
+            "field": "Author Picture",
+            "target_field": "Author Picture",
+            "property_type": "files",
+            "requirement_type": "enrichment",
+            "allowed_sources": ["web_search_or_user_input"],
+            "default_action": "web_search_or_user_input",
+            "blocking": True,
+        },
+        {
+            "target_type": "relation_target_page",
+            "target_role": "relation_target_page",
+            "source_record_key": "author_relation",
+            "source_value": "CTN E2E Author",
+            "target_data_source_id": "ds-authors",
+            "field": "Bio",
+            "target_field": "Bio",
+            "property_type": "rich_text",
+            "requirement_type": "enrichment",
+            "allowed_sources": ["web_search_or_user_input"],
+            "default_action": "web_search_or_user_input",
+            "blocking": True,
+        },
+        {
+            "target_type": "relation_target_page",
+            "target_role": "relation_target_page",
+            "source_record_key": "author_relation",
+            "source_value": "CTN E2E Author",
+            "target_data_source_id": "ds-authors",
+            "field": "Country",
+            "target_field": "Country",
+            "property_type": "select",
+            "requirement_type": "user_choice",
+            "allowed_sources": ["ask_user"],
+            "default_action": "ask_user",
+            "blocking": True,
+        },
+    ]
+    assert plan.summary["enrichment_requirements"] == expected_requirements
+    assert all(requirement["field"] != "Book Count" for requirement in plan.summary["enrichment_requirements"])
+    review = build_plan_cli_summary(plan)["review"]
+    assert review["relation_target_plans"] == [expected_target_plan]
+    assert review["enrichment_requirements"] == expected_requirements
+    verification_expectations = review["verification_expectations"]
+    assert verification_expectations["relations"] == ["author_relation"]
+    assert len(verification_expectations["targets"]) == 2
+    primary_expectation, relation_expectation = verification_expectations["targets"]
+    assert primary_expectation["target_type"] == "primary_page"
+    assert primary_expectation["relations"] == ["author_relation"]
+    assert relation_expectation == {
+        "target_type": "relation_target_page",
+        "source_record_key": "author_relation",
+        "source_value": "CTN E2E Author",
+        "target_data_source_id": "ds-authors",
+        "page_id_status": "pending_after_apply",
+        "planned_fields": ["title"],
+        "enrichment_required_fields": ["Author Picture", "Bio"],
+        "user_choice_required_fields": ["Country"],
+        "computed_fields": ["Book Count"],
+        "shell_page_risk": True,
+    }
+    assert plan.requires_confirmation is True
+    assert plan.confirmation_reason == "relation_target_shell_page"
+
+
+
+def test_v2_real_like_book_plan_regression_uses_secondary_author_graph_without_apply(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "book-list-main",
+        {
+            "cache_version": 2,
+            "graph_id": "book-list-main",
+            "root": {"kind": "page", "id": "page-book-list"},
+            "pages": {
+                "page-book-list": {
+                    "page_id": "page-book-list",
+                    "title": "Book List",
+                    "parent": {"type": "workspace", "id": "workspace"},
+                },
+            },
+            "databases": {
+                "db-books": {"database_id": "db-books", "title": "Books", "parent": {"type": "page_id", "id": "page-book-list"}},
+            },
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "database_id": "db-books",
+                    "parent": {"type": "database_id", "id": "db-books"},
+                    "title": "Books",
+                    "schema": {
+                        "Name": {"id": "title", "type": "title", "name": "Name"},
+                        "Status": {
+                            "id": "status",
+                            "type": "status",
+                            "name": "Status",
+                            "status": {"options": [{"name": "Reading"}, {"name": "Finished"}]},
+                        },
+                        "Author": {
+                            "id": "author_rel",
+                            "type": "relation",
+                            "name": "Author",
+                            "target_database_id": "db-authors",
+                        },
+                        "ISBN": {"id": "isbn", "type": "rich_text", "name": "ISBN"},
+                        "Pages": {"id": "pages", "type": "number", "name": "Pages"},
+                    },
+                },
+            },
+            "views": {
+                "view-reading": {
+                    "view_id": "view-reading",
+                    "name": "Reading List",
+                    "type": "gallery",
+                    "data_source_id": "ds-books",
+                    "quick_filters": {"status": {"status": {"equals": "Reading"}}},
+                },
+            },
+        },
+    )
+    store.write_graph(
+        "book-authors",
+        {
+            "cache_version": 2,
+            "graph_id": "book-authors",
+            "root": {"kind": "page", "id": "page-authors"},
+            "pages": {
+                "page-authors": {"page_id": "page-authors", "title": "Authors", "parent": {"type": "workspace", "id": "workspace"}},
+            },
+            "databases": {
+                "db-authors": {"database_id": "db-authors", "title": "Authors", "parent": {"type": "page_id", "id": "page-authors"}},
+            },
+            "data_sources": {
+                "ds-authors": {
+                    "data_source_id": "ds-authors",
+                    "database_id": "db-authors",
+                    "parent": {"type": "database_id", "id": "db-authors"},
+                    "title": "Authors",
+                    "schema": {
+                        "Name": {"id": "title", "type": "title", "name": "Name"},
+                        "Author Picture": {"id": "picture", "type": "files", "name": "Author Picture"},
+                        "Bio": {"id": "bio", "type": "rich_text", "name": "Bio"},
+                        "Country": {"id": "country", "type": "select", "name": "Country"},
+                        "Book Count": {"id": "book_count", "type": "rollup", "name": "Book Count"},
+                    },
+                },
+            },
+            "views": {},
+        },
+    )
+    store.write_profile(
+        "book-list-profile",
+        {
+            "cache_version": 2,
+            "profile_id": "book-list-profile",
+            "graph_id": "book-list-main",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "canonical_view_id": "view-reading",
+                    "field_mapping": {
+                        "title": "Name",
+                        "state": "Status",
+                        "author_relation": "Author",
+                        "isbn": "ISBN",
+                        "page_count": "Pages",
+                    },
+                    "field_sources": {
+                        "title": "user_binding",
+                        "state": "user_binding",
+                        "author_relation": "user_binding",
+                        "isbn": "user_binding",
+                        "page_count": "user_binding",
+                    },
+                    "state_mapping": {"initialized": "Reading", "reading": "Reading", "completed": "Finished"},
+                    "relation_mapping": {"author_relation": {"create_missing": True}},
+                    "parser_profile": {
+                        "labels": {
+                            "title": ["书名", "title"],
+                            "author_relation": ["作者", "author"],
+                            "isbn": ["ISBN", "isbn"],
+                            "page_count": ["页数", "pages"],
+                        },
+                        "required_schema_fields": [],
+                        "required_value_fields": ["isbn", "page_count"],
+                        "summary_key_fields": ["isbn", "page_count"],
+                        "trusted_field_sources": ["user_binding"],
+                    },
+                }
+            },
+        },
+    )
+    store.bind_alias("真实书单", graph_id="book-list-main", profile_id="book-list-profile", kind="write_profile")
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "书名：When We Cease to Understand the World\n作者：Benjamín Labatut\nISBN：9781681375663\n页数：192",
+                "target_hint": "真实书单",
+                "state": "reading",
+                "content_type_hint": "book",
+                "existing_page_id": "page-book-existing",
+                "target_context_hint": "Notion view Reading List",
+                "target_scope_hint": "database_like_area_or_view",
+            }
+        ),
+        store,
+    )
+    compact = build_plan_cli_summary(plan)
+    summary = compact["summary"]
+    review = compact["review"]
+
+    assert compact["target"]["view_id"] == "view-reading"
+    assert review["target_semantics"]["view_name"] == "Reading List"
+    assert summary["view_context"] == {
+        "view_id": "view-reading",
+        "view_name": "Reading List",
+        "view_type": "gallery",
+        "constraints": {
+            "values": {"Status": "Reading"},
+            "warnings": [],
+            "unsupported": [],
+            "conflicts": [],
+        },
+    }
+
+    primary_target, relation_target = summary["write_targets"]
+    assert primary_target["type"] == "primary_page"
+    assert primary_target["action"] == "update_page"
+    assert primary_target["page_id"] == "page-book-existing"
+    assert relation_target["type"] == "relation_target_page"
+    assert relation_target["action"] == "create_page"
+    assert relation_target["target_data_source_id"] == "ds-authors"
+    assert relation_target["source_record_key"] == "author_relation"
+    assert relation_target["source_value"] == "Benjamín Labatut"
+    assert relation_target["writable_fields"]["title"]["write_status"] == "planned"
+    assert relation_target["writable_fields"]["Author Picture"]["write_status"] == "needs_enrichment"
+    assert relation_target["writable_fields"]["Bio"]["write_status"] == "needs_enrichment"
+    assert relation_target["writable_fields"]["Country"]["write_status"] == "needs_user_choice"
+    assert relation_target["omitted_fields"]["Book Count"]["write_status"] == "computed"
+
+    requirement_fields = [requirement["field"] for requirement in summary["enrichment_requirements"]]
+    assert requirement_fields == ["Author Picture", "Bio", "Country"]
+    assert [requirement["field"] for requirement in review["enrichment_requirements"]] == requirement_fields
+    assert "Book Count" not in requirement_fields
+
+    target_types = [target["target_type"] for target in review["verification_expectations"]["targets"]]
+    assert target_types == ["primary_page", "relation_target_page"]
+    relation_expectation = review["verification_expectations"]["targets"][1]
+    assert relation_expectation["planned_fields"] == ["title"]
+    assert relation_expectation["enrichment_required_fields"] == ["Author Picture", "Bio"]
+    assert relation_expectation["user_choice_required_fields"] == ["Country"]
+    assert relation_expectation["computed_fields"] == ["Book Count"]
+
+    assert compact["requires_confirmation"] is True
+    assert compact["confirmation_reason"] == "relation_target_shell_page"
+    assert "relation_target_shell_page:author_relation:Benjamín Labatut" in compact["warnings"]
+    assert any(warning["code"] == "relation_target_shell_page:author_relation:Benjamín Labatut" for warning in review["blocking_warnings"])
+
+
+
+def test_v2_relation_target_requirement_decisions_resolve_or_skip_blockers(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "book-list-main",
+        {
+            "cache_version": 2,
+            "graph_id": "book-list-main",
+            "root": {"kind": "page", "id": "page-book-list"},
+            "pages": {
+                "page-book-list": {"page_id": "page-book-list", "title": "Book List", "parent": {"type": "workspace", "id": "workspace"}},
+            },
+            "databases": {
+                "db-books": {"database_id": "db-books", "title": "Books", "parent": {"type": "page_id", "id": "page-book-list"}},
+            },
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "database_id": "db-books",
+                    "parent": {"type": "database_id", "id": "db-books"},
+                    "title": "Books",
+                    "schema": {
+                        "Name": {"id": "title", "type": "title", "name": "Name"},
+                        "Status": {"id": "status", "type": "status", "name": "Status", "status": {"options": [{"name": "Reading"}, {"name": "Finished"}]}},
+                        "Author": {"id": "author_rel", "type": "relation", "name": "Author", "target_database_id": "db-authors"},
+                        "ISBN": {"id": "isbn", "type": "rich_text", "name": "ISBN"},
+                        "Pages": {"id": "pages", "type": "number", "name": "Pages"},
+                    },
+                },
+            },
+            "views": {},
+        },
+    )
+    store.write_graph(
+        "book-authors",
+        {
+            "cache_version": 2,
+            "graph_id": "book-authors",
+            "root": {"kind": "page", "id": "page-authors"},
+            "pages": {"page-authors": {"page_id": "page-authors", "title": "Authors", "parent": {"type": "workspace", "id": "workspace"}}},
+            "databases": {"db-authors": {"database_id": "db-authors", "title": "Authors", "parent": {"type": "page_id", "id": "page-authors"}}},
+            "data_sources": {
+                "ds-authors": {
+                    "data_source_id": "ds-authors",
+                    "database_id": "db-authors",
+                    "parent": {"type": "database_id", "id": "db-authors"},
+                    "title": "Authors",
+                    "schema": {
+                        "Name": {"id": "title", "type": "title", "name": "Name"},
+                        "Author Picture": {"id": "picture", "type": "files", "name": "Author Picture"},
+                        "Bio": {"id": "bio", "type": "rich_text", "name": "Bio"},
+                        "Country": {"id": "country", "type": "select", "name": "Country"},
+                    },
+                },
+            },
+            "views": {},
+        },
+    )
+    store.write_profile(
+        "book-list-profile",
+        {
+            "cache_version": 2,
+            "profile_id": "book-list-profile",
+            "graph_id": "book-list-main",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "field_mapping": {"title": "Name", "state": "Status", "author_relation": "Author", "isbn": "ISBN", "page_count": "Pages"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding", "author_relation": "user_binding", "isbn": "user_binding", "page_count": "user_binding"},
+                    "state_mapping": {"reading": "Reading"},
+                    "relation_mapping": {"author_relation": {"create_missing": True}},
+                    "parser_profile": {
+                        "labels": {"title": ["书名"], "author_relation": ["作者"], "isbn": ["ISBN"], "page_count": ["页数"]},
+                        "required_schema_fields": [],
+                        "required_value_fields": ["isbn", "page_count"],
+                        "summary_key_fields": ["isbn", "page_count"],
+                        "trusted_field_sources": ["user_binding"],
+                    },
+                }
+            },
+        },
+    )
+    store.bind_alias("真实书单", graph_id="book-list-main", profile_id="book-list-profile", kind="write_profile")
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "书名：When We Cease to Understand the World\n作者：Benjamín Labatut\nISBN：9781681375663\n页数：192",
+                "target_hint": "真实书单",
+                "state": "reading",
+                "content_type_hint": "book",
+                "existing_page_id": "page-book-existing",
+                "enrichment": {
+                    "requirement_decisions": [
+                        {
+                            "target_type": "relation_target_page",
+                            "source_record_key": "author_relation",
+                            "source_value": "Benjamín Labatut",
+                            "field": "Bio",
+                            "action": "provide_value",
+                            "value": "Benjamín Labatut is a Chilean author.",
+                        },
+                        {
+                            "target_type": "relation_target_page",
+                            "source_record_key": "author_relation",
+                            "source_value": "Benjamín Labatut",
+                            "field": "Country",
+                            "action": "choose_value",
+                            "value": "Chile",
+                        },
+                        {
+                            "target_type": "relation_target_page",
+                            "source_record_key": "author_relation",
+                            "source_value": "Benjamín Labatut",
+                            "field": "Author Picture",
+                            "action": "skip",
+                            "reason": "user_confirmed_skip",
+                        },
+                    ]
+                },
+            }
+        ),
+        store,
+    )
+    compact = build_plan_cli_summary(plan)
+    relation_target = next(target for target in compact["summary"]["write_targets"] if target["type"] == "relation_target_page")
+
+    assert "enrichment_requirements" not in compact["summary"]
+    assert "enrichment_requirements" not in compact["review"]
+    assert relation_target["writable_fields"]["Bio"] == {
+        "target_field": "Bio",
+        "value_status": "present",
+        "write_status": "planned",
+        "type": "rich_text",
+        "value": "Benjamín Labatut is a Chilean author.",
+        "value_source": "user_decision",
+    }
+    assert relation_target["writable_fields"]["Country"] == {
+        "target_field": "Country",
+        "value_status": "present",
+        "write_status": "planned",
+        "type": "select",
+        "value": "Chile",
+        "value_source": "user_decision",
+    }
+    assert relation_target["writable_fields"]["Author Picture"] == {
+        "target_field": "Author Picture",
+        "value_status": "skipped",
+        "write_status": "skipped",
+        "type": "files",
+        "skip_reason": "user_confirmed_skip",
+    }
+    assert relation_target["shell_page_risk"] is False
+
+    relation_expectation = compact["review"]["verification_expectations"]["targets"][1]
+    assert relation_expectation["planned_fields"] == ["title", "Bio", "Country"]
+    assert relation_expectation["skipped_fields"] == ["Author Picture"]
+    assert "enrichment_required_fields" not in relation_expectation
+    assert "user_choice_required_fields" not in relation_expectation
+    assert plan.completion_operations == [
+        {
+            "type": "complete_relation_page",
+            "operation_id": "completion:0",
+            "source_record_key": "author_relation",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {"Bio": "Bio", "Country": "Country"},
+            "record": {"Bio": "Benjamín Labatut is a Chilean author.", "Country": "Chile"},
+            "asset_operations": [],
+        }
+    ]
+    assert compact["confirmation_reason"] != "relation_target_shell_page"
+    assert "relation_target_shell_page:author_relation:Benjamín Labatut" not in compact["warnings"]
+
+
+
+def _build_real_like_relation_decision_plan(tmp_path, monkeypatch, decisions, relation_completions=None, raw_input_suffix=""):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "book-list-main",
+        {
+            "cache_version": 2,
+            "graph_id": "book-list-main",
+            "root": {"kind": "page", "id": "page-book-list"},
+            "pages": {"page-book-list": {"page_id": "page-book-list", "title": "Book List", "parent": {"type": "workspace", "id": "workspace"}}},
+            "databases": {"db-books": {"database_id": "db-books", "title": "Books", "parent": {"type": "page_id", "id": "page-book-list"}}},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "database_id": "db-books",
+                    "parent": {"type": "database_id", "id": "db-books"},
+                    "title": "Books",
+                    "schema": {
+                        "Name": {"id": "title", "type": "title", "name": "Name"},
+                        "Status": {"id": "status", "type": "status", "name": "Status", "status": {"options": [{"name": "Reading"}]}},
+                        "Author": {"id": "author_rel", "type": "relation", "name": "Author", "target_database_id": "db-authors"},
+                        "ISBN": {"id": "isbn", "type": "rich_text", "name": "ISBN"},
+                        "Pages": {"id": "pages", "type": "number", "name": "Pages"},
+                    },
+                },
+            },
+            "views": {},
+        },
+    )
+    store.write_graph(
+        "book-authors",
+        {
+            "cache_version": 2,
+            "graph_id": "book-authors",
+            "root": {"kind": "page", "id": "page-authors"},
+            "pages": {"page-authors": {"page_id": "page-authors", "title": "Authors", "parent": {"type": "workspace", "id": "workspace"}}},
+            "databases": {"db-authors": {"database_id": "db-authors", "title": "Authors", "parent": {"type": "page_id", "id": "page-authors"}}},
+            "data_sources": {
+                "ds-authors": {
+                    "data_source_id": "ds-authors",
+                    "database_id": "db-authors",
+                    "parent": {"type": "database_id", "id": "db-authors"},
+                    "title": "Authors",
+                    "schema": {
+                        "Name": {"id": "title", "type": "title", "name": "Name"},
+                        "Author Picture": {"id": "picture", "type": "files", "name": "Author Picture"},
+                        "Bio": {"id": "bio", "type": "rich_text", "name": "Bio"},
+                        "Country": {"id": "country", "type": "select", "name": "Country"},
+                    },
+                },
+            },
+            "views": {},
+        },
+    )
+    store.write_profile(
+        "book-list-profile",
+        {
+            "cache_version": 2,
+            "profile_id": "book-list-profile",
+            "graph_id": "book-list-main",
+            "write_profiles": {
+                "book": {
+                    "canonical_data_source_id": "ds-books",
+                    "field_mapping": {"title": "Name", "state": "Status", "author_relation": "Author", "isbn": "ISBN", "page_count": "Pages"},
+                    "field_sources": {"title": "user_binding", "state": "user_binding", "author_relation": "user_binding", "isbn": "user_binding", "page_count": "user_binding"},
+                    "state_mapping": {"reading": "Reading"},
+                    "relation_mapping": {"author_relation": {"create_missing": True}},
+                    "parser_profile": {
+                        "labels": {"title": ["书名"], "author_relation": ["作者"], "isbn": ["ISBN"], "page_count": ["页数"]},
+                        "required_schema_fields": [],
+                        "required_value_fields": ["isbn", "page_count"],
+                        "summary_key_fields": ["isbn", "page_count"],
+                        "trusted_field_sources": ["user_binding"],
+                        "relation_completions": relation_completions or [],
+                    },
+                }
+            },
+        },
+    )
+    store.bind_alias("真实书单", graph_id="book-list-main", profile_id="book-list-profile", kind="write_profile")
+    raw_input = "书名：When We Cease to Understand the World\n作者：Benjamín Labatut\nISBN：9781681375663\n页数：192"
+    if raw_input_suffix:
+        raw_input = f"{raw_input}\n{raw_input_suffix}"
+    return build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": raw_input,
+                "target_hint": "真实书单",
+                "state": "reading",
+                "content_type_hint": "book",
+                "existing_page_id": "page-book-existing",
+                "enrichment": {"requirement_decisions": decisions},
+            }
+        ),
+        store,
+    )
+
+
+
+def test_v2_partial_relation_target_requirement_decision_keeps_remaining_blockers(tmp_path, monkeypatch):
+    plan = _build_real_like_relation_decision_plan(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "target_type": "relation_target_page",
+                "source_record_key": "author_relation",
+                "source_value": "Benjamín Labatut",
+                "field": "Bio",
+                "action": "provide_value",
+                "value": "Benjamín Labatut is a Chilean author.",
+            }
+        ],
+    )
+    compact = build_plan_cli_summary(plan)
+    relation_target = next(target for target in compact["summary"]["write_targets"] if target["type"] == "relation_target_page")
+
+    assert relation_target["writable_fields"]["Bio"]["write_status"] == "planned"
+    assert relation_target["writable_fields"]["Author Picture"]["write_status"] == "needs_enrichment"
+    assert relation_target["writable_fields"]["Country"]["write_status"] == "needs_user_choice"
+    assert [requirement["field"] for requirement in compact["summary"]["enrichment_requirements"]] == ["Author Picture", "Country"]
+    assert [requirement["field"] for requirement in compact["review"]["enrichment_requirements"]] == ["Author Picture", "Country"]
+    relation_expectation = compact["review"]["verification_expectations"]["targets"][1]
+    assert relation_expectation["planned_fields"] == ["title", "Bio"]
+    assert relation_expectation["enrichment_required_fields"] == ["Author Picture"]
+    assert relation_expectation["user_choice_required_fields"] == ["Country"]
+    assert compact["requires_confirmation"] is True
+    assert compact["confirmation_reason"] == "relation_target_shell_page"
+    assert "relation_target_shell_page:author_relation:Benjamín Labatut" in compact["warnings"]
+    assert plan.completion_operations == []
+
+
+
+def test_v2_relation_target_file_url_decision_creates_completion_asset_operation(tmp_path, monkeypatch):
+    picture_url = "https://example.com/benjamin-labatut.jpg"
+    plan = _build_real_like_relation_decision_plan(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "target_type": "relation_target_page",
+                "source_record_key": "author_relation",
+                "source_value": "Benjamín Labatut",
+                "field": "Author Picture",
+                "action": "provide_value",
+                "value": picture_url,
+            },
+            {
+                "target_type": "relation_target_page",
+                "source_record_key": "author_relation",
+                "source_value": "Benjamín Labatut",
+                "field": "Bio",
+                "action": "provide_value",
+                "value": "Benjamín Labatut is a Chilean author.",
+            },
+            {
+                "target_type": "relation_target_page",
+                "source_record_key": "author_relation",
+                "source_value": "Benjamín Labatut",
+                "field": "Country",
+                "action": "choose_value",
+                "value": "Chile",
+            },
+        ],
+    )
+    compact = build_plan_cli_summary(plan)
+    relation_target = next(target for target in compact["summary"]["write_targets"] if target["type"] == "relation_target_page")
+
+    assert relation_target["writable_fields"]["Author Picture"] == {
+        "target_field": "Author Picture",
+        "value_status": "present",
+        "write_status": "planned",
+        "type": "files",
+        "value": picture_url,
+        "value_source": "user_decision",
+    }
+    assert "enrichment_requirements" not in compact["summary"]
+    assert plan.completion_operations == [
+        {
+            "type": "complete_relation_page",
+            "operation_id": "completion:0",
+            "source_record_key": "author_relation",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {"Author Picture": "Author Picture", "Bio": "Bio", "Country": "Country"},
+            "record": {"Author Picture": picture_url, "Bio": "Benjamín Labatut is a Chilean author.", "Country": "Chile"},
+            "asset_operations": [
+                {
+                    "type": "file",
+                    "source_url": picture_url,
+                    "local_cache_path": plan.completion_operations[0]["asset_operations"][0]["local_cache_path"],
+                    "target_field": "Author Picture",
+                    "action": "download_and_attach",
+                    "record_key": "Author Picture",
+                    "status": "planned",
+                    "warning": None,
+                }
+            ],
+        }
+    ]
+    asset_operation = plan.completion_operations[0]["asset_operations"][0]
+    assert asset_operation["local_cache_path"]
+    assert asset_operation["local_cache_path"].endswith(".jpg")
+    relation_expectation = compact["review"]["verification_expectations"]["targets"][1]
+    assert relation_expectation["planned_fields"] == ["title", "Author Picture", "Bio", "Country"]
+    assert compact["requires_confirmation"] is False
+
+
+
+def test_v2_relation_completion_operations_include_stable_operation_ids(tmp_path, monkeypatch):
+    plan = _build_real_like_relation_decision_plan(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "target_type": "relation_target_page",
+                "source_record_key": "author_relation",
+                "source_value": "Benjamín Labatut",
+                "field": "Author Picture",
+                "action": "skip",
+            },
+            {
+                "target_type": "relation_target_page",
+                "source_record_key": "author_relation",
+                "source_value": "Benjamín Labatut",
+                "field": "Bio",
+                "action": "provide_value",
+                "value": "Benjamín Labatut is a Chilean author.",
+            },
+            {
+                "target_type": "relation_target_page",
+                "source_record_key": "author_relation",
+                "source_value": "Benjamín Labatut",
+                "field": "Country",
+                "action": "choose_value",
+                "value": "Chile",
+            },
+        ],
+    )
+
+    assert [operation["operation_id"] for operation in plan.completion_operations] == ["completion:0"]
+
+
+
+def test_v2_relation_completion_dedupes_overlapping_profile_and_target_plan(tmp_path, monkeypatch):
+    plan = _build_real_like_relation_decision_plan(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "target_type": "relation_target_page",
+                "source_record_key": "author_relation",
+                "source_value": "Benjamín Labatut",
+                "field": "Author Picture",
+                "action": "skip",
+            },
+            {
+                "target_type": "relation_target_page",
+                "source_record_key": "author_relation",
+                "source_value": "Benjamín Labatut",
+                "field": "Bio",
+                "action": "provide_value",
+                "value": "Benjamín Labatut is a Chilean author.",
+            },
+            {
+                "target_type": "relation_target_page",
+                "source_record_key": "author_relation",
+                "source_value": "Benjamín Labatut",
+                "field": "Country",
+                "action": "choose_value",
+                "value": "Chile",
+            },
+        ],
+        relation_completions=[
+            {
+                "source_record_key": "author_relation",
+                "target_data_source_id": "ds-authors",
+                "field_mapping": {"Bio": "Bio", "Country": "Country"},
+                "labels": {"Bio": ["作者简介"], "Country": ["作者国家"]},
+            }
+        ],
+        raw_input_suffix="作者简介：Benjamín Labatut is a Chilean author.\n作者国家：Chile",
+    )
+
+    assert plan.completion_operations == [
+        {
+            "type": "complete_relation_page",
+            "operation_id": "completion:0",
+            "source_record_key": "author_relation",
+            "target_data_source_id": "ds-authors",
+            "field_mapping": {"Bio": "Bio", "Country": "Country"},
+            "record": {"Bio": "Benjamín Labatut is a Chilean author.", "Country": "Chile"},
+            "asset_operations": [],
+        }
+    ]
+
+
+
+def test_v2_page_parent_plan_uses_existing_page_id_for_append(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    config = ensure_config()
+    store = CacheV2Store(config)
+    store.write_graph(
+        "graph-notes",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-notes",
+            "root": {"kind": "page", "id": "page-notes"},
+            "pages": {
+                "page-notes": {"page_id": "page-notes", "title": "Notes", "parent": {"type": "workspace", "id": "workspace"}},
+            },
+            "data_sources": {},
+            "views": {},
+        },
+    )
+    store.bind_alias("Notes", graph_id="graph-notes", profile_id=None, kind="graph")
+
+    plan = build_capture_plan(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "追加到已有页面",
+                "target_hint": "Notes",
+                "input_shape_hint": "plain_text",
+                "target_scope_hint": "existing_page",
+                "existing_page_id": "page-existing",
+            }
+        ),
+        store,
+    )
+
+    assert plan.operations[0]["type"] == "append_page_content"
+    assert plan.operations[0]["page_id"] == "page-existing"
+    assert plan.summary["write_targets"][0]["action"] == "append_page_content"
+    assert plan.summary["write_targets"][0]["page_id"] == "page-existing"
+    assert plan.target.target_kind == "existing_page"
 
 
 

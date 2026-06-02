@@ -71,6 +71,8 @@ def normalize_property(name: str, property_data: dict[str, Any]) -> dict[str, An
 
     if property_type == "relation":
         normalized["target_database_id"] = type_data.get("database_id")
+        if type_data.get("data_source_id"):
+            normalized["target_data_source_id"] = type_data.get("data_source_id")
 
     return normalized
 
@@ -111,8 +113,12 @@ def confirmation_blocking_warnings(
 
 
 
+def _is_clear_directive(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("$clear") is True
+
+
 def _is_empty_property_value(value: Any) -> bool:
-    return value is None or value == "" or value == [] or value == {}
+    return value is None or value == "" or value == [] or (value == {} and not _is_clear_directive(value))
 
 
 def property_has_value(property_data: Any) -> bool:
@@ -288,9 +294,10 @@ def _safe_prebuilt_file_object(value: dict[str, Any]) -> dict[str, Any] | None:
 
     if file_type == "file_upload":
         file_upload = value.get("file_upload")
-        if not isinstance(file_upload, dict) or not file_upload.get("id"):
+        upload_id = file_upload.get("id") if isinstance(file_upload, dict) else None
+        if not upload_id:
             return None
-        return value
+        return {"type": "file_upload", "name": name, "file_upload": {"id": upload_id}}
 
     return None
 
@@ -350,7 +357,33 @@ WRITABLE_PROPERTY_TYPES = set(PROPERTY_TYPE_BUILDERS)
 READONLY_PROPERTY_TYPES = SCHEMA_PROPERTY_TYPES - WRITABLE_PROPERTY_TYPES
 
 
+def _clear_property_value(property_type: str) -> dict[str, Any] | None:
+    if property_type in {"files", "multi_select", "people", "relation", "rich_text"}:
+        return {property_type: []}
+    if property_type in {"date", "email", "number", "phone_number", "select", "status", "url"}:
+        return {property_type: None}
+    if property_type == "checkbox":
+        return {"checkbox": False}
+    return None
+
+
+def _raw_notion_property_value(property_type: str, value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    payload = value.get("$notion")
+    if not isinstance(payload, dict):
+        return None
+    if set(payload) != {property_type}:
+        return None
+    return payload
+
+
 def _build_property_value(property_type: str, value: Any) -> dict[str, Any] | None:
+    raw_value = _raw_notion_property_value(property_type, value)
+    if raw_value is not None:
+        return raw_value
+    if _is_clear_directive(value):
+        return _clear_property_value(property_type)
     builder = PROPERTY_TYPE_BUILDERS.get(property_type)
     if builder is None:
         return None

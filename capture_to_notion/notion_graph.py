@@ -147,6 +147,37 @@ def normalize_view(view: dict[str, Any], *, location: dict[str, Any] | None = No
     }
 
 
+def normalize_data_source_template(
+    template: dict[str, Any],
+    *,
+    fallback_data_source_id: str | None = None,
+    fallback_database_id: str | None = None,
+) -> dict[str, Any]:
+    title = plain_text(template.get("title")) or plain_text(template.get("name"))
+    name = plain_text(template.get("name")) or title
+    normalized: dict[str, Any] = {
+        "template_id": str(template.get("id") or template.get("template_id")),
+        "page_id": str(template.get("page_id")) if template.get("page_id") else None,
+        "name": name,
+        "title": title,
+        "data_source_id": template.get("data_source_id") or fallback_data_source_id,
+        "database_id": template.get("database_id") or fallback_database_id,
+    }
+    if "is_default" in template:
+        normalized["is_default"] = bool(template.get("is_default"))
+    return {key: value for key, value in normalized.items() if value is not None}
+
+
+def _page_title(properties: dict[str, Any], fallback: Any = None) -> str | None:
+    for property_value in properties.values():
+        if isinstance(property_value, dict) and property_value.get("type") == "title":
+            title = plain_text(property_value.get("title"))
+            if title:
+                return title
+    return plain_text(fallback)
+
+
+
 def normalize_page(page: dict[str, Any], *, block_ids: list[str] | None = None) -> dict[str, Any]:
     parent = normalize_parent(page.get("parent"))
     kind = "unknown_page"
@@ -161,7 +192,7 @@ def normalize_page(page: dict[str, Any], *, block_ids: list[str] | None = None) 
         "object": "page",
         "page_id": str(page.get("id")),
         "kind": kind,
-        "title": plain_text(properties),
+        "title": _page_title(properties, page.get("title")),
         "parent": parent,
         "property_values": properties,
         "block_ids": block_ids or [],

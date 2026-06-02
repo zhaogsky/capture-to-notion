@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import copy
 import re
 from typing import Any
 
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.models import CaptureInput
+from capture_to_notion.path_utils import graph_object_path, graph_visual_path
 from capture_to_notion.profile_binder import resolve_write_profile
 
 
@@ -17,6 +19,8 @@ FACT_KEYS = (
     "database_id",
     "parent_database_id",
     "target_id",
+    "view_id",
+    "view_name",
     "alias",
     "title",
 )
@@ -28,7 +32,7 @@ LOCATION_FACT_KEYS = (
     "database_id",
     "parent_database_id",
 )
-TEXT_FACT_KEYS = ("alias", "title")
+TEXT_FACT_KEYS = ("alias", "title", "view_name")
 CONTEXT_SCOPE_TOKENS = ("page", "parent", "child", "under", "context")
 
 
@@ -495,6 +499,112 @@ def _v2_context_facts(cache: CacheV2Store, alias_name: str | None) -> dict[str, 
     return _facts_from_alias_structure(alias_name, alias_facts, _v2_context_structure(graph, graph_id))
 
 
+def _v2_target_path_fields(
+    graph: dict[str, Any],
+    data_source_id: str | None,
+    page_id: str | None,
+    view_id: str | None = None,
+) -> dict[str, Any]:
+    path_info = graph_object_path(graph, data_source_id, "data_source") if data_source_id else graph_object_path(graph, page_id, "page")
+    fields = {"target_path_complete": bool(path_info.get("path_complete"))}
+    path = path_info.get("path")
+    if isinstance(path, str) and path:
+        fields["target_path"] = path
+    visual_path_info = graph_visual_path(graph, view_id, "view") if view_id else {}
+    visual_path = visual_path_info.get("path") if isinstance(visual_path_info, dict) else None
+    if isinstance(visual_path, str) and visual_path:
+        fields["visual_path"] = visual_path
+        fields["visual_path_complete"] = bool(visual_path_info.get("path_complete"))
+    return fields
+
+
+
+def _relation_target_refs_from_schema(schema: dict[str, Any]) -> tuple[set[str], set[str]]:
+    target_data_source_ids: set[str] = set()
+    target_database_ids: set[str] = set()
+    for field_schema in schema.values():
+        if not isinstance(field_schema, dict) or field_schema.get("type") != "relation":
+            continue
+        target_data_source_id = field_schema.get("target_data_source_id")
+        if isinstance(target_data_source_id, str) and target_data_source_id:
+            target_data_source_ids.add(target_data_source_id)
+        target_database_id = field_schema.get("target_database_id")
+        if isinstance(target_database_id, str) and target_database_id:
+            target_database_ids.add(target_database_id)
+        relation_schema = field_schema.get("relation")
+        if isinstance(relation_schema, dict):
+            relation_data_source_id = relation_schema.get("data_source_id")
+            if isinstance(relation_data_source_id, str) and relation_data_source_id:
+                target_data_source_ids.add(relation_data_source_id)
+            relation_database_id = relation_schema.get("database_id")
+            if isinstance(relation_database_id, str) and relation_database_id:
+                target_database_ids.add(relation_database_id)
+    return target_data_source_ids, target_database_ids
+
+
+
+def _with_cached_relation_target_data_sources(graph: dict[str, Any], cache: CacheV2Store) -> dict[str, Any]:
+    data_sources = graph.get("data_sources")
+    if not isinstance(data_sources, dict):
+        return graph
+    target_data_source_ids: set[str] = set()
+    target_database_ids: set[str] = set()
+    existing_database_ids = {
+        data_source.get("database_id")
+        for data_source in data_sources.values()
+        if isinstance(data_source, dict) and isinstance(data_source.get("database_id"), str)
+    }
+    for data_source in data_sources.values():
+        schema = data_source.get("schema") if isinstance(data_source, dict) else None
+        if isinstance(schema, dict):
+            data_source_ids, database_ids = _relation_target_refs_from_schema(schema)
+            target_data_source_ids.update(data_source_ids)
+            target_database_ids.update(database_ids)
+    missing_target_ids = [target_id for target_id in sorted(target_data_source_ids) if target_id not in data_sources]
+    missing_database_ids = [database_id for database_id in sorted(target_database_ids) if database_id not in existing_database_ids]
+    if not missing_target_ids and not missing_database_ids:
+        return graph
+
+    graph_copy = copy.deepcopy(graph)
+    merged_data_sources = graph_copy.setdefault("data_sources", {})
+    if not isinstance(merged_data_sources, dict):
+        return graph
+    merged_databases = graph_copy.setdefault("databases", {})
+    if not isinstance(merged_databases, dict):
+        merged_databases = {}
+        graph_copy["databases"] = merged_databases
+    merged_pages = graph_copy.setdefault("pages", {})
+    if not isinstance(merged_pages, dict):
+        merged_pages = {}
+        graph_copy["pages"] = merged_pages
+
+    matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for target_id in missing_target_ids:
+        match = cache.find_graph_data_source(target_id)
+        if match is not None:
+            matches.append(match)
+    for database_id in missing_database_ids:
+        match = cache.find_graph_data_source_by_database(database_id)
+        if match is not None:
+            matches.append(match)
+
+    for target_graph, target_data_source in matches:
+        target_id = target_data_source.get("data_source_id")
+        if isinstance(target_id, str) and target_id:
+            merged_data_sources.setdefault(target_id, copy.deepcopy(target_data_source))
+        database_id = target_data_source.get("database_id")
+        target_databases = target_graph.get("databases")
+        if isinstance(database_id, str) and isinstance(target_databases, dict) and isinstance(target_databases.get(database_id), dict):
+            merged_databases.setdefault(database_id, copy.deepcopy(target_databases[database_id]))
+        target_pages = target_graph.get("pages")
+        if isinstance(target_pages, dict):
+            for page_id, page in target_pages.items():
+                if isinstance(page_id, str) and isinstance(page, dict):
+                    merged_pages.setdefault(page_id, copy.deepcopy(page))
+    return graph_copy
+
+
+
 def _v2_structure(
     graph: dict[str, Any],
     profile: dict[str, Any],
@@ -526,6 +636,7 @@ def _v2_structure(
         "data_sources": {data_source_id: normalized_data_source},
         "views": graph.get("views", {}),
         "asset_mapping": resolved.get("asset_mapping", {}),
+        "relation_mapping": resolved.get("relation_mapping", {}),
         "state_mapping": resolved.get("state_mapping", {}),
         "requires_confirmation": False,
         "confirmation_reason": None,
@@ -568,6 +679,7 @@ def _resolve_v2_capture_target(capture: CaptureInput, cache: CacheV2Store, conte
         }
 
     data_source_id = resolved["data_source_id"]
+    graph = _with_cached_relation_target_data_sources(graph, cache)
     root = graph.get("root") if isinstance(graph.get("root"), dict) else {}
     page_id = root.get("id") if root.get("kind") == "page" else None
     structure = _v2_structure(graph, profile, data_source_id, resolved, page_id)
@@ -591,6 +703,7 @@ def _resolve_v2_capture_target(capture: CaptureInput, cache: CacheV2Store, conte
         "write_profile": resolved,
         "facts": facts,
         **_fact_fields(facts, LOCATION_FACT_KEYS),
+        **_v2_target_path_fields(graph, data_source_id, page_id, resolved.get("view_id")),
     }
 
     if not _has_context_gate(capture):
@@ -625,12 +738,19 @@ def _resolve_v2_capture_target(capture: CaptureInput, cache: CacheV2Store, conte
                 target_context_verified=False,
             )
         if not _has_location_facts(context) or not _has_parent_location_facts(resolved_facts):
+            if root.get("kind") != "page" and _has_location_facts(context) and not _has_parent_location_facts(resolved_facts):
+                return _with_context_fields(
+                    capture,
+                    {**base, "status": "target_context_cache_incomplete"},
+                    target_context_verified=False,
+                    cache_completeness=_cache_completeness(capture, base),
+                    sync=_v2_sync_request(capture, base),
+                )
             return _with_context_fields(
                 capture,
-                {**base, "status": "target_context_cache_incomplete"},
+                base,
                 target_context_verified=False,
                 cache_completeness=_cache_completeness(capture, base),
-                sync=_v2_sync_request(capture, base),
             )
 
     if text_source is None:
