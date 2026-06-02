@@ -39,7 +39,7 @@ def test_capture_input_remains_backward_compatible_without_preflight_hints():
     assert capture.target_context_hint is None
     assert capture.target_scope_hint is None
     assert capture.user_requested_action is None
-    assert capture.state == "initialized"
+    assert capture.state is None
     assert capture.user_intent == "capture_to_notion"
 
 
@@ -689,6 +689,84 @@ def test_v2_preflight_exposes_incomplete_location_facts_without_hard_blocking(tm
     }
 
 
+
+def test_v2_preflight_syncs_cache_when_cached_page_title_disagrees_with_title_property(tmp_path):
+    _write_json(
+        tmp_path / "cache-v2" / "graphs" / "banlatie.json",
+        {
+            "cache_version": 2,
+            "graph_id": "banlatie",
+            "root": {"kind": "page", "id": "page-show"},
+            "pages": {
+                "page-show": {
+                    "page_id": "page-show",
+                    "kind": "record_page",
+                    "title": "进行中",
+                    "parent": {"type": "workspace", "id": "workspace"},
+                    "property_values": {
+                        "状态": {"type": "status", "status": {"name": "进行中"}},
+                        "播客名称": {"type": "title", "title": [{"plain_text": "半拿铁｜商业浮沉录"}]},
+                    },
+                }
+            },
+            "data_sources": {"ds-episodes": {"data_source_id": "ds-episodes", "schema": {"主题": {"type": "title"}}}},
+            "views": {},
+        },
+    )
+    _write_json(
+        tmp_path / "cache-v2" / "profiles" / "banlatie-profile.json",
+        {
+            "cache_version": 2,
+            "profile_id": "banlatie-profile",
+            "graph_id": "banlatie",
+            "write_profiles": {
+                "podcast_episode": {
+                    "canonical_data_source_id": "ds-episodes",
+                    "field_mapping": {"title": "主题"},
+                    "field_sources": {"title": "user_binding"},
+                    "state_mapping": {},
+                    "asset_mapping": {},
+                    "relation_mapping": {},
+                    "parser_profile": {},
+                }
+            },
+        },
+    )
+    _write_json(
+        tmp_path / "cache-v2" / "aliases.json",
+        {"cache_version": 2, "aliases": {"半拿铁": {"graph_id": "banlatie", "profile_id": "banlatie-profile", "kind": "write_profile"}}},
+    )
+
+    preflight = build_capture_preflight(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "主题：No.203 ✈️ “不死鸟”兰世立",
+                "target_hint": "半拿铁",
+                "target_context_hint": "半拿铁",
+                "target_scope_hint": "podcast_episode_target",
+                "content_type_hint": "podcast_episode",
+                "intent_hint": "direct_write",
+                "user_requested_action": "summarize_then_store",
+            }
+        ),
+        cache=_v2_cache(tmp_path),
+    )
+
+    assert preflight["target"]["status"] == "target_cache_stale"
+    assert preflight["target"]["cache_consistency"] == {
+        "status": "stale",
+        "reason": "page_title_property_mismatch",
+        "cached_title": "进行中",
+        "actual_title": "半拿铁｜商业浮沉录",
+    }
+    assert preflight["target"]["sync"] == {"scope": "podcast_episode_target", "target_id": "banlatie", "page_id": "page-show", "alias": "半拿铁"}
+    assert preflight["workflow"]["planning"] == {
+        "status": "blocked",
+        "next_action": "sync_target_cache",
+        "reason": "cache_page_title_mismatch",
+    }
+
+
 def test_v2_preflight_allows_explicit_child_alias_when_parent_page_location_matches(tmp_path):
     _seed_v2_episode_target(tmp_path, data_source_location={"parent_page_id": "page-show", "database_id": "db-episodes"})
 
@@ -1129,6 +1207,149 @@ def test_preflight_routes_existing_page_update_with_scanned_page_alias_to_captur
 
     assert preflight["target"]["status"] == "v2_page_parent_ready"
     assert preflight["workflow"]["planning"]["next_action"] == "capture_plan"
+
+
+
+def _seed_v2_page_parent_graph(store, graph_id="ai-tools", alias="工具", parent_title="AI"):
+    store.write_graph(
+        graph_id,
+        {
+            "cache_version": 2,
+            "graph_id": graph_id,
+            "root": {"kind": "page", "id": "page-tools"},
+            "pages": {
+                "page-tools": {
+                    "page_id": "page-tools",
+                    "title": "工具",
+                    "kind": "page",
+                    "parent": {"type": "page_id", "id": "page-parent"},
+                },
+                "page-parent": {
+                    "page_id": "page-parent",
+                    "title": parent_title,
+                    "kind": "page",
+                    "parent": {"type": "workspace", "workspace": True},
+                },
+            },
+            "blocks": {},
+            "databases": {},
+            "data_sources": {},
+            "views": {},
+        },
+    )
+    store.bind_alias(alias, graph_id=graph_id, profile_id=None, kind="graph")
+
+
+
+def test_v2_preflight_verifies_page_parent_context_by_target_path_text(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.config import ensure_config
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    store = CacheV2Store(ensure_config())
+    _seed_v2_page_parent_graph(store)
+
+    preflight = build_capture_preflight(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "# Mac常用命令速查\n\n正文",
+                "target_hint": "工具",
+                "intent_hint": "direct_write",
+                "input_shape_hint": "plain_text",
+                "target_context_hint": "Notion AI 页面下的工具页面",
+                "target_scope_hint": "page under AI page",
+                "user_requested_action": "write",
+            }
+        ),
+        store,
+    )
+
+    assert preflight["target"]["status"] == "v2_page_parent_ready"
+    assert preflight["target"]["target_context_verified"] is True
+    assert preflight["target"]["target_path"] == "工作区顶层 / AI / 工具"
+    assert preflight["workflow"]["target_resolution"]["context_verification_source"] == "target_path_text_match"
+    assert preflight["workflow"]["planning"]["next_action"] == "capture_plan"
+
+
+
+def test_v2_preflight_verifies_top_level_page_parent_context_by_exact_target_path_text(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.config import ensure_config
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    store = CacheV2Store(ensure_config())
+    store.write_graph(
+        "top-tools",
+        {
+            "cache_version": 2,
+            "graph_id": "top-tools",
+            "root": {"kind": "page", "id": "page-tools"},
+            "pages": {
+                "page-tools": {
+                    "page_id": "page-tools",
+                    "title": "工具",
+                    "kind": "page",
+                    "parent": {"type": "workspace", "workspace": True},
+                },
+            },
+            "blocks": {},
+            "databases": {},
+            "data_sources": {},
+            "views": {},
+        },
+    )
+    store.bind_alias("顶层工具", graph_id="top-tools", profile_id=None, kind="graph")
+
+    preflight = build_capture_preflight(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "# Mac 日常使用\n\n正文",
+                "target_hint": "顶层工具",
+                "intent_hint": "direct_write",
+                "input_shape_hint": "markdown",
+                "target_context_hint": "工作区顶层 / 工具",
+                "target_scope_hint": "page_parent",
+                "user_requested_action": "write",
+            }
+        ),
+        store,
+    )
+
+    assert preflight["target"]["status"] == "v2_page_parent_ready"
+    assert preflight["target"]["target_context_verified"] is True
+    assert preflight["target"]["target_path"] == "工作区顶层 / 工具"
+    assert preflight["workflow"]["target_resolution"]["context_verification_source"] == "target_path_text_match"
+    assert preflight["workflow"]["planning"]["next_action"] == "capture_plan"
+
+
+
+def test_v2_preflight_does_not_verify_mismatched_page_parent_path_text(tmp_path, monkeypatch):
+    from capture_to_notion.cache_v2 import CacheV2Store
+    from capture_to_notion.config import ensure_config
+
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    store = CacheV2Store(ensure_config())
+    _seed_v2_page_parent_graph(store, parent_title="其他")
+
+    preflight = build_capture_preflight(
+        CaptureInput.from_dict(
+            {
+                "raw_input": "# Mac常用命令速查\n\n正文",
+                "target_hint": "工具",
+                "intent_hint": "direct_write",
+                "input_shape_hint": "plain_text",
+                "target_context_hint": "Notion AI 页面下的工具页面",
+                "target_scope_hint": "page_parent",
+                "user_requested_action": "write",
+            }
+        ),
+        store,
+    )
+
+    assert preflight["target"]["target_context_verified"] is False
+    assert preflight["target"].get("status") != "v2_page_parent_ready"
+    assert preflight["target"]["target_path"] == "工作区顶层 / 其他 / 工具"
+    assert preflight["workflow"]["planning"]["next_action"] == "scan_target"
 
 
 

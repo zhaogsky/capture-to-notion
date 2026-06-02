@@ -7,7 +7,7 @@ from typing import Any
 from capture_to_notion.cache import CacheStore
 from capture_to_notion.cache_v2 import CacheV2Store
 from capture_to_notion.models import CaptureInput
-from capture_to_notion.path_utils import graph_object_path, graph_visual_path
+from capture_to_notion.path_utils import graph_node_title, graph_object_path, graph_visual_path
 from capture_to_notion.profile_binder import resolve_write_profile
 
 
@@ -34,6 +34,7 @@ LOCATION_FACT_KEYS = (
 )
 TEXT_FACT_KEYS = ("alias", "title", "view_name")
 CONTEXT_SCOPE_TOKENS = ("page", "parent", "child", "under", "context")
+PATH_GENERIC_SEGMENTS = {"工作区顶层", "workspace"}
 
 
 def _target_from_structure(structure: dict[str, Any] | None) -> dict[str, Any]:
@@ -237,6 +238,34 @@ def _text_fragments(value: str) -> list[str]:
     return [fragment.casefold() for fragment in fragments if len(fragment.strip()) >= 3]
 
 
+def _path_segments(value: str, *, include_generic: bool = False) -> list[str]:
+    segments = re.split(r"\s*/\s*|[\\|｜>＞]+", value)
+    return [
+        segment.casefold()
+        for segment in (segment.strip() for segment in segments)
+        if len(segment) >= 2 and (include_generic or segment not in PATH_GENERIC_SEGMENTS)
+    ]
+
+
+
+def _matching_path_text_source(resolution: dict[str, Any], context_hint: str | None) -> str | None:
+    if not isinstance(context_hint, str) or not context_hint.strip():
+        return None
+    context = context_hint.casefold()
+    for key in ("target_path", "visual_path"):
+        value = resolution.get(key)
+        if not isinstance(value, str) or not value.strip():
+            continue
+        full_segments = _path_segments(value, include_generic=True)
+        if len(full_segments) >= 2 and all(segment in context for segment in full_segments):
+            return f"{key}_text_match"
+        segments = _path_segments(value)
+        if len(segments) >= 2 and all(segment in context for segment in segments):
+            return f"{key}_text_match"
+    return None
+
+
+
 def _matching_text_source(resolution: dict[str, Any], context_hint: str | None) -> str | None:
     if not isinstance(context_hint, str) or not context_hint.strip():
         return None
@@ -246,6 +275,9 @@ def _matching_text_source(resolution: dict[str, Any], context_hint: str | None) 
         for value in resolved[key]:
             if value.casefold() in context:
                 return f"{key}_text_match"
+    path_source = _matching_path_text_source(resolution, context_hint)
+    if path_source is not None:
+        return path_source
     for key in TEXT_FACT_KEYS:
         for value in resolved[key]:
             if any(fragment in context for fragment in _text_fragments(value)):
@@ -461,13 +493,30 @@ def _resolve_context_target(capture: CaptureInput, cache: CacheStore) -> dict[st
     )
 
 
-def _v2_page_title(graph: dict[str, Any], page_id: str | None) -> str | None:
+def _v2_page(graph: dict[str, Any], page_id: str | None) -> dict[str, Any] | None:
     pages = graph.get("pages") if isinstance(graph.get("pages"), dict) else {}
     page = pages.get(page_id) if isinstance(page_id, str) else None
+    return page if isinstance(page, dict) else None
+
+
+def _v2_page_title(graph: dict[str, Any], page_id: str | None) -> str | None:
+    return graph_node_title(_v2_page(graph, page_id))
+
+
+def _v2_page_title_cache_consistency(graph: dict[str, Any], page_id: str | None) -> dict[str, Any] | None:
+    page = _v2_page(graph, page_id)
     if not isinstance(page, dict):
         return None
-    title = page.get("title")
-    return title if isinstance(title, str) and title else None
+    cached_title = page.get("title")
+    actual_title = graph_node_title(page)
+    if isinstance(cached_title, str) and isinstance(actual_title, str) and cached_title and actual_title and cached_title != actual_title:
+        return {
+            "status": "stale",
+            "reason": "page_title_property_mismatch",
+            "cached_title": cached_title,
+            "actual_title": actual_title,
+        }
+    return None
 
 
 def _v2_context_structure(graph: dict[str, Any], graph_id: str) -> dict[str, Any]:
@@ -660,13 +709,33 @@ def _resolve_v2_capture_target(capture: CaptureInput, cache: CacheV2Store, conte
         return {"status": "v2_target_missing", "source": "v2_alias", "alias": alias_name, "graph_id": graph_id}
     profile = cache.read_profile(profile_id) if isinstance(profile_id, str) else None
     if not isinstance(profile, dict):
-        return {
+        root = graph.get("root") if isinstance(graph.get("root"), dict) else {}
+        page_id = root.get("id") if root.get("kind") == "page" and isinstance(root.get("id"), str) else None
+        data_source_id = root.get("id") if root.get("kind") == "data_source" and isinstance(root.get("id"), str) else None
+        missing_profile = {
             "status": "write_profile_missing",
             "source": "v2_alias",
             "alias": alias_name,
+            "target_id": graph_id,
             "graph_id": graph_id,
             "profile_id": profile_id,
+            "page_id": page_id,
+            "data_source_id": data_source_id,
+            **_v2_target_path_fields(graph, data_source_id, page_id),
         }
+        missing_profile = {key: value for key, value in missing_profile.items() if value is not None}
+        if capture.target_context_hint:
+            text_source = _matching_text_source(missing_profile, capture.target_context_hint)
+            if text_source is not None:
+                return _with_context_fields(
+                    capture,
+                    missing_profile,
+                    target_context_verified=True,
+                    context_verification_source=text_source,
+                )
+            if _is_location_context(capture):
+                return _with_context_fields(capture, missing_profile, target_context_verified=False)
+        return missing_profile
 
     resolved = resolve_write_profile(graph, profile, content_type=content_type)
     if resolved is None:
@@ -705,6 +774,15 @@ def _resolve_v2_capture_target(capture: CaptureInput, cache: CacheV2Store, conte
         **_fact_fields(facts, LOCATION_FACT_KEYS),
         **_v2_target_path_fields(graph, data_source_id, page_id, resolved.get("view_id")),
     }
+    cache_consistency = _v2_page_title_cache_consistency(graph, page_id)
+    if cache_consistency is not None:
+        return _with_context_fields(
+            capture,
+            {**base, "status": "target_cache_stale"},
+            target_context_verified=False,
+            cache_consistency=cache_consistency,
+            sync=_v2_sync_request(capture, base),
+        )
 
     if not _has_context_gate(capture):
         return {key: value for key, value in base.items() if value is not None}

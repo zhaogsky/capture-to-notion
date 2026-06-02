@@ -197,7 +197,7 @@ If the v2 graph/profile cannot cover the requested target or mapping, stop at th
 capture-to-notion capture apply --plan /path/to/plan.json --confirmed
 ```
 
-19. Present the apply result, including warnings, asset results, and `verification` warnings when present. When `verification_expectations.targets` exists, report apply/verify status per target page rather than collapsing nested target status into the primary page.
+19. Present the apply result, including warnings, asset results, and `verification` warnings when present. When reporting written locations, default to the final complete written path from `written_targets[].created_path` or equivalent full path only; do not separately list the parent target path unless it is needed for disambiguation or troubleshooting. When `verification_expectations.targets` exists, report apply/verify status per target page rather than collapsing nested target status into the primary page.
 
 ## Apply Safety Failure Handling
 

@@ -82,6 +82,7 @@ def _workflow_target_resolution(resolution: dict[str, Any]) -> dict[str, Any]:
         "visual_path": resolution.get("visual_path"),
         "visual_path_complete": resolution.get("visual_path_complete"),
         "cache_completeness": resolution.get("cache_completeness"),
+        "cache_consistency": resolution.get("cache_consistency"),
         "sync": resolution.get("sync"),
     }
     if "candidates" in resolution:
@@ -131,9 +132,19 @@ def _is_workflow_confirmed(capture: CaptureInput, confirmation: str) -> bool:
     return confirmation in capture.workflow_confirmations
 
 
+def _is_page_parent_scope(scope_hint: str | None) -> bool:
+    if scope_hint in {"page_parent", "existing_page"}:
+        return True
+    scope = scope_hint.casefold() if isinstance(scope_hint, str) else ""
+    if "page" not in scope:
+        return False
+    return not any(token in scope for token in ("data", "database", "view", "list", "table", "gallery", "board"))
+
+
+
 def _is_page_parent_direct_write(capture: CaptureInput) -> bool:
     return (
-        capture.target_scope_hint in {"page_parent", "existing_page"}
+        _is_page_parent_scope(capture.target_scope_hint)
         and capture.intent_hint == "direct_write"
         and capture.user_requested_action == "write"
     )
@@ -150,6 +161,8 @@ def _v2_page_parent_ready_target(
     if not _plain_page_capture_compatible(capture, content_type):
         return None
     if resolution.get("status") != "write_profile_missing":
+        return None
+    if resolution.get("target_context_verified") is False:
         return None
 
     alias_name = resolution.get("alias") if isinstance(resolution.get("alias"), str) else capture.target_hint
@@ -169,8 +182,10 @@ def _v2_page_parent_ready_target(
         "alias": alias_name,
         "target_id": graph_id,
         "page_id": page_id,
-        "target_context_verified": True,
-        "context_verification_source": "v2_page_graph",
+        "target_context_verified": resolution.get("target_context_verified", True),
+        "context_verification_source": resolution.get("context_verification_source", "v2_page_graph"),
+        "target_path": resolution.get("target_path"),
+        "target_path_complete": resolution.get("target_path_complete"),
     }
 
 
@@ -198,6 +213,7 @@ def _target_from_resolution(resolution: dict[str, Any], hint: str | None = None)
         "visual_path": resolution.get("visual_path"),
         "visual_path_complete": resolution.get("visual_path_complete"),
         "cache_completeness": resolution.get("cache_completeness"),
+        "cache_consistency": resolution.get("cache_consistency"),
         "sync": resolution.get("sync"),
     }
     if resolution.get("status") != "target_not_resolved":
@@ -324,6 +340,13 @@ def build_capture_preflight(capture: CaptureInput, cache: CacheStore | CacheV2St
 
     if status == "target_context_cache_incomplete":
         reason = "cache_location_facts_missing"
+        preflight["safe_actions"].append(_action("sync_target_cache", reason))
+        preflight["blocked_actions"].append(_action("plan_directly", reason))
+        _set_planning(preflight, "blocked", "sync_target_cache", reason)
+        return preflight
+
+    if status == "target_cache_stale":
+        reason = "cache_page_title_mismatch"
         preflight["safe_actions"].append(_action("sync_target_cache", reason))
         preflight["blocked_actions"].append(_action("plan_directly", reason))
         _set_planning(preflight, "blocked", "sync_target_cache", reason)

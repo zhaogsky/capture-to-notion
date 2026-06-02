@@ -398,6 +398,54 @@ def _execute_explicit_plan_operations(plan: WritePlan, adapter: Any) -> list[dic
     return results
 
 
+
+def _created_path(target_path: Any, title: Any) -> str | None:
+    if isinstance(target_path, str) and target_path and isinstance(title, str) and title:
+        return f"{target_path} / {title}"
+    return None
+
+
+
+def _written_targets(plan: WritePlan, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    write_targets = plan.summary.get("write_targets") if isinstance(plan.summary, dict) else None
+    if not isinstance(write_targets, list) or not write_targets:
+        return []
+    page_results = [result for result in results if isinstance(result, dict) and result.get("page_id")]
+    written: list[dict[str, Any]] = []
+    for index, write_target in enumerate(write_targets):
+        if not isinstance(write_target, dict):
+            continue
+        result = page_results[index] if index < len(page_results) else {}
+        target = {
+            key: write_target.get(key)
+            for key in (
+                "type",
+                "action",
+                "title",
+                "parent_page_id",
+                "data_source_id",
+                "target_kind",
+                "target_path",
+                "target_path_complete",
+                "visual_path",
+                "visual_path_complete",
+            )
+            if write_target.get(key) is not None
+        }
+        page_id = result.get("page_id") or write_target.get("page_id")
+        if page_id is not None:
+            target["page_id"] = page_id
+        url = result.get("url")
+        if url is not None:
+            target["url"] = url
+        created_path = _created_path(write_target.get("target_path"), write_target.get("title"))
+        if result and write_target.get("action") == CREATE_CHILD_PAGE and created_path is not None:
+            target["created_path"] = created_path
+        if target:
+            written.append(target)
+    return written
+
+
 def apply_write_plan(
     plan: WritePlan,
     target_structure: dict[str, Any],
@@ -410,13 +458,17 @@ def apply_write_plan(
     _validate_plan_target(plan, target_structure)
     if plan.plan_operations_explicit:
         results = _execute_explicit_plan_operations(plan, adapter)
-        return {
+        response = {
             "plan_id": plan.plan_id,
             "applied": True,
             "results": results,
             "asset_results": [],
             "warnings": plan.warnings,
         }
+        written_targets = _written_targets(plan, results)
+        if written_targets:
+            response["written_targets"] = written_targets
+        return response
 
     _validate_write_operations(plan)
     has_data_source_operation = any(
@@ -521,6 +573,9 @@ def apply_write_plan(
         "asset_results": asset_results,
         "warnings": plan.warnings + relation_warnings + asset_warnings + completion_warnings,
     }
+    written_targets = _written_targets(plan, results)
+    if written_targets:
+        response["written_targets"] = written_targets
     if working_record != plan.normalized_record:
         response["resolved_record"] = working_record
     if plan.completion_operations:

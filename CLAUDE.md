@@ -15,3 +15,5 @@
 13. Capture to Notion 真实 E2E 测试脚本、测试计划和运行产物应集中在同一测试目录中管理；默认使用 `scripts/e2e/` 放脚本和计划，默认产物放 `scripts/e2e/artifacts/`，不要默认散落到 `/tmp` 或独立 `docs/` 路径。
 14. Capture to Notion 暴露出的写入/补全/验证问题应优先归纳为通用能力缺口来设计修复，不要围绕单个书籍、作者或具体对象做一次性补丁；对象级处理只能作为验证案例。
 15. Capture to Notion 后端只负责执行能力和不可越过的安全边界，例如拒绝更新 archived/in_trash、parent data_source 不匹配或不存在的页面；不要在后端编码自动新建、恢复、重新搜索、重新定位等场景策略。此类 apply safety failure 应交给 Skill/AI 编排层解释、推荐并重新计划。
+16. Capture to Notion 处理 Notion `files` 类型图片字段时，应按实体上传资产处理：计划和确认摘要必须明确 `download_and_attach` / 上传后的文件语义，不要把作者照片、封面等 files 字段描述成单纯保存源 URL。
+17. Capture to Notion apply 成功结果和用户汇报必须包含完整写入位置；用户侧默认只汇报最终完整写入路径，不单独列父级目标路径，除非需要消歧或排查；不要只返回或只汇报 page_id / URL。

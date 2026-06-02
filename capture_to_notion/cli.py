@@ -25,7 +25,7 @@ from capture_to_notion.notion_adapter import (
     NotionPermissionError,
     NotionRateLimitError,
 )
-from capture_to_notion.path_utils import graph_object_path
+from capture_to_notion.path_utils import graph_node_title, graph_object_path
 from capture_to_notion.planner import build_capture_plan, build_plan_cli_summary
 from capture_to_notion.preflight import build_capture_preflight, build_capture_preflight_summary
 from capture_to_notion.scanner import scan_data_source_graph, scan_page_graph
@@ -146,8 +146,9 @@ def _v2_root_target(graph: dict[str, Any]) -> dict[str, Any]:
         target["page_id"] = page_id
         pages = graph.get("pages") if isinstance(graph.get("pages"), dict) else {}
         page = pages.get(page_id) if isinstance(pages, dict) else None
-        if isinstance(page, dict) and isinstance(page.get("title"), str):
-            target["title"] = page["title"]
+        title = graph_node_title(page)
+        if title:
+            target["title"] = title
     elif root.get("kind") == "data_source" and isinstance(root.get("id"), str):
         target["data_source_id"] = root["id"]
         data_sources = graph.get("data_sources") if isinstance(graph.get("data_sources"), dict) else {}
@@ -265,6 +266,7 @@ def _v2_graph_detail(cache: CacheV2Store, *, alias_name: str | None, graph_id: s
         "status": "cached",
     }
     if compact:
+        detail.update(_v2_root_path_summary(graph))
         detail["content_types"] = _v2_content_types(profile)
     else:
         detail["graph_file"] = str(cache.graph_path(resolved_graph_id))
@@ -398,7 +400,7 @@ def cmd_target_search(args: argparse.Namespace) -> int:
     limit = _target_search_limit(args.limit)
     config = ensure_config()
     adapter = NotionAdapter.from_config(config)
-    include_parent_path = args.include_parent_path or not args.compact
+    include_parent_path = True
     raw_results = adapter.search(
         args.query,
         limit=min(limit + 1, MAX_SEARCH_LIMIT),
@@ -408,7 +410,7 @@ def cmd_target_search(args: argparse.Namespace) -> int:
     results = raw_results[:limit]
     if args.compact:
         results = [
-            _compact_target_search_result(result, include_parent_path=args.include_parent_path)
+            _compact_target_search_result(result, include_parent_path=include_parent_path)
             for result in results
         ]
     output: dict[str, Any] = {
@@ -488,6 +490,47 @@ def _parse_relation_mapping(create_missing_keys: list[str] | None) -> dict[str, 
 
 
 
+def _graph_data_source_schema(graph: dict[str, Any], data_source_id: str) -> dict[str, Any]:
+    data_sources = graph.get("data_sources") if isinstance(graph.get("data_sources"), dict) else {}
+    data_source = data_sources.get(data_source_id) if isinstance(data_sources, dict) else None
+    schema = data_source.get("schema") if isinstance(data_source, dict) else None
+    return schema if isinstance(schema, dict) else {}
+
+
+
+def _parse_asset_fields(values: list[str] | None, schema: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any]]:
+    field_mapping: dict[str, str] = {}
+    asset_mapping: dict[str, Any] = {}
+    for value in values or []:
+        if "=" not in value:
+            raise CliInputError("--asset-field 必须使用 semantic=NotionFilesProperty 格式")
+        semantic, property_name = value.split("=", 1)
+        semantic = semantic.strip()
+        property_name = property_name.strip()
+        if not semantic or not property_name:
+            raise CliInputError("--asset-field 必须使用 semantic=NotionFilesProperty 格式")
+        if schema.get(property_name, {}).get("type") != "files":
+            raise CliInputError(f"--asset-field 目标字段必须是 files 类型: {property_name}")
+        field_mapping[semantic] = property_name
+        asset_mapping[semantic] = {"field": property_name, "type": "files", "strategy": "download_and_attach"}
+    return field_mapping, asset_mapping
+
+
+
+def _parser_profile_with_asset_fields(parser_profile: dict[str, Any], asset_fields: dict[str, str]) -> dict[str, Any]:
+    if not asset_fields:
+        return dict(parser_profile)
+    updated = dict(parser_profile)
+    existing = updated.get("asset_trust_required_fields")
+    required_fields = [value for value in existing if isinstance(value, str)] if isinstance(existing, list) else []
+    for record_key in asset_fields:
+        if record_key not in required_fields:
+            required_fields.append(record_key)
+    updated["asset_trust_required_fields"] = required_fields
+    return updated
+
+
+
 def _existing_write_profile(cache: CacheV2Store, profile_id: str, content_type: str) -> dict[str, Any]:
     profile = cache.read_profile(profile_id)
     write_profiles = profile.get("write_profiles") if isinstance(profile, dict) else None
@@ -527,8 +570,20 @@ def cmd_target_bind_profile(args: argparse.Namespace) -> int:
     if not args.field:
         field_mapping = dict(existing_write_profile.get("field_mapping") or {})
         field_sources = dict(existing_write_profile.get("field_sources") or {})
+    asset_field_mapping, asset_mapping_updates = _parse_asset_fields(
+        args.asset_field,
+        _graph_data_source_schema(graph, args.data_source_id),
+    )
+    field_mapping.update(asset_field_mapping)
+    field_sources.update({record_key: "profile" for record_key in asset_field_mapping})
+    asset_mapping = dict(existing_write_profile.get("asset_mapping") or {})
+    asset_mapping.update(asset_mapping_updates)
     relation_mapping = dict(existing_write_profile.get("relation_mapping") or {})
     relation_mapping.update(_parse_relation_mapping(args.relation_create_missing))
+    parser_profile = _parser_profile_with_asset_fields(
+        existing_write_profile.get("parser_profile") if isinstance(existing_write_profile.get("parser_profile"), dict) else {},
+        asset_field_mapping,
+    )
     try:
         profile = bind_write_profile(
             graph,
@@ -539,9 +594,9 @@ def cmd_target_bind_profile(args: argparse.Namespace) -> int:
             field_mapping=field_mapping,
             field_sources=field_sources,
             state_mapping=existing_write_profile.get("state_mapping") if isinstance(existing_write_profile.get("state_mapping"), dict) else None,
-            asset_mapping=existing_write_profile.get("asset_mapping") if isinstance(existing_write_profile.get("asset_mapping"), dict) else None,
+            asset_mapping=asset_mapping,
             relation_mapping=relation_mapping,
-            parser_profile=existing_write_profile.get("parser_profile") if isinstance(existing_write_profile.get("parser_profile"), dict) else None,
+            parser_profile=parser_profile,
             aliases=[args.alias],
         )
     except ValueError as exc:
@@ -558,6 +613,8 @@ def cmd_target_bind_profile(args: argparse.Namespace) -> int:
     }
     if relation_mapping:
         output["relation_mapping"] = relation_mapping
+    if asset_mapping:
+        output["asset_mapping"] = asset_mapping
     print_json(output)
     return 0
 
@@ -607,7 +664,9 @@ def _target_scan_output(config: Any, graph: dict[str, Any], *, compact: bool = F
         "requires_profile_binding": has_data_source,
         "next_action": "target bind-profile" if has_data_source else "capture preflight",
     }
-    if not compact:
+    if compact:
+        output.update(_v2_root_path_summary(graph))
+    else:
         output["graph_file"] = str(config.graphs_v2_dir / f"{graph_id}.json")
     return output
 
@@ -1909,6 +1968,7 @@ def build_parser() -> argparse.ArgumentParser:
     target_bind_profile_view.add_argument("--view-id")
     target_bind_profile_view.add_argument("--view-name")
     target_bind_profile.add_argument("--field", action="append")
+    target_bind_profile.add_argument("--asset-field", action="append")
     target_bind_profile.add_argument("--relation-create-missing", action="append")
     target_bind_profile.set_defaults(func=cmd_target_bind_profile)
 

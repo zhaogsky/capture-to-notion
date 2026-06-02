@@ -146,6 +146,22 @@ def test_normalize_page_distinguishes_record_page():
     assert page["block_ids"] == []
 
 
+
+def test_normalize_page_uses_title_property_not_status_value():
+    page = normalize_page(
+        {
+            "id": "page-show",
+            "parent": {"type": "data_source_id", "data_source_id": "ds-podcasts"},
+            "properties": {
+                "状态": {"type": "status", "status": {"name": "进行中"}},
+                "播客名称": {"type": "title", "title": [{"plain_text": "半拿铁｜商业浮沉录"}]},
+            },
+        }
+    )
+
+    assert page["title"] == "半拿铁｜商业浮沉录"
+
+
 def test_normalize_page_distinguishes_container_page():
     page = normalize_page({"id": "page-1", "parent": {"type": "workspace", "workspace": True}, "properties": {}})
 

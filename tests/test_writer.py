@@ -348,6 +348,43 @@ def test_apply_write_plan_creates_child_page_with_first_100_blocks():
 
 
 
+def test_apply_write_plan_returns_written_target_paths_for_created_child_page():
+    plan = make_page_parent_plan([paragraph_block("body")])
+    plan.operations[0]["operation_id"] = "create_child_page:0"
+    plan.summary["write_targets"] = [
+        {
+            "type": "primary_page",
+            "action": "create_child_page",
+            "title": "DeepSeek V4",
+            "parent_page_id": "parent-page",
+            "target_kind": "page_parent",
+            "page_id": None,
+            "page_id_status": "pending_after_apply",
+            "target_path": "工作区顶层 / AI / 工具",
+            "target_path_complete": True,
+        }
+    ]
+    adapter = PageParentAdapter()
+
+    result = apply_write_plan(plan, {"pages": {"parent-page": {"title": "工具"}}}, adapter)
+
+    assert result["written_targets"] == [
+        {
+            "type": "primary_page",
+            "action": "create_child_page",
+            "title": "DeepSeek V4",
+            "page_id": "created-page",
+            "url": "https://notion.so/created-page",
+            "parent_page_id": "parent-page",
+            "target_kind": "page_parent",
+            "target_path": "工作区顶层 / AI / 工具",
+            "target_path_complete": True,
+            "created_path": "工作区顶层 / AI / 工具 / DeepSeek V4",
+        }
+    ]
+
+
+
 def test_apply_write_plan_returns_create_child_page_operation_id():
     blocks = [paragraph_block("tracked body")]
     plan = make_page_parent_plan(blocks)

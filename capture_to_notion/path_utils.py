@@ -6,9 +6,33 @@ from typing import Any
 WORKSPACE_LABEL = "工作区顶层"
 
 
-def _node_title(node: dict[str, Any] | None, fallback_id: str | None = None) -> str | None:
+def _plain_text(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        text = "".join(
+            str(item.get("plain_text") or item.get("text", {}).get("content") or "")
+            for item in value
+            if isinstance(item, dict)
+        ).strip()
+        return text or None
+    if isinstance(value, dict):
+        value_type = value.get("type")
+        if isinstance(value_type, str) and value_type in value:
+            return _plain_text(value.get(value_type))
+    return None
+
+
+def graph_node_title(node: dict[str, Any] | None, fallback_id: str | None = None) -> str | None:
     if not isinstance(node, dict):
         return fallback_id
+    property_values = node.get("property_values")
+    if isinstance(property_values, dict):
+        for property_value in property_values.values():
+            if isinstance(property_value, dict) and property_value.get("type") == "title":
+                title = _plain_text(property_value.get("title"))
+                if title:
+                    return title
     for key in ("title", "name"):
         value = node.get(key)
         if isinstance(value, str) and value:
@@ -146,7 +170,7 @@ def _graph_path_from_node(graph: dict[str, Any], node: dict[str, Any], kind: str
             return {"path": " / ".join(reversed(labels)) or None, "path_complete": False}
         seen.add(key)
 
-        title = _node_title(current, current_id)
+        title = graph_node_title(current, current_id)
         if title:
             labels.append(title)
 

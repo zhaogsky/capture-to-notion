@@ -202,7 +202,13 @@ class SearchAdapter:
 
 
 class DuplicateTitleSearchAdapter:
+    def __init__(self):
+        self.search_calls = []
+
     def search(self, query, limit=None, include_parent_path=True):
+        self.search_calls.append(
+            {"query": query, "limit": limit, "include_parent_path": include_parent_path}
+        )
         return [
             {
                 "id": "page-books-current",
@@ -578,6 +584,55 @@ def test_target_bind_profile_writes_v2_profile_and_alias(tmp_path, monkeypatch, 
 
 
 
+def test_target_bind_profile_writes_asset_mapping_for_files_field(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    write_json(
+        tmp_path / "cache-v2" / "graphs" / "graph-books.json",
+        {
+            "cache_version": 2,
+            "graph_id": "graph-books",
+            "root": {"kind": "page", "id": "page-books"},
+            "data_sources": {
+                "ds-books": {
+                    "data_source_id": "ds-books",
+                    "schema": {"Name": {"type": "title"}, "Cover": {"type": "files"}},
+                }
+            },
+            "views": {},
+        },
+    )
+
+    result = cli.main([
+        "target",
+        "bind-profile",
+        "--alias",
+        "books",
+        "--graph-id",
+        "graph-books",
+        "--profile-id",
+        "profile-books",
+        "--content-type",
+        "book",
+        "--data-source-id",
+        "ds-books",
+        "--field",
+        "title=Name",
+        "--asset-field",
+        "cover=Cover",
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["asset_mapping"] == {"cover": {"field": "Cover", "type": "files", "strategy": "download_and_attach"}}
+    profile = json.loads((tmp_path / "cache-v2" / "profiles" / "profile-books.json").read_text(encoding="utf-8"))
+    write_profile = profile["write_profiles"]["book"]
+    assert write_profile["field_mapping"] == {"title": "Name", "cover": "Cover"}
+    assert write_profile["field_sources"] == {"title": "user_binding", "cover": "profile"}
+    assert write_profile["asset_mapping"] == {"cover": {"field": "Cover", "type": "files", "strategy": "download_and_attach"}}
+    assert write_profile["parser_profile"] == {"asset_trust_required_fields": ["cover"]}
+
+
+
 def test_target_bind_profile_writes_relation_create_missing_policy(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
     write_json(
@@ -901,30 +956,38 @@ def test_target_search_limit_caps_results(tmp_path, monkeypatch, capsys):
     assert adapter.search_calls == [{"query": "书单", "limit": 3, "include_parent_path": True}]
 
 
-def test_target_search_compact_omits_large_fields(tmp_path, monkeypatch, capsys):
+def test_target_search_compact_includes_parent_path_by_default_for_disambiguation(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
-    adapter = ManySearchAdapter()
+    adapter = DuplicateTitleSearchAdapter()
     monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: adapter))
 
     result = cli.main(["target", "search", "--query", "书单", "--limit", "2", "--compact"])
 
     assert result == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["results"] == [
+    expected_results = [
         {
-            "id": "page-1",
+            "id": "page-books-current",
             "object": "page",
-            "title": "候选 1",
+            "title": "书单",
             "last_edited_time": "2026-05-10T00:00:00Z",
+            "parent_path": "工作区顶层",
+            "path": "工作区顶层 / 书单",
+            "path_complete": True,
         },
         {
-            "id": "page-2",
+            "id": "page-books-template",
             "object": "page",
-            "title": "候选 2",
-            "last_edited_time": "2026-05-10T00:00:00Z",
+            "title": "书单",
+            "last_edited_time": "2023-08-25T00:00:00Z",
+            "parent_path": "工具 / 模板",
+            "path": "工具 / 模板 / 书单",
+            "path_complete": True,
         },
     ]
-    assert adapter.search_calls == [{"query": "书单", "limit": 3, "include_parent_path": False}]
+    assert data["results"] == expected_results
+    assert data["duplicate_titles"] == [{"title": "书单", "results": expected_results}]
+    assert adapter.search_calls == [{"query": "书单", "limit": 3, "include_parent_path": True}]
 
 
 def test_target_search_compact_can_include_parent_path(tmp_path, monkeypatch, capsys):
@@ -1060,6 +1123,103 @@ def test_target_scan_page_only_stores_ancestor_page_for_path(tmp_path, monkeypat
     graph = json.loads((tmp_path / "cache-v2" / "graphs" / "ai-tools.json").read_text(encoding="utf-8"))
     assert graph["pages"]["page-tools"]["parent"] == {"type": "page_id", "id": "page-ai"}
     assert graph["pages"]["page-ai"]["title"] == "AI"
+
+
+
+def test_target_scan_compact_includes_root_path_for_page_parent(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: NestedPageOnlyScanAdapter()))
+
+    result = cli.main([
+        "target",
+        "scan",
+        "--page-id",
+        "page-tools",
+        "--alias",
+        "AI 工具",
+        "--target-id",
+        "ai-tools",
+        "--compact",
+    ])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["path"] == "工作区顶层 / AI / 工具"
+    assert data["path_complete"] is True
+
+
+
+def test_target_inspect_compact_includes_root_path_for_page_parent(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(lambda cls, config: NestedPageOnlyScanAdapter()))
+    assert cli.main([
+        "target",
+        "scan",
+        "--page-id",
+        "page-tools",
+        "--alias",
+        "AI 工具",
+        "--target-id",
+        "ai-tools",
+        "--compact",
+    ]) == 0
+    capsys.readouterr()
+
+    def fail_from_config(cls, config):
+        raise AssertionError("target inspect must read local cache only")
+
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(fail_from_config))
+
+    result = cli.main(["target", "inspect", "--target-id", "ai-tools", "--compact"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["path"] == "工作区顶层 / AI / 工具"
+    assert data["path_complete"] is True
+
+
+
+def test_target_inspect_path_uses_title_property_when_cached_page_title_is_stale(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("CAPTURE_TO_NOTION_CONFIG_DIR", str(tmp_path))
+    store = CacheV2Store(ensure_config())
+    store.write_graph(
+        "banlatie",
+        {
+            "cache_version": 2,
+            "graph_id": "banlatie",
+            "root": {"kind": "page", "id": "page-show"},
+            "pages": {
+                "page-show": {
+                    "page_id": "page-show",
+                    "kind": "record_page",
+                    "title": "进行中",
+                    "parent": {"type": "workspace", "id": "workspace"},
+                    "property_values": {
+                        "状态": {"type": "status", "status": {"name": "进行中"}},
+                        "播客名称": {"type": "title", "title": [{"plain_text": "半拿铁｜商业浮沉录"}]},
+                    },
+                }
+            },
+            "blocks": {},
+            "databases": {},
+            "data_sources": {},
+            "views": {},
+        },
+    )
+    store.bind_alias("半拿铁", graph_id="banlatie", profile_id=None, kind="graph")
+
+    def fail_from_config(cls, config):
+        raise AssertionError("target inspect must read local cache only")
+
+    monkeypatch.setattr(cli.NotionAdapter, "from_config", classmethod(fail_from_config))
+
+    result = cli.main(["target", "inspect", "--alias", "半拿铁", "--compact"])
+
+    assert result == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["target"]["title"] == "半拿铁｜商业浮沉录"
+    assert data["path"] == "工作区顶层 / 半拿铁｜商业浮沉录"
+    assert data["path_complete"] is True
 
 
 
@@ -1627,6 +1787,8 @@ def test_target_inspect_compact_omits_full_fields(tmp_path, monkeypatch, capsys)
         "kind": "write_profile",
         "root": {"kind": "page", "id": "page-books"},
         "target": {"page_id": "page-books", "title": "Bookshelf"},
+        "path": "Bookshelf",
+        "path_complete": False,
         "data_sources": [
             {
                 "key": "ds-books",
