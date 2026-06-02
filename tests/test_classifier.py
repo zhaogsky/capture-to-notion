@@ -92,7 +92,7 @@ def test_classify_content_type_returns_unknown_for_unrelated_text():
     assert classify_content_type(capture) == "unknown"
 
 
-def test_capture_input_from_dict_uses_defaults_and_ignores_extra_options():
+def test_capture_input_from_dict_does_not_infer_default_state_and_ignores_extra_options():
     capture = CaptureInput.from_dict(
         {
             "raw_input": "记录这个",
@@ -104,7 +104,7 @@ def test_capture_input_from_dict_uses_defaults_and_ignores_extra_options():
     )
 
     assert capture.target_hint is None
-    assert capture.state == "initialized"
+    assert capture.state is None
     assert capture.content_type_hint is None
     assert capture.user_intent == "capture_to_notion"
     assert capture.options.allow_web_search is False
