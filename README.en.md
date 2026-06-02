@@ -1,85 +1,115 @@
 # Capture to Notion
 
-Capture to Notion is a Claude Code skill plus local CLI backend for planning and applying writes to Notion. It is intentionally scoped to capture workflows: choosing targets, scanning schemas, creating write plans, resolving relations, handling cover/file assets, and applying confirmed writes.
+[中文版](README.md)
 
-## Components
+Capture to Notion is a Claude Code Skill for safely writing books, podcast episodes, articles, notes, and related metadata into Notion. It includes a local CLI backend, but the default usage is Skill-first: ask Claude Code to capture, enrich, plan, or write something to Notion; Claude follows `SKILL.md` to preflight, plan, ask for confirmation, apply, and verify.
 
-- `SKILL.md` — Claude-facing workflow and safety rules.
-- `capture_to_notion/` — Python backend used by the CLI.
-- `tests/` — regression tests for planning, scanning, writing, assets, and CLI behavior.
-- `pyproject.toml` — package metadata and the `capture-to-notion` console script.
+Core principle: **generate reviewable preflight / plan facts first, then apply only after explicit user confirmation**. The workflow does not silently write to Notion and does not fall back to Notion MCP.
 
-## Development Status
+## What It Is For
 
-As of 2026-06-03, the project is in regression-maintenance mode for the currently supported workflows. Core capture, cache-first planning, migration governance, compact output, relation/people safety, asset uploads, verification, and reusable workflow norms are covered by tests. Future work should be opened as small follow-up tasks only when real usage feedback, long-tail golden cases, structure changes, or a second similar Skill creates new requirements.
+- Capture books, podcast episodes, articles, notes, and structured metadata into Notion.
+- Initialize or enrich existing records, such as covers, authors, ISBN, page counts, and author pictures.
+- Generate write plans from scanned Notion structures.
+- Resolve relation / people fields and block unresolved or ambiguous writes.
+- Treat Notion `files` properties as uploaded assets instead of saving only external image URLs.
+- Verify written pages, fields, files, covers, and verifiable view constraints after apply.
 
-## Release Status
+## Install the Skill
 
-`0.1.0` is an internal Beta release for personal and internal daily use. See [RELEASE.md](RELEASE.md) for installation, verification, rollback, and version policy details.
-
-## Install or Reinstall
-
-Install the editable CLI from this directory:
+Clone the repository into Claude Code's user Skill directory:
 
 ```bash
-uv tool install --force --editable .
+git clone https://github.com/zhaogsky/capture-to-notion.git ~/.claude/skills/capture-to-notion
 ```
 
-Verify the command:
+If the current Claude Code session does not pick up the new Skill, restart the session.
 
-```bash
-capture-to-notion --help
-```
+Project structure:
 
-## Configuration
+- `SKILL.md` — Claude Code workflow, safety boundary, and confirmation rules.
+- `capture_to_notion/` — local CLI backend used by the Skill.
+- `tests/` — regression tests for scanning, planning, writing, assets, verification, and CLI behavior.
+- `README.md` — Chinese documentation.
 
-Default local configuration lives at:
+## Configure the Notion API Key
+
+The main configuration is the Notion integration token. The default local config directory is:
 
 ```text
 ~/.config/capture-to-notion/
 ```
 
-Override it for tests or isolated runs:
+Recommended: store the token in an environment variable:
 
 ```bash
-CAPTURE_TO_NOTION_CONFIG_DIR=/tmp/capture-to-notion capture-to-notion cache inspect
+export NOTION_TOKEN="secret_xxx"
 ```
 
-The Notion integration token is configured in the tool's local config, not Claude Code global settings. Keep secrets out of this skill directory.
+You can configure the token environment variable name in `~/.config/capture-to-notion/config.json`:
 
-## Diagnostics
-
-Print version, package path, and runtime path details:
-
-```bash
-capture-to-notion version
+```json
+{
+  "notion": {
+    "auth": {
+      "env_token_name": "NOTION_TOKEN"
+    },
+    "api_version": "2026-03-11"
+  }
+}
 ```
 
-Run a read-only local diagnostic for config paths, whether a token is configured, and whether a legacy config directory exists. The command does not print the raw token value:
+If you choose to store the token directly in the config file, keep it only in your local `~/.config/capture-to-notion/config.json` and never commit it:
+
+```json
+{
+  "notion": {
+    "auth": {
+      "token": "secret_xxx"
+    },
+    "api_version": "2026-03-11"
+  }
+}
+```
+
+Check whether configuration is available:
 
 ```bash
 capture-to-notion doctor
 ```
 
-`doctor` also warns when cached targets predate `field_sources`; rescan those targets before relying on trusted mapping gates.
+`doctor` checks whether a token is configured without printing the raw token value.
 
-Preview a safe migration from the legacy `~/.config/notion-skill` directory without writing anything:
+## How to Use It in Claude Code
 
-```bash
-capture-to-notion config migrate
+After installation and configuration, ask Claude Code naturally, for example:
+
+```text
+Initialize The Art of Possibility in my book list.
 ```
 
-Apply the migration only after review:
-
-```bash
-capture-to-notion config migrate --confirmed
+```text
+Summarize this podcast episode and save it to my podcast database. Show me the write plan first.
 ```
 
-The migration command only copies allowlisted config assets (`config.json`, `states.json`, `aliases.json`, and `targets/*.json`), never prints token values, does not overwrite files already present in the new config root, and does not delete the legacy directory.
+```text
+Add a cover image to this book and upload it into the Notion files property instead of writing only the image URL.
+```
 
-For migration history and rename details, see `CHANGELOG.md`.
+Normal Skill flow:
 
-## Common Commands
+1. Claude parses intent, content type, target, and input shape.
+2. Claude builds a temporary `input.json`.
+3. The CLI runs `capture preflight --compact` first.
+4. Claude follows `workflow.planning.next_action`: suggest target, choose target, scan target, sync cache, confirm risk, or create a plan.
+5. When preflight allows it, the CLI runs `capture plan --compact`.
+6. Claude shows target path, concrete write pages, field mapping, relation / people requirements, asset actions, warnings, and verification expectations.
+7. The CLI runs `capture apply --confirmed` only after explicit user confirmation.
+8. Results are verified against the plan expectations after apply.
+
+## CLI Backend Commands
+
+These commands are mainly used by the Skill, but they are useful for debugging and development.
 
 Inspect local cache:
 
@@ -87,19 +117,13 @@ Inspect local cache:
 capture-to-notion cache inspect
 ```
 
-List cached Notion targets without calling Notion:
+List cached targets without calling Notion:
 
 ```bash
 capture-to-notion target list
 ```
 
-Inspect one cached target by alias:
-
-```bash
-capture-to-notion target inspect --alias books --compact
-```
-
-Search for a target page or database:
+Search Notion targets:
 
 ```bash
 capture-to-notion target search --query "书单" --limit 5 --compact
@@ -111,7 +135,13 @@ Scan a confirmed target:
 capture-to-notion target scan --page-id PAGE_ID --alias books
 ```
 
-Bind a write profile and trusted files asset field:
+Inspect one target:
+
+```bash
+capture-to-notion target inspect --alias books --compact
+```
+
+Bind a write profile and trusted Notion `files` asset field:
 
 ```bash
 capture-to-notion target bind-profile \
@@ -124,7 +154,7 @@ capture-to-notion target bind-profile \
   --asset-field cover=Cover
 ```
 
-Preview capture readiness with compact output:
+Preflight a capture:
 
 ```bash
 capture-to-notion capture preflight --input input.json --compact
@@ -136,9 +166,7 @@ Create a write plan:
 capture-to-notion capture plan --input input.json --output plan.json --compact
 ```
 
-The generated plan includes a top-level `summary` block for review before any write. Check `target_page`, `target_data_source`, `state`, `mapped_fields`, `key_fields`, `asset_actions`, `requires_confirmation`, and `warnings`. For book captures, `book_key_values_missing` means the plan is missing required metadata such as author, ISBN, or page count and must be confirmed or enriched before apply.
-
-Apply a confirmed plan:
+Apply only after user confirmation:
 
 ```bash
 capture-to-notion capture apply --plan plan.json --confirmed
@@ -150,35 +178,81 @@ Verify a written page with read-only checks:
 capture-to-notion capture verify --page-id PAGE_ID
 ```
 
-`capture verify` returns a JSON result with `verified`, `checks`, and `warnings`. Without a plan or explicit mapping, it only checks page presence and page cover URL accessibility; it does not infer title, status, author, ISBN, page count, or cover fields from property names. It does not write to Notion or download images. `capture apply` appends a top-level `verification` summary for written pages when page IDs are returned, using the write plan and target cache field mapping to verify written fields without hiding the apply result.
+## CLI Installation
+
+If you only use this as a Claude Code Skill, the important steps are cloning it into `~/.claude/skills/capture-to-notion` and configuring the Notion token.
+
+If you need the `capture-to-notion` command in your shell, install the Python package from the project directory with any preferred Python tooling:
+
+```bash
+python -m pip install -e .
+```
+
+If you use `uv`, you can install it as an editable tool:
+
+```bash
+uv tool install --force --editable .
+```
+
+Verify the command:
+
+```bash
+capture-to-notion --help
+```
+
+## Files Asset Uploads
+
+Notion `files` properties are treated as asset upload targets. For covers, author pictures, or similar fields, the plan should show:
+
+- `asset_actions` with `download_and_attach`
+- full-plan `asset_operations`
+- Notion upload entities in apply results, such as `file_upload`
+
+If the target profile lacks trusted asset mapping, the planner does not automatically treat a normal URL as a files upload target. Use `target bind-profile --asset-field semantic=NotionFilesProperty` to bind it explicitly.
 
 ## Parser Profiles and Field Sources
 
-Target cache entries can define `parser_profile` at the target level or data source level. Data source profiles override target profiles. The default book profile supplies only required/review field lists; it does not add business labels. Target scanning records Notion property names and official property types; it does not infer business record keys from property names unless a parser profile or explicit mapping supplies that key.
+Target caches can define `parser_profile`. It controls input parsing, required fields, summary fields, trusted field sources, and asset upload trust requirements.
 
-Use `labels` and `title_patterns` to control raw input parsing into normalized record keys. Use `required_schema_fields` for record keys that must map to Notion schema before a write plan can proceed, `required_value_fields` for record keys that must have extracted values, `summary_key_fields` for fields that should appear in the plan review summary, `trusted_field_sources` for mapping source labels that can satisfy required schema fields without confirmation, and `asset_trust_required_fields` for asset-backed record keys whose attachment mappings must also come from trusted sources before asset operations are planned.
+`field_sources` records where each field mapping came from. For fields that require trusted mapping, only sources listed in `trusted_field_sources` are trusted directly; otherwise the plan emits confirmation or blocking warnings.
 
-`field_sources` records where each cached mapping came from. When `field_sources` are present, required mappings with a `trusted_field_sources` profile are trusted only when their source appears in that list; other sources trigger confirmation through warnings such as `untrusted_field_mapping`, `*_schema_incomplete`, or `*_key_values_missing`. `asset_trust_required_fields` reuses that same trust check for asset attachment planning, so untrusted asset mappings are removed before asset operations are generated. The default book profile trusts `explicit` and `profile`, and requires trusted asset mapping for `cover`. The planner does not infer business fields from Notion property names.
+Common field sources:
 
-## Typical Workflow
-
-1. Run `capture preflight --compact` first.
-2. Follow `workflow.planning.next_action` instead of manually choosing the next step.
-3. Search, scan, bind, or sync only when preflight asks for it.
-4. Generate a compact write plan and review target path, fields, relation/people requirements, asset actions, warnings, and verification expectations.
-5. Apply only after the user explicitly confirms the target and write.
-6. Verify by plan expectations after apply.
+- `explicit` — explicitly configured or user-confirmed mapping.
+- `profile` — trusted mapping from the write profile.
+- `user_binding` — ordinary binding, which may not satisfy asset or required-field trust gates.
 
 ## Safety Boundary
 
-Capture to Notion replaces Notion MCP for this workflow. Do not fall back to Notion MCP when scanning, planning, writing, validating, or reading structure for this skill. If the backend lacks an API operation or returns stale data, fix or extend this skill/backend instead, unless the user explicitly asks for a one-off MCP operation.
-
-The tool must not silently write to Notion. First-time target use and any plan requiring confirmation should remain plan-first, apply-after-confirmation.
+- Do not silently write to Notion.
+- Do not fall back to Notion MCP in the Capture to Notion workflow.
+- Do not bypass the CLI with direct Notion API calls or ad hoc scripts.
+- Do not commit Notion tokens, caches, or local config.
+- Scan or sync before planning when using a target for the first time or after schema changes.
+- Ask the user to choose, enrich, skip, or confirm when relation, people, asset, or target risks remain unresolved.
 
 ## Tests
 
-Run the backend test suite from the skill directory:
+Run the full test suite:
+
+```bash
+python -m pytest -q
+```
+
+If using `uv`:
 
 ```bash
 uv run pytest -q
 ```
+
+For README-only or documentation-only edits, `git diff --check` is usually enough:
+
+```bash
+git diff --check
+```
+
+## Status
+
+As of 2026-06-03, the supported core workflows are in regression-maintenance mode. Tests cover cache-first planning, compact output, target path display, relation/people safety, files asset uploads, apply safety checks, and post-apply verification.
+
+`0.1.0` is an internal Beta for personal and internal daily use. See [RELEASE.md](RELEASE.md) for installation, verification, rollback, and version policy details.

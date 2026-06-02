@@ -2,95 +2,116 @@
 
 [English version](README.en.md)
 
-Capture to Notion 是一个 Claude Code Skill 加本地 CLI 后端，用来把内容安全、可审查地写入 Notion。它负责目标选择、结构扫描、缓存优先规划、关系与人员字段解析、封面/文件资产上传、写入执行和写后验证。
+Capture to Notion 是一个 Claude Code Skill，用来把书籍、播客、文章、笔记等内容安全写入 Notion。它自带本地 CLI 后端，但默认使用方式应该是：你在 Claude Code 里提出保存/补全/写入 Notion 的需求，Claude 按 `SKILL.md` 的流程先预检、再生成计划、最后在你确认后写入。
 
-这个项目的核心原则是：先生成确定性的预检和写入计划，再由用户确认后执行写入；不要静默写 Notion，也不要在这个流程里回退使用 Notion MCP。
+核心原则：**先生成可审查的 preflight / plan，再由用户确认后 apply**。它不会静默写入 Notion，也不会在这个流程里回退使用 Notion MCP。
 
-## 功能概览
+## 适合做什么
 
-- 目标发现与扫描：搜索 Notion 页面/数据库，扫描目标结构并缓存 schema、视图、路径等事实。
-- 写入前预检：根据输入、目标 hint、缓存和 profile 判断下一步动作。
-- 写入计划：生成可审查的 plan，列出目标、字段映射、待写页面、警告和验证预期。
-- 关系和人员字段：解析 relation / people，阻断未解决或有歧义的写入。
-- 文件资产上传：支持把封面、作者图片等 Notion `files` 字段作为上传实体处理，而不是只保存外链 URL。
-- 写后验证：按计划预期检查页面、字段、文件、封面和可验证的视图约束。
-- Claude Code Skill 编排：`SKILL.md` 提供面向 Claude 的工作流和安全规则。
+- 把书籍、播客单集、文章、笔记等内容写入指定 Notion 目标。
+- 初始化或补全已有条目，例如补封面、作者、ISBN、页数、作者图片等。
+- 根据已扫描的 Notion 结构生成写入计划。
+- 解析 relation / people 字段，阻断未解决或有歧义的写入。
+- 把 Notion `files` 字段作为上传资产处理，而不是只保存图片外链。
+- 写入后按计划预期验证页面、字段、文件、封面和可验证的视图约束。
 
-## 项目结构
+## 安装 Skill
 
-- `SKILL.md`：Claude Code 使用的工作流、安全边界和确认规则。
-- `capture_to_notion/`：`capture-to-notion` CLI 的 Python 后端。
+把仓库放到 Claude Code 的用户 Skill 目录：
+
+```bash
+git clone https://github.com/zhaogsky/capture-to-notion.git ~/.claude/skills/capture-to-notion
+```
+
+如果 Claude Code 当前会话没有自动识别新 Skill，重启会话后再使用。
+
+项目目录结构：
+
+- `SKILL.md`：Claude Code 读取的 Skill 工作流、安全边界和确认规则。
+- `capture_to_notion/`：Skill 使用的本地 CLI 后端。
 - `tests/`：扫描、规划、写入、资产、验证和 CLI 行为的回归测试。
-- `pyproject.toml`：包信息和 `capture-to-notion` 命令入口。
 - `README.en.md`：英文说明。
 
-## 当前状态
+## 配置 Notion API Key
 
-截至 2026-06-03，当前支持的核心工作流已经进入回归维护状态。已有测试覆盖 cache-first 规划、compact 输出、目标路径展示、关系/人员字段安全、文件资产上传、apply 安全校验和写后验证等能力。
-
-后续新增功能建议按真实使用反馈拆成小任务推进，而不是一次性扩展大范围逻辑。
-
-## 安装
-
-在项目目录中安装可编辑 CLI：
-
-```bash
-uv tool install --force --editable .
-```
-
-验证命令是否可用：
-
-```bash
-capture-to-notion --help
-```
-
-查看版本和运行路径：
-
-```bash
-capture-to-notion version
-```
-
-## 配置
-
-默认本地配置目录：
+主要配置是 Notion integration token。默认配置目录是：
 
 ```text
 ~/.config/capture-to-notion/
 ```
 
-Notion integration token 应放在工具自己的本地配置中，不要写入 Claude Code 全局 settings，也不要提交到仓库。
-
-可以用环境变量为测试或隔离运行指定配置目录：
+推荐使用环境变量保存 token：
 
 ```bash
-CAPTURE_TO_NOTION_CONFIG_DIR=/tmp/capture-to-notion capture-to-notion cache inspect
+export NOTION_TOKEN="secret_xxx"
 ```
 
-运行只读诊断：
+也可以在本地配置文件中指定 token 或 token 环境变量名：
+
+```json
+{
+  "notion": {
+    "auth": {
+      "env_token_name": "NOTION_TOKEN"
+    },
+    "api_version": "2026-03-11"
+  }
+}
+```
+
+如果确实要把 token 写入配置文件，应只写入本机的 `~/.config/capture-to-notion/config.json`，不要提交到仓库：
+
+```json
+{
+  "notion": {
+    "auth": {
+      "token": "secret_xxx"
+    },
+    "api_version": "2026-03-11"
+  }
+}
+```
+
+检查配置是否可用：
 
 ```bash
 capture-to-notion doctor
 ```
 
-`doctor` 会检查配置路径、token 是否已配置、旧配置目录是否存在，并且不会打印 token 原文。
+`doctor` 只检查 token 是否配置，不会打印 token 原文。
 
-如需从旧目录迁移配置，可先预览：
+## 在 Claude Code 中怎么用
 
-```bash
-capture-to-notion config migrate
+安装并配置后，可以直接用自然语言让 Claude 执行 Capture to Notion 工作流，例如：
+
+```text
+把《可能性的艺术》初始化到我的书单。
 ```
 
-确认后再执行迁移：
-
-```bash
-capture-to-notion config migrate --confirmed
+```text
+把这期播客总结后保存到半拿铁播客库，先给我写入计划。
 ```
 
-迁移命令只复制 allowlist 中的配置资产，不覆盖新目录已有文件，也不删除旧目录。
+```text
+给《世界作为参考答案》补充封面，要求上传到 Notion files 字段，不要只写图片 URL。
+```
 
-## 常用命令
+Skill 的正常流程是：
 
-检查本地缓存：
+1. Claude 解析你的意图、内容类型、目标和输入形态。
+2. 生成临时 `input.json`。
+3. 先运行 `capture preflight --compact`。
+4. 严格按 `workflow.planning.next_action` 决定下一步：推荐目标、选择目标、扫描目标、同步缓存、确认风险或生成计划。
+5. 当 preflight 允许后，运行 `capture plan --compact`。
+6. 向你展示目标路径、具体写入页面、字段映射、relation / people 需求、文件资产动作、警告和验证预期。
+7. 只有你明确确认后，才运行 `capture apply --confirmed`。
+8. 写入后按计划预期验证结果。
+
+## CLI 后端命令
+
+这些命令主要供 Skill 调用，也可用于调试和开发。
+
+查看缓存：
 
 ```bash
 capture-to-notion cache inspect
@@ -100,12 +121,6 @@ capture-to-notion cache inspect
 
 ```bash
 capture-to-notion target list
-```
-
-查看目标缓存详情：
-
-```bash
-capture-to-notion target inspect --alias books --compact
 ```
 
 搜索 Notion 目标：
@@ -118,6 +133,12 @@ capture-to-notion target search --query "书单" --limit 5 --compact
 
 ```bash
 capture-to-notion target scan --page-id PAGE_ID --alias books
+```
+
+查看目标详情：
+
+```bash
+capture-to-notion target inspect --alias books --compact
 ```
 
 绑定写入 profile，并显式声明可信的 Notion `files` 上传字段：
@@ -157,15 +178,27 @@ capture-to-notion capture apply --plan plan.json --confirmed
 capture-to-notion capture verify --page-id PAGE_ID
 ```
 
-## 标准工作流
+## CLI 安装方式
 
-1. 根据用户内容构造 `input.json`。
-2. 先运行 `capture preflight --compact`。
-3. 严格按 `workflow.planning.next_action` 路由下一步：推荐目标、选择目标、扫描目标、同步缓存、确认风险或生成计划。
-4. 只有当 preflight 允许 `capture_plan` 时，才运行 `capture plan --compact`。
-5. 审查计划中的目标路径、具体写入页面、字段映射、relation / people 需求、文件资产动作、警告和验证预期。
-6. 用户明确确认后，才运行 `capture apply --confirmed`。
-7. 写入后按计划预期验证结果，不只凭外链或字段存在声称成功。
+如果只是作为 Claude Code Skill 使用，重点是把仓库放到 `~/.claude/skills/capture-to-notion` 并配置 Notion token。
+
+如果需要在 shell 里直接运行 `capture-to-notion` 命令，可以在项目目录中选择一种 Python 安装方式：
+
+```bash
+python -m pip install -e .
+```
+
+如果你使用 `uv`，也可以安装为可编辑工具：
+
+```bash
+uv tool install --force --editable .
+```
+
+验证命令：
+
+```bash
+capture-to-notion --help
+```
 
 ## 文件资产上传
 
@@ -203,6 +236,12 @@ Notion `files` 字段应作为资产上传目标处理。对于封面、作者�
 运行完整测试：
 
 ```bash
+python -m pytest -q
+```
+
+如果使用 `uv`：
+
+```bash
 uv run pytest -q
 ```
 
@@ -212,6 +251,8 @@ uv run pytest -q
 git diff --check
 ```
 
-## 发布状态
+## 当前状态
+
+截至 2026-06-03，当前支持的核心工作流已经进入回归维护状态。已有测试覆盖 cache-first 规划、compact 输出、目标路径展示、关系/人员字段安全、文件资产上传、apply 安全校验和写后验证等能力。
 
 `0.1.0` 当前是内部 Beta，用于个人和内部日常使用。安装、验证、回滚和版本策略见 [RELEASE.md](RELEASE.md)。
